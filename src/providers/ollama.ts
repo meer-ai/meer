@@ -13,7 +13,7 @@ export class OllamaProvider implements Provider {
 
   constructor(config: OllamaConfig) {
     this.config = {
-      host: config.host || process.env.OLLAMA_HOST || 'https://ollama.saifcloud.me',
+      host: config.host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
       model: config.model,
       temperature: config.temperature ?? 0.7,
       options: config.options || {}

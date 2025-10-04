@@ -93,7 +93,7 @@ export function loadConfig(): LoadedConfig {
     case 'ollama':
       defaultModel = config.model || 'mistral:7b-instruct';
       provider = new OllamaProvider({
-        host: config.ollama?.host || 'https://ollama.saifcloud.me',
+        host: config.ollama?.host || 'http://127.0.0.1:11434',
         model: defaultModel,
         temperature: config.temperature,
         options: config.ollama?.options
