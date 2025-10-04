@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run dev:*)",
+      "Read(//d/Saif OneDrive/OneDrive - aqary international group/Pictures/Screenshots/**)",
+      "Read(//c/Users/saif/.devai/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
