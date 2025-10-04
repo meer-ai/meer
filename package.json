@@ -8,12 +8,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/meerai/meer.git"
+    "url": "https://github.com/meer-ai/meer.git"
   },
   "bugs": {
-    "url": "https://github.com/meerai/meer/issues"
+    "url": "https://github.com/meer-ai/meer/issues"
   },
-  "homepage": "https://github.com/meerai/meer#readme",
+  "homepage": "https://github.com/meer-ai/meer#readme",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
