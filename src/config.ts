@@ -37,6 +37,11 @@ export interface LoadedConfig {
   model: string;
 }
 
+export function configExists(): boolean {
+  const configPath = join(homedir(), '.meer', 'config.yaml');
+  return existsSync(configPath);
+}
+
 export function loadConfig(): LoadedConfig {
   const configPath = join(homedir(), '.meer', 'config.yaml');
 
@@ -58,12 +63,13 @@ export function loadConfig(): LoadedConfig {
       model: 'mistral:7b-instruct',
       temperature: 0.7,
       ollama: {
-        host: 'https://ollama.saifcloud.me',
+        host: 'http://127.0.0.1:11434',
         options: {}
       },
       openai: {
         apiKey: '', // Set via OPENAI_API_KEY env var
-        baseURL: 'https://api.openai.com/v1'
+        baseURL: 'https://api.openai.com/v1',
+        organization: ''
       },
       gemini: {
         apiKey: '' // Set via GEMINI_API_KEY env var

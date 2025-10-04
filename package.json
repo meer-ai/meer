@@ -1,6 +1,6 @@
 {
   "name": "meerai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MeerAI - Dive deep into your code. An open-source, local-first AI CLI for developers.",
   "type": "module",
   "bin": {
@@ -56,5 +56,10 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ]
 }

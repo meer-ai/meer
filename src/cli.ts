@@ -7,6 +7,7 @@ import { createChatCommand } from './commands/chat.js';
 import { createCommitMsgCommand } from './commands/commitMsg.js';
 import { createReviewCommand } from './commands/review.js';
 import { createMemoryCommand } from './commands/memory.js';
+import { createSetupCommand } from './commands/setup.js';
 
 async function showWelcomeScreen() {
   console.clear();
@@ -19,7 +20,32 @@ async function showWelcomeScreen() {
   console.log(chalk.bold.cyan('🌊 Your AI companion that flows like the sea'));
   console.log(chalk.gray('Model-agnostic CLI supporting Ollama, OpenAI, and Gemini'));
   console.log('');
-  
+
+  // Check if this is first-time setup
+  const { configExists } = await import('./config.js');
+  if (!configExists()) {
+    console.log(chalk.yellow('👋 Welcome! It looks like this is your first time using MeerAI.\n'));
+
+    const { runSetup } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'runSetup',
+        message: 'Would you like to run the setup wizard?',
+        default: true
+      }
+    ]);
+
+    if (runSetup) {
+      const { createSetupCommand } = await import('./commands/setup.js');
+      const setupCmd = createSetupCommand();
+      await setupCmd.parseAsync(['setup'], { from: 'user' });
+      console.log('');
+    } else {
+      console.log(chalk.gray('\nSkipping setup. A default configuration will be created.'));
+      console.log(chalk.yellow('💡 Tip: Run ') + chalk.cyan('meer setup') + chalk.yellow(' anytime to configure MeerAI.\n'));
+    }
+  }
+
   // Load and display config details
   try {
     const { loadConfig } = await import('./config.js');
@@ -40,6 +66,7 @@ async function showWelcomeScreen() {
   }
   
   console.log(chalk.bold.yellow('🚀 Quick Commands:'));
+  console.log(chalk.white('• Setup wizard:') + ' ' + chalk.cyan('meer setup'));
   console.log(chalk.white('• Ask questions:') + ' ' + chalk.cyan('meer ask "What does this code do?"'));
   console.log(chalk.white('• Interactive chat:') + ' ' + chalk.cyan('meer chat'));
   console.log(chalk.white('• Generate commits:') + ' ' + chalk.cyan('meer commit-msg'));
@@ -677,6 +704,7 @@ export function createCLI(): Command {
     });
   
   // Add commands
+  program.addCommand(createSetupCommand());
   program.addCommand(createAskCommand());
   program.addCommand(createChatCommand());
   program.addCommand(createCommitMsgCommand());

@@ -50,7 +50,7 @@ MeerAI brings intelligent developer assistance **to your command line** — no c
 
 ### 2️⃣ Clone & setup
 ```bash
-git clone https://github.com/meerai/meer.git
+git clone https://github.com/meer-ai/meer.git
 cd meer
 npm install
 npm run build
