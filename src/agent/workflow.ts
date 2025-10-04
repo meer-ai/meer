@@ -3,11 +3,15 @@ import ora from 'ora';
 import inquirer from 'inquirer';
 import type { Provider, ChatMessage } from '../providers/base.js';
 import { readFile, listFiles, proposeEdit, applyEdit, generateDiff, parseToolCalls, type FileEdit } from '../tools/index.js';
+import { memory } from '../memory/index.js';
 
 export interface AgentConfig {
   provider: Provider;
   cwd: string;
   maxIterations?: number;
+  enableMemory?: boolean;
+  providerType?: string;
+  model?: string;
 }
 
 interface TodoItem {
@@ -23,11 +27,17 @@ export class AgentWorkflow {
   private proposedEdits: FileEdit[] = [];
   private todoList: TodoItem[] = [];
   private appliedEdits: Array<{ path: string; description: string; success: boolean }> = [];
+  private enableMemory: boolean;
+  private providerType: string;
+  private model: string;
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
     this.cwd = config.cwd;
     this.maxIterations = config.maxIterations || 10;
+    this.enableMemory = config.enableMemory ?? true;
+    this.providerType = config.providerType || 'unknown';
+    this.model = config.model || 'unknown';
   }
 
   /**
@@ -48,6 +58,15 @@ export class AgentWorkflow {
   async processMessage(userMessage: string): Promise<string> {
     // Add user message
     this.messages.push({ role: 'user', content: userMessage });
+
+    // Save to memory if enabled
+    if (this.enableMemory) {
+      memory.addToSession({
+        timestamp: Date.now(),
+        role: 'user',
+        content: userMessage
+      });
+    }
 
     console.log(chalk.green('\n🤖 AI Agent:\n'));
 
@@ -86,6 +105,20 @@ export class AgentWorkflow {
         // Show AI's final response
         console.log(this.formatResponse(response));
         this.messages.push({ role: 'assistant', content: response });
+
+        // Save to memory if enabled
+        if (this.enableMemory) {
+          memory.addToSession({
+            timestamp: Date.now(),
+            role: 'assistant',
+            content: response,
+            metadata: {
+              provider: this.providerType,
+              model: this.model
+            }
+          });
+        }
+
         break;
       }
 

@@ -6,14 +6,15 @@ import { createAskCommand } from './commands/ask.js';
 import { createChatCommand } from './commands/chat.js';
 import { createCommitMsgCommand } from './commands/commitMsg.js';
 import { createReviewCommand } from './commands/review.js';
+import { createMemoryCommand } from './commands/memory.js';
 
 async function showWelcomeScreen() {
   console.clear();
 
   // Meerai ASCII art logo with wave
-  console.log(chalk.hex('#00B4D8')('        ╔╦╗╔═╗╔═╗╦═╗╔═╗╦   ') + chalk.hex('#0077B6')('  ~~~~'));
-  console.log(chalk.hex('#0096C7')('        ║║║║╣ ║╣ ╠╦╝╠═╣║   ') + chalk.hex('#00B4D8')(' ~~~~~'));
-  console.log(chalk.hex('#0077B6')('        ╩ ╩╚═╝╚═╝╩╚═╩ ╩╩   ') + chalk.hex('#48CAE4')('~~~~~~'));
+  console.log(chalk.hex('#00B4D8')('        ╔╦╗╔═╗╔═╗╦═╗   ') + chalk.hex('#0077B6')('  ~~~~'));
+  console.log(chalk.hex('#0096C7')('        ║║║║╣ ║╣ ╠╦╝   ') + chalk.hex('#00B4D8')(' ~~~~~'));
+  console.log(chalk.hex('#0077B6')('        ╩ ╩╚═╝╚═╝╩╚═   ') + chalk.hex('#48CAE4')('~~~~~~'));
   console.log('');
   console.log(chalk.bold.cyan('🌊 Your AI companion that flows like the sea'));
   console.log(chalk.gray('Model-agnostic CLI supporting Ollama, OpenAI, and Gemini'));
@@ -39,10 +40,11 @@ async function showWelcomeScreen() {
   }
   
   console.log(chalk.bold.yellow('🚀 Quick Commands:'));
-  console.log(chalk.white('• Ask questions:') + ' ' + chalk.cyan('meerai ask "What does this code do?"'));
-  console.log(chalk.white('• Interactive chat:') + ' ' + chalk.cyan('meerai chat'));
-  console.log(chalk.white('• Generate commits:') + ' ' + chalk.cyan('meerai commit-msg'));
-  console.log(chalk.white('• Code review:') + ' ' + chalk.cyan('meerai review'));
+  console.log(chalk.white('• Ask questions:') + ' ' + chalk.cyan('meer ask "What does this code do?"'));
+  console.log(chalk.white('• Interactive chat:') + ' ' + chalk.cyan('meer chat'));
+  console.log(chalk.white('• Generate commits:') + ' ' + chalk.cyan('meer commit-msg'));
+  console.log(chalk.white('• Code review:') + ' ' + chalk.cyan('meer review'));
+  console.log(chalk.white('• View memory:') + ' ' + chalk.cyan('meer memory'));
   console.log('');
   
   console.log(chalk.bold.magenta('⚡ Slash Commands:'));
@@ -207,7 +209,7 @@ async function handleModelCommand(config: any) {
             const { writeFileSync, readFileSync, existsSync } = await import('fs');
             const { join } = await import('path');
             const { homedir } = await import('os');
-            const configPath = join(homedir(), '.meerai', 'config.yaml');
+            const configPath = join(homedir(), '.meer', 'config.yaml');
 
             const yaml = await import('yaml');
 
@@ -249,7 +251,7 @@ async function handleProviderCommand() {
     const { readFileSync, writeFileSync, existsSync } = await import('fs');
     const { join } = await import('path');
     const { homedir } = await import('os');
-    const configPath = join(homedir(), '.meerai', 'config.yaml');
+    const configPath = join(homedir(), '.meer', 'config.yaml');
 
     if (!existsSync(configPath)) {
       console.log(chalk.red('❌ Config file not found'));
@@ -661,10 +663,10 @@ async function showFileAnalysis() {
 
 export function createCLI(): Command {
   const program = new Command();
-  
+
   program
-    .name('devai')
-    .description('A model-agnostic developer CLI with pluggable provider layer')
+    .name('meer')
+    .description('MeerAI - Dive deep into your code. An open-source, local-first AI CLI for developers.')
     .version('1.0.0')
     .option('-p, --profile <name>', 'Override the active profile')
     .hook('preAction', (thisCommand) => {
@@ -679,6 +681,7 @@ export function createCLI(): Command {
   program.addCommand(createChatCommand());
   program.addCommand(createCommitMsgCommand());
   program.addCommand(createReviewCommand());
+  program.addCommand(createMemoryCommand());
   
         // Show welcome screen and start chat when no command is provided
         program.action(async () => {

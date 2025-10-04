@@ -1,334 +1,212 @@
-# Meerai 🌊
+<div align="center">
 
-> Your AI companion that flows like the sea
+# 🌊 **MeerAI**
+### _Dive deep into your code._
 
-A production-ready, model-agnostic developer CLI with a pluggable provider layer. Built with TypeScript and designed for Windows/macOS/Linux with Node 20+.
+**MeerAI** (from the German word _“Meer”_ — *sea*) is an **open-source, local-first AI CLI** for developers.  
+It connects to your **local Ollama models** or remote providers like **OpenAI, Anthropic, Gemini, and Hugging Face**,  
+letting you chat with your code, review changes, and craft commits — all from the terminal.
 
-## Features
+[![License](https://img.shields.io/github/license/meerai/meer)](LICENSE)
+[![Made with TypeScript](https://img.shields.io/badge/made%20with-TypeScript-blue.svg)](https://www.typescriptlang.org/)
+[![Ollama Supported](https://img.shields.io/badge/Ollama-Supported-green.svg)](https://ollama.ai)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-- 🤖 **Multi-Provider Support**: Ollama, OpenAI, and Google Gemini
-- 🛠️ **Agentic Workflow**: Tool-based system with file reading, editing, and creation
-- 💬 **Interactive Chat**: Streaming responses with conversation history
-- 📋 **Task Tracking**: Auto-generated TODO lists for multi-step tasks
-- 📊 **Edit Summaries**: Comprehensive summaries after file modifications
-- ⚡ **Slash Commands**: Quick access to provider/model switching and more
-- 🎯 **Multiple Profiles**: Switch between different AI providers and models seamlessly
+</div>
 
-## Quick Start
+---
 
-### Installation
+## 🚀 Overview
 
-#### From Source (Development)
+MeerAI brings intelligent developer assistance **to your command line** — no cloud lock-in, no tracking, no limits.
 
+- 🧠 **Local-first** — runs entirely offline with [Ollama](https://ollama.ai)
+- 🌍 **Model-agnostic** — plug in OpenAI, Anthropic, Gemini, Hugging Face, or BYOK (vLLM, TGI)
+- 💬 **Conversational CLI** — chat, ask, review, commit directly from your terminal
+- 🪶 **Lightweight** — zero dependencies beyond Node.js
+- 🔒 **Private by design** — nothing leaves your machine (unless you choose to sync)
+- 🧩 **Extensible** — add your own models, tools, or providers
+
+---
+
+## 🧭 Commands
+
+| Command | Description |
+|----------|-------------|
+| `meer ask "<prompt>"` | One-shot Q&A with repo context |
+| `meer chat` | Interactive streaming REPL |
+| `meer commit-msg` | Generate commit messages from staged diffs |
+| `meer review [path]` | Review code and suggest improvements |
+| `meer memory` | View or clear local memory |
+| `meer tide pull/push` _(coming soon)_ | Sync sessions & templates to backend |
+
+---
+
+## ⚙️ Installation
+
+### 1️⃣ Prerequisites
+- Node.js **20+**
+- [Ollama](https://ollama.ai) (for local models like Mistral, Llama, Phi, Qwen)
+
+### 2️⃣ Clone & setup
 ```bash
-# Clone the repository
-git clone https://github.com/moesaif/meerai.git
-cd meerai
-
-# Install dependencies
+git clone https://github.com/meerai/meer.git
+cd meer
 npm install
-
-# Build the project
 npm run build
+npm link        # or npm i -g
+````
 
-# Link globally for local development
-npm link
-
-# Now you can use meerai from anywhere
-meerai
-```
-
-#### From npm (Coming Soon)
+### 3️⃣ Verify
 
 ```bash
-# Install globally (once published)
-npm install -g meerai
-
-# Or use npx
-npx meerai ask "What does this code do?"
+meer --help
 ```
 
-### Configuration
+---
 
-On first run, the CLI creates `~/.meerai/config.yaml` with default configuration:
+## 🌊 Example Usage
 
-```yaml
-provider: ollama
-model: mistral:7b-instruct
-temperature: 0.7
-
-ollama:
-  host: "http://127.0.0.1:11434"
-  options: {}
-
-openai:
-  apiKey: ""  # Set via OPENAI_API_KEY env var
-  baseURL: "https://api.openai.com/v1"
-  organization: ""
-
-gemini:
-  apiKey: ""  # Set via GEMINI_API_KEY env var
-```
-
-### Setup by Provider
-
-#### Ollama (Local)
-
-1. Install [Ollama](https://ollama.ai/)
-2. Pull a model: `ollama pull mistral:7b-instruct`
-3. Update the `host` in config if needed
-
-#### OpenAI
-
-1. Get API key from [OpenAI Platform](https://platform.openai.com/api-keys)
-2. Set environment variable: `export OPENAI_API_KEY=sk-...`
-3. Or add `apiKey` to profile in config
-
-#### Google Gemini
-
-1. Get API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-2. Set environment variable: `export GEMINI_API_KEY=...`
-3. Or add `apiKey` to profile in config
-
-## Commands
-
-### Ask Questions
+### Ask about your code
 
 ```bash
-# Ask about your codebase with context
-meerai ask "Explain this repo's database layer"
-
-# Ask without context
-meerai ask "What is TypeScript?" --no-context
+meer ask "Explain how the database layer handles transactions."
 ```
 
-### Interactive Chat
+### Interactive chat
 
 ```bash
-# Start an interactive session (default command)
-meerai
-
-# Or explicitly
-meerai chat
+meer chat
 ```
 
-#### Slash Commands
-
-When in chat mode, type `/` to access these commands:
-
-- `/provider` - Switch between Ollama, OpenAI, and Gemini
-- `/model` - Switch to a different model within current provider
-- `/init` - Create AGENTS.md for project context
-- `/help` - Show help message
-- `/exit` - Exit chat session
-
-**Example:**
-```
-You: /
-? Select a slash command:
-  1) /init - Create AGENTS.md
-  2) /provider - Switch AI provider
-  3) /model - Switch AI model
-  4) /help - Show help
-  5) /exit - Exit
-```
-
-### Generate Commit Messages
+### Generate a commit message
 
 ```bash
-# Stage your changes first
 git add .
-
-# Generate commit message
-meerai commit-msg
+meer commit-msg
 ```
 
-### Code Review
+### Review code in current directory
 
 ```bash
-# Review current directory
-meerai review
-
-# Review specific file
-meerai review src/utils.ts
-
-# Review specific directory
-meerai review src/components
+meer review .
 ```
 
-## Configuration
+---
 
-### Environment Variables
+## 🧠 Local Memory
 
-- `OPENAI_API_KEY`: OpenAI API key
-- `GEMINI_API_KEY`: Google Gemini API key
-- `OLLAMA_HOST`: Ollama server URL (default: http://127.0.0.1:11434)
+MeerAI remembers context between runs — stored privately on your device.
 
-### Configuration Options
+| Type             | Location                | Description                        |
+| ---------------- | ----------------------- | ---------------------------------- |
+| Conversations    | `~/.meer/sessions/`   | Rolling session history (JSONL)    |
+| Long-term memory | `~/.meer/longterm/`   | Facts, preferences, embeddings     |
+| Config           | `~/.meer/config.yaml` | Provider profiles & model defaults |
+
+You can disable memory any time:
+
+```bash
+meer ask --no-memory "Refactor this script"
+meer memory purge
+```
+
+---
+
+## 🗂️ Configuration
+
+**`~/.meerai/config.yaml`**
 
 ```yaml
-provider: ollama              # Active provider: ollama, openai, or gemini
-model: mistral:7b-instruct   # Model to use with active provider
-temperature: 0.7             # 0.0-1.0
+profile: mistral7b
 
-ollama:
-  host: "http://localhost:11434"
-  options:
-    num_ctx: 4096           # Context window
-    top_p: 0.9              # Nucleus sampling
-    repeat_penalty: 1.1     # Repetition penalty
+profiles:
+  mistral7b:
+    provider: ollama
+    model: mistral:7b-instruct
+    temperature: 0.2
 
-openai:
-  apiKey: ""                # Or use OPENAI_API_KEY env var
-  baseURL: "https://api.openai.com/v1"
-  organization: ""
+  phi3:
+    provider: ollama
+    model: phi3:3.8b
 
-gemini:
-  apiKey: ""                # Or use GEMINI_API_KEY env var
+  llama3:
+    provider: ollama
+    model: llama3.2:3b
+
+  qwen:
+    provider: ollama
+    model: qwen2.5:3b-instruct
 ```
 
-## Ollama Performance Tips
-
-For better performance with Ollama:
+Switch profiles on the fly:
 
 ```bash
-# Set environment variables
-export OLLAMA_NUM_PARALLEL=1
-export OLLAMA_KEEP_ALIVE=2m
-
-# Or in your shell profile
-echo 'export OLLAMA_NUM_PARALLEL=1' >> ~/.bashrc
-echo 'export OLLAMA_KEEP_ALIVE=2m' >> ~/.bashrc
+DEVAI_PROFILE=phi3 meer ask "Summarize this file"
 ```
 
-## Context Collection
+---
 
-The CLI automatically collects relevant code context by:
+## 🧩 Extending MeerAI
 
-1. **File Discovery**: Scans for `.ts`, `.tsx`, `.js`, `.py`, `.go`, `.sql`, `.md`, `.json`, `.yaml` files
-2. **Smart Filtering**: Ignores `node_modules`, `.git`, `dist`, `build`, etc.
-3. **Chunking**: Splits large files into 1200-character chunks with 200-character overlap
-4. **Embedding**: Uses provider embeddings to find relevant chunks
-5. **Top-K Retrieval**: Returns the 6 most relevant chunks for context
-
-## Development
-
-### Project Structure
+MeerAI is modular — add new capabilities under:
 
 ```
-devai-cli/
-├── src/
-│   ├── index.ts              # Entry point
-│   ├── cli.ts                # Commander setup
-│   ├── config.ts             # Config management
-│   ├── context/
-│   │   └── collect.ts        # RAG functionality
-│   ├── providers/
-│   │   ├── base.ts           # Provider interface
-│   │   └── ollama.ts         # Ollama adapter
-│   └── commands/
-│       ├── ask.ts            # Ask command
-│       ├── chat.ts           # Chat command
-│       ├── commitMsg.ts      # Commit message
-│       └── review.ts         # Code review
-├── package.json
-├── tsconfig.json
-└── README.md
+src/
+ ├─ providers/    # Model connectors
+ ├─ commands/     # CLI commands
+ ├─ memory/       # Local memory store
+ └─ context/      # Code context + embeddings
 ```
 
-### Building
+Example new command:
 
 ```bash
-# Install dependencies
-npm install
-
-# Development
-npm run dev
-
-# Build
-npm run build
-
-# Test
-npm test
+meer dive  # deep multi-file analysis
 ```
 
-### Adding New Providers
-
-1. Create a new provider in `src/providers/`
-2. Implement the `Provider` interface
-3. Add provider type to config schema
-4. Update config loader
-
-Example provider stub:
-
-```typescript
-// src/providers/openai.ts
-export class OpenAIProvider implements Provider {
-  async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-    // Implementation
-  }
-  
-  async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string> {
-    // Implementation
-  }
-  
-  async embed?(texts: string[], options?: EmbedOptions): Promise<number[][]> {
-    // Implementation
-  }
-}
-```
-
-## Extension Points
-
-### TODO: Future Enhancements
-
-- [ ] **OpenAI Provider**: Add OpenAI-compatible provider (vLLM/TGI/Groq)
-- [ ] **Tool Protocol**: Model tool calling with CLI execution
-- [ ] **JSON Output**: `--json` flag for CI integration
-- [ ] **Custom Models**: Support for custom model endpoints
-- [ ] **Advanced RAG**: Vector database integration
-- [ ] **Code Actions**: Automated code fixes and refactoring
-
-### Provider Interface
-
-```typescript
-interface Provider {
-  chat(messages: ChatMessage[], options?: ChatOptions): Promise<string>;
-  stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string>;
-  embed?(texts: string[], options?: EmbedOptions): Promise<number[][]>;
-  metadata?(): Promise<ProviderMetadata>;
-}
-```
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Ollama not running**: Ensure Ollama is running on the correct port
-2. **Model not found**: Pull the model with `ollama pull <model-name>`
-3. **Context too large**: Use `--no-context` for large repositories
-4. **Slow responses**: Check Ollama performance settings
-
-### Debug Mode
+Example new provider:
 
 ```bash
-# Enable debug logging
-DEBUG=meerai* meerai ask "test"
+src/providers/gemini.ts
+src/providers/anthropic.ts
 ```
 
-## License
+---
 
-MIT License - see LICENSE file for details.
+## 🌐 Roadmap
 
-## Contributing
+| Stage   | Goal                                           |
+| ------- | ---------------------------------------------- |
+| ✅ v0.1  | CLI foundation, Ollama adapter, local memory   |
+| 🧩 v0.2 | OpenAI-compatible + Hugging Face providers     |
+| 🌍 v0.3 | Sync backend (optional self-hosted API + DB)   |
+| 🪶 v0.4 | Plug-in system for custom commands             |
+| 🌅 v1.0 | Community templates, cloud-sync, GUI dashboard |
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+---
 
-## Support
+## 🤝 Contributing
 
-- GitHub Issues: [Report bugs and request features](https://github.com/moesaif/meerai/issues)
-- Documentation: [Full documentation](https://github.com/moesaif/meerai/wiki)
+Contributions, bug reports, and feature ideas are all welcome!
+
+1. Fork the repo
+2. Create your branch: `git checkout -b feature/your-feature`
+3. Commit your changes
+4. Open a PR 🎉
+
+Please check out [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+---
+
+## 🛡️ License
+
+MeerAI is open-source under the [MIT License](LICENSE).
+
+---
+
+<div align="center">
+
+### 🌊 *“A sea of models, one interface.”*
+
+</div>

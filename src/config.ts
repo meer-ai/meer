@@ -38,7 +38,7 @@ export interface LoadedConfig {
 }
 
 export function loadConfig(): LoadedConfig {
-  const configPath = join(homedir(), '.meerai', 'config.yaml');
+  const configPath = join(homedir(), '.meer', 'config.yaml');
 
   let config: Config;
 

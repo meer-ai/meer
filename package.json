@@ -1,11 +1,19 @@
 {
   "name": "meerai",
-  "version": "1.0.0",
-  "description": "Meerai - Your AI companion that flows like the sea. A model-agnostic developer CLI with pluggable provider layer.",
+  "version": "0.1.0",
+  "description": "MeerAI - Dive deep into your code. An open-source, local-first AI CLI for developers.",
   "type": "module",
   "bin": {
-    "meerai": "./dist/index.js"
+    "meer": "./dist/index.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meerai/meer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/meerai/meer/issues"
+  },
+  "homepage": "https://github.com/meerai/meer#readme",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
@@ -20,10 +28,14 @@
     "ollama",
     "openai",
     "gemini",
+    "anthropic",
+    "huggingface",
     "llm",
-    "assistant"
+    "assistant",
+    "local-first",
+    "privacy"
   ],
-  "author": "Meerai",
+  "author": "MeerAI Contributors",
   "license": "MIT",
   "dependencies": {
     "@types/inquirer": "^9.0.9",
