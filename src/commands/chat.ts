@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { createInterface } from 'readline';
 import { loadConfig } from '../config.js';
 import type { ChatMessage } from '../providers/base.js';
+import { handleCodeBlocks } from '../utils/codeBlocks.js';
 
 export function createChatCommand(): Command {
   const command = new Command('chat');
@@ -52,10 +53,13 @@ export function createChatCommand(): Command {
             process.stdout.write(chunk);
             assistantResponse += chunk;
           }
-          
+
+          console.log('');
+          await handleCodeBlocks(assistantResponse);
+
           // Add assistant response to history
           messages.push({ role: 'assistant', content: assistantResponse });
-          console.log('\n');
+          console.log('');
         }
         
         rl.close();
