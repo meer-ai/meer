@@ -1,5 +1,10 @@
-import { fetch } from 'undici';
-import type { Provider, ChatMessage, ChatOptions, ProviderMetadata } from './base.js';
+import { fetch } from "undici";
+import type {
+  Provider,
+  ChatMessage,
+  ChatOptions,
+  ProviderMetadata,
+} from "./base.js";
 
 export interface GeminiConfig {
   apiKey: string;
@@ -9,17 +14,19 @@ export interface GeminiConfig {
 
 export class GeminiProvider implements Provider {
   private config: GeminiConfig;
-  private baseURL = 'https://generativelanguage.googleapis.com/v1beta';
+  private baseURL = "https://generativelanguage.googleapis.com/v1beta";
 
   constructor(config: GeminiConfig) {
     this.config = {
-      apiKey: config.apiKey || process.env.GEMINI_API_KEY || '',
+      apiKey: config.apiKey || process.env.GEMINI_API_KEY || "",
       model: config.model,
-      temperature: config.temperature ?? 0.7
+      temperature: config.temperature ?? 0.7,
     };
 
     if (!this.config.apiKey) {
-      throw new Error('Gemini API key is required. Set GEMINI_API_KEY environment variable or provide it in config.');
+      throw new Error(
+        "Gemini API key is required. Set GEMINI_API_KEY environment variable or provide it in config."
+      );
     }
   }
 
@@ -29,16 +36,16 @@ export class GeminiProvider implements Provider {
     const response = await fetch(
       `${this.baseURL}/models/${this.config.model}:generateContent?key=${this.config.apiKey}`,
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents,
           generationConfig: {
             temperature: options?.temperature ?? this.config.temperature,
             maxOutputTokens: options?.maxTokens,
-            topP: options?.topP
-          }
-        })
+            topP: options?.topP,
+          },
+        }),
       }
     );
 
@@ -48,25 +55,28 @@ export class GeminiProvider implements Provider {
     }
 
     const data: any = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
   }
 
-  async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string> {
+  async *stream(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): AsyncIterable<string> {
     const contents = this.convertMessages(messages);
 
     const response = await fetch(
       `${this.baseURL}/models/${this.config.model}:streamGenerateContent?key=${this.config.apiKey}`,
       {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           contents,
           generationConfig: {
             temperature: options?.temperature ?? this.config.temperature,
             maxOutputTokens: options?.maxTokens,
-            topP: options?.topP
-          }
-        })
+            topP: options?.topP,
+          },
+        }),
       }
     );
 
@@ -77,11 +87,11 @@ export class GeminiProvider implements Provider {
 
     const reader = response.body?.getReader();
     if (!reader) {
-      throw new Error('Failed to get response reader');
+      throw new Error("Failed to get response reader");
     }
 
     const decoder = new TextDecoder();
-    let buffer = '';
+    let buffer = "";
 
     try {
       while (true) {
@@ -89,8 +99,8 @@ export class GeminiProvider implements Provider {
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
           if (line.trim()) {
@@ -114,10 +124,10 @@ export class GeminiProvider implements Provider {
 
   async metadata(): Promise<ProviderMetadata> {
     return {
-      name: 'Google Gemini',
-      version: '1.0.0',
-      capabilities: ['chat', 'stream'],
-      currentModel: this.config.model
+      name: "Google Gemini",
+      version: "1.0.0",
+      capabilities: ["chat", "stream"],
+      currentModel: this.config.model,
     };
   }
 
@@ -128,26 +138,28 @@ export class GeminiProvider implements Provider {
       );
 
       if (!response.ok) {
-        throw new Error('Failed to fetch models');
+        throw new Error("Failed to fetch models");
       }
 
       const data: any = await response.json();
       const models = data.models || [];
 
       return models
-        .filter((m: any) => m.name.includes('gemini') && m.supportedGenerationMethods?.includes('generateContent'))
+        .filter(
+          (m: any) =>
+            m.name.includes("gemini") &&
+            m.supportedGenerationMethods?.includes("generateContent")
+        )
         .map((m: any) => ({
-          name: m.displayName || m.name.split('/').pop(),
-          id: m.name.split('/').pop()
+          name: m.displayName || m.name.split("/").pop(),
+          id: m.name.split("/").pop(),
         }));
     } catch (error) {
-      // Return common models if API call fails
-      return [
-        { name: 'Gemini 2.0 Flash', id: 'gemini-2.0-flash-exp' },
-        { name: 'Gemini 1.5 Pro', id: 'gemini-1.5-pro' },
-        { name: 'Gemini 1.5 Flash', id: 'gemini-1.5-flash' },
-        { name: 'Gemini 1.0 Pro', id: 'gemini-1.0-pro' }
-      ];
+      throw new Error(
+        `Failed to fetch Gemini models: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
     }
   }
 
@@ -164,18 +176,23 @@ export class GeminiProvider implements Provider {
 
     for (const msg of messages) {
       // Gemini uses 'user' and 'model' roles
-      const role = msg.role === 'assistant' ? 'model' : msg.role === 'system' ? 'user' : msg.role;
+      const role =
+        msg.role === "assistant"
+          ? "model"
+          : msg.role === "system"
+          ? "user"
+          : msg.role;
 
       // Combine system messages with user messages
-      if (msg.role === 'system') {
+      if (msg.role === "system") {
         contents.push({
-          role: 'user',
-          parts: [{ text: `[System Instructions]\n${msg.content}` }]
+          role: "user",
+          parts: [{ text: `[System Instructions]\n${msg.content}` }],
         });
       } else {
         contents.push({
           role,
-          parts: [{ text: msg.content }]
+          parts: [{ text: msg.content }],
         });
       }
     }

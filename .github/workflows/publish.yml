@@ -1,0 +1,83 @@
+name: Publish to NPM
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0, v0.4.0, etc.
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      id-token: write  # Required for npm provenance
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Build project
+        run: npm run build
+        
+      - name: Run tests
+        run: npm test
+        
+      - name: Extract version from tag
+        id: get_version
+        run: |
+          TAG=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$TAG" >> $GITHUB_OUTPUT
+          echo "Extracted version: $TAG"
+          
+      - name: Update package.json version
+        run: |
+          npm version ${{ steps.get_version.outputs.VERSION }} --no-git-tag-version
+          echo "Updated package.json to version ${{ steps.get_version.outputs.VERSION }}"
+          
+      - name: Verify build artifacts
+        run: |
+          echo "Checking dist directory..."
+          ls -la dist/
+          echo "Checking package.json..."
+          cat package.json | grep '"version"'
+          
+      - name: Publish to NPM
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ steps.get_version.outputs.VERSION }}
+          body: |
+            Release ${{ steps.get_version.outputs.VERSION }}
+            
+            ## Changes
+            - See commit history for detailed changes
+            
+            ## Installation
+            ```bash
+            npm install -g meerai@${{ steps.get_version.outputs.VERSION }}
+            ```
+            
+            ## Usage
+            ```bash
+            meer --help
+            ```
+          draft: false
+          prerelease: false

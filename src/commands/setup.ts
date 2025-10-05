@@ -5,6 +5,9 @@ import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { stringify } from 'yaml';
+import { OllamaProvider } from '../providers/ollama.js';
+import { AnthropicProvider } from '../providers/anthropic.js';
+import { OpenRouterProvider } from '../providers/openrouter.js';
 
 export function createSetupCommand(): Command {
   return new Command('setup')
@@ -12,6 +15,53 @@ export function createSetupCommand(): Command {
     .action(async () => {
       await runSetupWizard();
     });
+}
+
+// Helper functions to fetch models dynamically
+async function fetchOllamaModels(host: string): Promise<string[]> {
+  try {
+    const provider = new OllamaProvider({ host, model: 'temp' });
+    const models = await provider.listModels();
+    return models.length > 0 ? models : ['llama3.2:latest', 'mistral:latest', 'codellama:latest'];
+  } catch {
+    return ['llama3.2:latest', 'mistral:latest', 'codellama:latest'];
+  }
+}
+
+async function fetchAnthropicModels(apiKey: string): Promise<string[]> {
+  try {
+    if (!apiKey) throw new Error('No API key');
+    const provider = new AnthropicProvider({ apiKey, model: 'temp' });
+    const models = await provider.listModels();
+    return models.length > 0 ? models : ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'];
+  } catch {
+    return [
+      'claude-3-5-sonnet-20241022',
+      'claude-3-5-haiku-20241022', 
+      'claude-3-opus-20240229',
+      'claude-3-sonnet-20240229',
+      'claude-3-haiku-20240307'
+    ];
+  }
+}
+
+async function fetchOpenRouterModels(apiKey: string): Promise<string[]> {
+  try {
+    if (!apiKey) throw new Error('No API key');
+    const provider = new OpenRouterProvider({ apiKey, model: 'temp' });
+    const models = await provider.listModels();
+    return models.length > 0 ? models : ['anthropic/claude-3.5-sonnet', 'openai/gpt-4o'];
+  } catch {
+    return [
+      'anthropic/claude-3.5-sonnet',
+      'anthropic/claude-3-opus',
+      'openai/gpt-4o',
+      'openai/gpt-4o-mini',
+      'meta-llama/llama-3.1-405b-instruct',
+      'google/gemini-pro-1.5',
+      'mistralai/mistral-large'
+    ];
+  }
 }
 
 async function runSetupWizard(): Promise<void> {
@@ -64,6 +114,14 @@ async function runSetupWizard(): Promise<void> {
         {
           name: chalk.cyan('✨ Google Gemini') + chalk.gray(' - Gemini models (requires API key)'),
           value: 'gemini'
+        },
+        {
+          name: chalk.cyan('🧠 Anthropic') + chalk.gray(' - Claude models (requires API key)'),
+          value: 'anthropic'
+        },
+        {
+          name: chalk.cyan('🌐 OpenRouter') + chalk.gray(' - Access to many models via one API (requires API key)'),
+          value: 'openrouter'
         }
       ]
     }
@@ -83,6 +141,17 @@ async function runSetupWizard(): Promise<void> {
     },
     gemini: {
       apiKey: ''
+    },
+    anthropic: {
+      apiKey: '',
+      baseURL: 'https://api.anthropic.com',
+      maxTokens: 4096
+    },
+    openrouter: {
+      apiKey: '',
+      baseURL: 'https://openrouter.ai/api',
+      siteName: 'MeerAI CLI',
+      siteUrl: 'https://github.com/anthropics/meer'
     }
   };
 
@@ -90,38 +159,43 @@ async function runSetupWizard(): Promise<void> {
   console.log(chalk.bold.yellow('\nStep 2: Configure Provider\n'));
 
   if (provider === 'ollama') {
-    const { useCustomHost, ollamaHost, model } = await inquirer.prompt([
-      {
-        type: 'confirm',
-        name: 'useCustomHost',
-        message: 'Are you using Ollama on a custom host/port?',
-        default: false
-      },
+    const { ollamaHost } = await inquirer.prompt([
       {
         type: 'input',
         name: 'ollamaHost',
-        message: 'Enter Ollama host URL:',
+        message: 'Enter Ollama host URL (press Enter for default):',
         default: 'http://127.0.0.1:11434',
-        when: (answers) => answers.useCustomHost
-      },
-      {
-        type: 'list',
-        name: 'model',
-        message: 'Choose a model (make sure it\'s pulled with "ollama pull"):',
-        choices: [
-          { name: 'mistral:7b-instruct', value: 'mistral:7b-instruct' },
-          { name: 'llama3.2:3b', value: 'llama3.2:3b' },
-          { name: 'phi3:3.8b', value: 'phi3:3.8b' },
-          { name: 'qwen2.5:3b-instruct', value: 'qwen2.5:3b-instruct' },
-          { name: 'codellama:7b', value: 'codellama:7b' },
-          { name: 'Custom model...', value: 'custom' }
-        ]
+        validate: (input) => {
+          if (!input) return 'Host URL is required';
+          try {
+            new URL(input);
+            return true;
+          } catch {
+            return 'Please enter a valid URL (e.g., http://127.0.0.1:11434)';
+          }
+        }
       }
     ]);
 
-    if (useCustomHost && ollamaHost) {
-      config.ollama.host = ollamaHost;
-    }
+    config.ollama.host = ollamaHost;
+
+    // Fetch available models dynamically
+    console.log(chalk.gray('🔍 Fetching available models from Ollama...'));
+    const availableModels = await fetchOllamaModels(ollamaHost);
+    
+    const modelChoices = availableModels.map(model => ({ name: model, value: model }));
+    modelChoices.push({ name: 'Custom model...', value: 'custom' });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: availableModels.length > 0 ? 
+          'Choose from available models:' : 
+          'No models found. Choose from common models:',
+        choices: modelChoices
+      }
+    ]);
 
     if (model === 'custom') {
       const { customModel } = await inquirer.prompt([
@@ -139,8 +213,10 @@ async function runSetupWizard(): Promise<void> {
     console.log(chalk.green('\n✅ Ollama configured!'));
     console.log(chalk.gray(`   Model: ${config.model}`));
     console.log(chalk.gray(`   Host: ${config.ollama.host}`));
-    console.log(chalk.yellow('\n💡 Tip: Make sure you\'ve pulled the model:'));
-    console.log(chalk.cyan(`   ollama pull ${config.model}\n`));
+    if (availableModels.length === 0) {
+      console.log(chalk.yellow('\n💡 Tip: Make sure you\'ve pulled the model:'));
+      console.log(chalk.cyan(`   ollama pull ${config.model}\n`));
+    }
 
   } else if (provider === 'openai') {
     const { apiKey, model } = await inquirer.prompt([
@@ -202,6 +278,114 @@ async function runSetupWizard(): Promise<void> {
       console.log(chalk.yellow('\n💡 Remember to set your API key:'));
       console.log(chalk.cyan('   export GEMINI_API_KEY=...\n'));
     }
+
+  } else if (provider === 'anthropic') {
+    const { apiKey } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: 'Enter your Anthropic API key (or press Enter to set via ANTHROPIC_API_KEY env var):',
+        mask: '*'
+      }
+    ]);
+
+    config.anthropic.apiKey = apiKey || '';
+
+    // Fetch available models dynamically if API key is provided
+    let availableModels: string[] = [];
+    if (apiKey) {
+      console.log(chalk.gray('🔍 Fetching available models from Anthropic...'));
+      availableModels = await fetchAnthropicModels(apiKey);
+    } else {
+      availableModels = await fetchAnthropicModels('');
+    }
+
+    const modelChoices = availableModels.map(model => {
+      let name = model;
+      if (model.includes('sonnet-20241022')) name += ' (recommended)';
+      else if (model.includes('haiku')) name += ' (faster, cheaper)';
+      else if (model.includes('opus')) name += ' (most capable)';
+      return { name, value: model };
+    });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices
+      }
+    ]);
+
+    config.model = model;
+
+    console.log(chalk.green('\n✅ Anthropic configured!'));
+    console.log(chalk.gray(`   Model: ${config.model}`));
+    if (!apiKey) {
+      console.log(chalk.yellow('\n💡 Remember to set your API key:'));
+      console.log(chalk.cyan('   export ANTHROPIC_API_KEY=sk-ant-...\n'));
+    }
+
+  } else if (provider === 'openrouter') {
+    const { apiKey } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: 'Enter your OpenRouter API key (or press Enter to set via OPENROUTER_API_KEY env var):',
+        mask: '*'
+      }
+    ]);
+
+    config.openrouter.apiKey = apiKey || '';
+
+    // Fetch available models dynamically if API key is provided
+    let availableModels: string[] = [];
+    if (apiKey) {
+      console.log(chalk.gray('🔍 Fetching available models from OpenRouter...'));
+      availableModels = await fetchOpenRouterModels(apiKey);
+    } else {
+      availableModels = await fetchOpenRouterModels('');
+    }
+
+    // Add annotations to popular models
+    const modelChoices = availableModels.map(model => {
+      let name = model;
+      if (model.includes('claude-3.5-sonnet')) name += ' (recommended)';
+      else if (model.includes('gpt-4o-mini')) name += ' (fast & cheap)';
+      else if (model.includes('llama-3.1-405b')) name += ' (large context)';
+      return { name, value: model };
+    });
+    modelChoices.push({ name: 'Custom model...', value: 'custom' });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices
+      }
+    ]);
+
+    if (model === 'custom') {
+      const { customModel } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'customModel',
+          message: 'Enter model name (e.g., anthropic/claude-3-haiku):'
+        }
+      ]);
+      config.model = customModel;
+    } else {
+      config.model = model;
+    }
+
+    console.log(chalk.green('\n✅ OpenRouter configured!'));
+    console.log(chalk.gray(`   Model: ${config.model}`));
+    if (!apiKey) {
+      console.log(chalk.yellow('\n💡 Remember to set your API key:'));
+      console.log(chalk.cyan('   export OPENROUTER_API_KEY=sk-or-...\n'));
+    }
+    console.log(chalk.blue('\n🌐 OpenRouter gives you access to many AI models through one API!'));
   }
 
   // Step 3: Additional preferences

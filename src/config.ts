@@ -6,10 +6,12 @@ import { z } from 'zod';
 import { OllamaProvider } from './providers/ollama.js';
 import { OpenAIProvider } from './providers/openai.js';
 import { GeminiProvider } from './providers/gemini.js';
+import { AnthropicProvider } from './providers/anthropic.js';
+import { OpenRouterProvider } from './providers/openrouter.js';
 import type { Provider } from './providers/base.js';
 
 const ConfigSchema = z.object({
-  provider: z.enum(['ollama', 'openai', 'gemini']),
+  provider: z.enum(['ollama', 'openai', 'gemini', 'anthropic', 'openrouter']),
   model: z.string().optional(),
   temperature: z.number().optional(),
   // Ollama-specific
@@ -26,6 +28,19 @@ const ConfigSchema = z.object({
   // Gemini-specific
   gemini: z.object({
     apiKey: z.string().optional()
+  }).optional(),
+  // Anthropic-specific
+  anthropic: z.object({
+    apiKey: z.string().optional(),
+    baseURL: z.string().optional(),
+    maxTokens: z.number().optional()
+  }).optional(),
+  // OpenRouter-specific
+  openrouter: z.object({
+    apiKey: z.string().optional(),
+    baseURL: z.string().optional(),
+    siteName: z.string().optional(),
+    siteUrl: z.string().optional()
   }).optional()
 });
 
@@ -73,6 +88,17 @@ export function loadConfig(): LoadedConfig {
       },
       gemini: {
         apiKey: '' // Set via GEMINI_API_KEY env var
+      },
+      anthropic: {
+        apiKey: '', // Set via ANTHROPIC_API_KEY env var
+        baseURL: 'https://api.anthropic.com',
+        maxTokens: 4096
+      },
+      openrouter: {
+        apiKey: '', // Set via OPENROUTER_API_KEY env var
+        baseURL: 'https://openrouter.ai/api',
+        siteName: 'MeerAI CLI',
+        siteUrl: 'https://github.com/anthropics/meer'
       }
     };
 
@@ -117,6 +143,29 @@ export function loadConfig(): LoadedConfig {
         apiKey: config.gemini?.apiKey || process.env.GEMINI_API_KEY || '',
         model: defaultModel,
         temperature: config.temperature
+      });
+      break;
+
+    case 'anthropic':
+      defaultModel = config.model || 'claude-3-5-sonnet-20241022';
+      provider = new AnthropicProvider({
+        apiKey: config.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY || '',
+        baseURL: config.anthropic?.baseURL,
+        model: defaultModel,
+        temperature: config.temperature,
+        maxTokens: config.anthropic?.maxTokens
+      });
+      break;
+
+    case 'openrouter':
+      defaultModel = config.model || 'anthropic/claude-3.5-sonnet';
+      provider = new OpenRouterProvider({
+        apiKey: config.openrouter?.apiKey || process.env.OPENROUTER_API_KEY || '',
+        baseURL: config.openrouter?.baseURL,
+        model: defaultModel,
+        temperature: config.temperature,
+        siteName: config.openrouter?.siteName,
+        siteUrl: config.openrouter?.siteUrl
       });
       break;
 

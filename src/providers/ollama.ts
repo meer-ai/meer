@@ -1,5 +1,11 @@
-import { fetch } from 'undici';
-import type { Provider, ChatMessage, ChatOptions, EmbedOptions, ProviderMetadata } from './base.js';
+import { fetch } from "undici";
+import type {
+  Provider,
+  ChatMessage,
+  ChatOptions,
+  EmbedOptions,
+  ProviderMetadata,
+} from "./base.js";
 
 export interface OllamaConfig {
   host: string;
@@ -13,15 +19,15 @@ export class OllamaProvider implements Provider {
 
   constructor(config: OllamaConfig) {
     this.config = {
-      host: config.host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434',
+      host: config.host || process.env.OLLAMA_HOST || "http://127.0.0.1:11434",
       model: config.model,
       temperature: config.temperature ?? 0.7,
-      options: config.options || {}
+      options: config.options || {},
     };
   }
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-    const response = await this.makeRequest('/api/chat', {
+    const response = await this.makeRequest("/api/chat", {
       model: this.config.model,
       messages,
       stream: false,
@@ -31,108 +37,125 @@ export class OllamaProvider implements Provider {
         top_p: options?.topP,
         repeat_penalty: options?.repeatPenalty,
         ...this.config.options,
-        ...options
-      }
+        ...options,
+      },
     });
 
-    return response.message?.content || '';
+    return response.message?.content || "";
   }
 
-  async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string> {
-    const response = await fetch(`${this.config.host}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages,
-        stream: true,
-        options: {
-          temperature: options?.temperature ?? this.config.temperature,
-          num_ctx: options?.numCtx,
-          top_p: options?.topP,
-          repeat_penalty: options?.repeatPenalty,
-          ...this.config.options,
-          ...options
-        }
-      })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error('Failed to get response reader');
-    }
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-
+  async *stream(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): AsyncIterable<string> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
+    
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      const response = await fetch(`${this.config.host}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: this.config.model,
+          messages,
+          stream: true,
+          options: {
+            temperature: options?.temperature ?? this.config.temperature,
+            num_ctx: options?.numCtx,
+            top_p: options?.topP,
+            repeat_penalty: options?.repeatPenalty,
+            ...this.config.options,
+            ...options,
+          },
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error(
+          `Ollama API error: ${response.status} ${response.statusText}`
+        );
+      }
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("Failed to get response reader");
+      }
 
-        for (const line of lines) {
-          if (line.trim()) {
-            try {
-              const data = JSON.parse(line);
-              if (data.message?.content) {
-                yield data.message.content;
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            if (line.trim()) {
+              try {
+                const data = JSON.parse(line);
+                if (data.message?.content) {
+                  yield data.message.content;
+                }
+                if (data.done) {
+                  return;
+                }
+              } catch (e) {
+                // Skip invalid JSON lines
+                continue;
               }
-              if (data.done) {
-                return;
-              }
-            } catch (e) {
-              // Skip invalid JSON lines
-              continue;
             }
           }
         }
+      } finally {
+        reader.releaseLock();
       }
-    } finally {
-      reader.releaseLock();
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Ollama stream request timed out after 300000ms`);
+      }
+      throw error;
     }
   }
 
   async embed(texts: string[], options?: EmbedOptions): Promise<number[][]> {
     const embeddings: number[][] = [];
-    
+
     for (const text of texts) {
-      const response = await this.makeRequest('/api/embeddings', {
+      const response = await this.makeRequest("/api/embeddings", {
         model: options?.model || this.config.model,
-        prompt: text
+        prompt: text,
       });
-      
+
       embeddings.push(response.embedding || []);
     }
-    
+
     return embeddings;
   }
 
   async metadata(): Promise<ProviderMetadata> {
     try {
-      const response = await this.makeRequest('/api/tags', {});
+      const response = await this.makeRequest("/api/tags", {});
       const models = response.models || [];
 
       return {
-        name: 'Ollama',
-        version: '1.0.0',
-        capabilities: ['chat', 'stream', 'embed'],
+        name: "Ollama",
+        version: "1.0.0",
+        capabilities: ["chat", "stream", "embed"],
         models: models.map((m: any) => m.name),
-        currentModel: this.config.model
+        currentModel: this.config.model,
       };
     } catch {
       return {
-        name: 'Ollama',
-        version: '1.0.0',
-        capabilities: ['chat', 'stream', 'embed'],
-        currentModel: this.config.model
+        name: "Ollama",
+        version: "1.0.0",
+        capabilities: ["chat", "stream", "embed"],
+        currentModel: this.config.model,
       };
     }
   }
@@ -140,7 +163,26 @@ export class OllamaProvider implements Provider {
   /**
    * Fetch available models from Ollama
    */
-  async listModels(): Promise<Array<{ name: string; size: number; modified: string }>> {
+  async listModels(): Promise<string[]> {
+    try {
+      const response = await this.makeRequest("/api/tags", {});
+      const models = response.models || [];
+      return models.map((m: any) => m.name);
+    } catch (error) {
+      throw new Error(
+        `Failed to fetch Ollama models: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  /**
+   * Get detailed model information from Ollama
+   */
+  async getDetailedModels(): Promise<
+    Array<{ name: string; size: number; modified: string }>
+  > {
     try {
       const response = await fetch(`${this.config.host}/api/tags`);
       if (!response.ok) {
@@ -150,7 +192,11 @@ export class OllamaProvider implements Provider {
       const data: any = await response.json();
       return data.models || [];
     } catch (error) {
-      throw new Error(`Failed to list Ollama models: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to list Ollama models: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
     }
   }
 
@@ -169,16 +215,41 @@ export class OllamaProvider implements Provider {
   }
 
   private async makeRequest(endpoint: string, data: any): Promise<any> {
-    const response = await fetch(`${this.config.host}${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
+    const method = endpoint === "/api/tags" ? "GET" : "POST";
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 300000);
+    
+    const requestOptions: any = {
+      method,
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+    };
 
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
+    if (method === "POST") {
+      requestOptions.body = JSON.stringify(data);
     }
 
-    return await response.json();
+    try {
+      const response = await fetch(
+        `${this.config.host}${endpoint}`,
+        requestOptions
+      );
+      
+      clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(
+        `Ollama API error: ${response.status} ${response.statusText}`
+      );
+    }
+
+      return await response.json();
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Ollama request timed out after 300000ms`);
+      }
+      throw error;
+    }
   }
 }
