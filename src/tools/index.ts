@@ -160,28 +160,186 @@ export function applyEdit(edit: FileEdit, cwd: string): ToolResult {
 export function generateDiff(oldContent: string, newContent: string): string[] {
   const oldLines = oldContent.split("\n");
   const newLines = newContent.split("\n");
-  const diff: string[] = [];
 
-  const maxLen = Math.max(oldLines.length, newLines.length);
+  // Simple two-pointer diff with minimal lookahead to detect inserts/deletes.
+  // Produces unified diff-style hunks with a few context lines.
+  const contextSize = 3;
+  const output: string[] = [];
 
-  for (let i = 0; i < maxLen; i++) {
-    const oldLine = oldLines[i];
-    const newLine = newLines[i];
+  let i = 0; // index in oldLines
+  let j = 0; // index in newLines
 
-    if (oldLine !== newLine) {
-      if (oldLine !== undefined) {
-        diff.push(chalk.red(`- ${oldLine}`));
-      }
-      if (newLine !== undefined) {
-        diff.push(chalk.green(`+ ${newLine}`));
-      }
-    } else if (diff.length > 0 && diff.length < 50) {
-      // Show context lines
-      diff.push(chalk.gray(`  ${oldLine}`));
+  const hunks: Array<{
+    oldStart: number;
+    newStart: number;
+    oldCount: number;
+    newCount: number;
+    lines: string[]; // prefixed with ' ', '+', '-'
+  }> = [];
+
+  function startHunk(oldStart: number, newStart: number) {
+    hunks.push({ oldStart, newStart, oldCount: 0, newCount: 0, lines: [] });
+  }
+
+  function addContextLines(startOld: number, startNew: number, count: number) {
+    if (count <= 0) return;
+    const h = hunks[hunks.length - 1];
+    for (let k = 0; k < count; k++) {
+      const line = oldLines[startOld + k] ?? "";
+      h.lines.push(` ${line}`);
+      h.oldCount++;
+      h.newCount++;
+    }
+    i = startOld + count;
+    j = startNew + count;
+  }
+
+  // Helper to append a change line to the current hunk
+  function pushChange(prefix: "+" | "-" | " ", line: string) {
+    const h = hunks[hunks.length - 1];
+    h.lines.push(`${prefix} ${line}`);
+    if (prefix === "+") h.newCount++;
+    else if (prefix === "-") h.oldCount++;
+    else {
+      h.newCount++;
+      h.oldCount++;
     }
   }
 
-  return diff;
+  // Pre-compute equal blocks to know when to close hunks with trailing context
+  const equalBlocks: Array<{
+    oldIndex: number;
+    newIndex: number;
+    length: number;
+  }> = [];
+  {
+    let a = 0,
+      b = 0;
+    while (a < oldLines.length && b < newLines.length) {
+      if (oldLines[a] === newLines[b]) {
+        const startA = a,
+          startB = b;
+        let len = 0;
+        while (
+          a < oldLines.length &&
+          b < newLines.length &&
+          oldLines[a] === newLines[b]
+        ) {
+          a++;
+          b++;
+          len++;
+        }
+        equalBlocks.push({ oldIndex: startA, newIndex: startB, length: len });
+      } else {
+        // Advance using simple lookahead
+        const nextDel = oldLines[a + 1] === newLines[b];
+        const nextIns = oldLines[a] === newLines[b + 1];
+        if (nextDel) a++;
+        else if (nextIns) b++;
+        else {
+          a++;
+          b++;
+        }
+      }
+    }
+  }
+
+  let equalIdx = 0;
+  while (i < oldLines.length || j < newLines.length) {
+    const equal = equalBlocks[equalIdx];
+    const atEqual = equal && i === equal.oldIndex && j === equal.newIndex;
+
+    if (atEqual) {
+      // Large equal block: emit as context, but split hunks when necessary
+      if (hunks.length > 0 && equal.length > contextSize * 2) {
+        // Trailing context for the previous hunk
+        const trailing = Math.min(contextSize, equal.length);
+        addContextLines(i, j, trailing);
+        // Skip middle of equal block
+        i += equal.length - trailing;
+        j += equal.length - trailing;
+      } else {
+        // Either no open hunk or small equal block: include all as context in hunk if exists
+        if (hunks.length === 0) {
+          // No hunk open, just advance (we only show context inside hunks)
+          i += equal.length;
+          j += equal.length;
+        } else {
+          addContextLines(i, j, equal.length);
+        }
+      }
+      equalIdx++;
+      continue;
+    }
+
+    // We are in a changed region; open a hunk if needed with leading context
+    if (
+      hunks.length === 0 ||
+      (hunks[hunks.length - 1].lines.length > 0 &&
+        hunks[hunks.length - 1].lines[
+          hunks[hunks.length - 1].lines.length - 1
+        ].startsWith(" "))
+    ) {
+      // Compute hunk header starts with some leading context
+      const oldStart = Math.max(0, i - contextSize) + 1; // 1-based
+      const newStart = Math.max(0, j - contextSize) + 1; // 1-based
+      startHunk(oldStart, newStart);
+      // Add leading context lines
+      const lead = Math.min(contextSize, Math.min(i, j));
+      if (lead > 0) {
+        const startOld = i - lead;
+        const startNew = j - lead;
+        addContextLines(startOld, startNew, lead);
+      }
+    }
+
+    // Decide the type of change using one-line lookahead
+    const delNext =
+      i < oldLines.length &&
+      j < newLines.length &&
+      oldLines[i + 1] === newLines[j];
+    const insNext =
+      i < oldLines.length &&
+      j < newLines.length &&
+      oldLines[i] === newLines[j + 1];
+
+    if (i < oldLines.length && (j >= newLines.length || delNext)) {
+      pushChange("-", oldLines[i] ?? "");
+      i++;
+      continue;
+    }
+    if (j < newLines.length && (i >= oldLines.length || insNext)) {
+      pushChange("+", newLines[j] ?? "");
+      j++;
+      continue;
+    }
+
+    // Treat as modification (replace)
+    if (i < oldLines.length) {
+      pushChange("-", oldLines[i] ?? "");
+    }
+    if (j < newLines.length) {
+      pushChange("+", newLines[j] ?? "");
+    }
+    i++;
+    j++;
+  }
+
+  // Format hunks
+  for (const h of hunks) {
+    output.push(
+      chalk.gray(
+        `@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@`
+      )
+    );
+    for (const line of h.lines) {
+      if (line.startsWith("+")) output.push(chalk.green(line));
+      else if (line.startsWith("-")) output.push(chalk.red(line));
+      else output.push(chalk.gray(line));
+    }
+  }
+
+  return output;
 }
 
 /**

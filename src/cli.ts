@@ -172,6 +172,278 @@ async function showWelcomeScreen() {
   console.log("");
 }
 
+/**
+ * Check if the user input is requesting to read an image file
+ */
+async function isImageFileRequest(userInput: string): Promise<boolean> {
+  // Check for common image file patterns
+  const imageExtensions = [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".svg",
+  ];
+  const imageKeywords = [
+    "read this image",
+    "analyze this image",
+    "what does this image",
+    "tell me what this image",
+    "check this image",
+    "examine this image",
+    "describe this image",
+    "what is in this image",
+  ];
+
+  // Check if input contains a file path with image extension
+  const hasImagePath = imageExtensions.some((ext) =>
+    userInput.toLowerCase().includes(ext.toLowerCase())
+  );
+
+  // Check if input contains image-related keywords
+  const hasImageKeywords = imageKeywords.some((keyword) =>
+    userInput.toLowerCase().includes(keyword.toLowerCase())
+  );
+
+  return hasImagePath || hasImageKeywords;
+}
+
+/**
+ * Handle image file reading requests
+ */
+async function handleImageFileRequest(
+  userInput: string,
+  config: any
+): Promise<void> {
+  console.log(chalk.cyan("🖼️  Detected image file request"));
+  console.log(chalk.gray("  Let me analyze the image for you"));
+
+  try {
+    // Extract file path from the input
+    const filePath = extractFilePath(userInput);
+
+    // Debug: show what was extracted
+    console.log(chalk.gray(`  🔍 Extracted path: "${filePath}"`));
+
+    if (!filePath) {
+      console.log(chalk.red("❌ Could not determine the image file path"));
+      console.log(
+        chalk.gray("  Please provide the full path to the image file")
+      );
+      return;
+    }
+
+    // Check if file exists
+    const { existsSync } = await import("fs");
+    if (!existsSync(filePath)) {
+      console.log(chalk.red(`❌ File not found: ${filePath}`));
+      console.log(chalk.gray("  Please check the file path and try again"));
+      return;
+    }
+
+    // Check if it's actually an image file
+    const imageExtensions = [
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".gif",
+      ".bmp",
+      ".webp",
+      ".svg",
+    ];
+    const isImageFile = imageExtensions.some((ext) =>
+      filePath.toLowerCase().endsWith(ext.toLowerCase())
+    );
+
+    if (!isImageFile) {
+      console.log(chalk.yellow("⚠️  This doesn't appear to be an image file"));
+      console.log(
+        chalk.gray("  Supported formats: PNG, JPG, JPEG, GIF, BMP, WEBP, SVG")
+      );
+      return;
+    }
+
+    console.log(chalk.green(`✅ Found image file: ${filePath}`));
+    console.log(chalk.cyan("🔍 Analyzing image content..."));
+
+    // For now, provide basic file information
+    // In a real implementation, you would use an image analysis service
+    const { statSync } = await import("fs");
+    const stats = statSync(filePath);
+    const fileSizeKB = Math.round(stats.size / 1024);
+
+    console.log(chalk.blue("📊 Image Information:"));
+    console.log(chalk.gray(`  📁 File: ${filePath}`));
+    console.log(chalk.gray(`  📏 Size: ${fileSizeKB} KB`));
+    console.log(chalk.gray(`  📅 Modified: ${stats.mtime.toLocaleString()}`));
+
+    console.log(chalk.yellow("\n⚠️  Image Analysis Limitation:"));
+    console.log(
+      chalk.gray("  Currently, I can only provide basic file information")
+    );
+    console.log(
+      chalk.gray("  For actual image content analysis, you would need:")
+    );
+    console.log(chalk.gray("  • Google Vision API"));
+    console.log(chalk.gray("  • OpenAI Vision API"));
+    console.log(chalk.gray("  • Azure Computer Vision"));
+    console.log(chalk.gray("  • Or other image analysis services"));
+
+    console.log(chalk.blue("\n💡 To enable image analysis:"));
+    console.log(chalk.gray("  1. Add an image analysis service to your CLI"));
+    console.log(chalk.gray("  2. Configure API keys for the service"));
+    console.log(
+      chalk.gray("  3. Update the workflow to handle image analysis")
+    );
+  } catch (error) {
+    console.log(chalk.red("❌ Error processing image file:"));
+    console.log(
+      chalk.gray(
+        `  ${error instanceof Error ? error.message : "Unknown error"}`
+      )
+    );
+  }
+}
+
+/**
+ * Extract file path from user input
+ */
+function extractFilePath(userInput: string): string | null {
+  // Debug: show the raw input
+  console.log(chalk.gray(`  🔍 Raw input: "${userInput}"`));
+
+  // Method 1: Manual parsing for paths with escaped spaces
+  // Look for the start of a path and manually parse until we hit a non-escaped space
+  const pathStart = userInput.indexOf("/");
+  if (pathStart !== -1) {
+    let path = "";
+    let i = pathStart;
+
+    while (i < userInput.length) {
+      const char = userInput[i];
+      const nextChar = userInput[i + 1];
+
+      if (char === "\\" && nextChar === " ") {
+        // This is an escaped space, add a regular space and skip both characters
+        path += " ";
+        i += 2;
+      } else if (char === " " && !path.includes("\\")) {
+        // This is a regular space that's not escaped, stop here
+        break;
+      } else if (char === " ") {
+        // This is a space that might be part of the path, continue
+        path += char;
+        i++;
+      } else {
+        // Regular character, add it to the path
+        path += char;
+        i++;
+      }
+    }
+
+    if (path.length > 1) {
+      const cleanedPath = path.trim();
+      console.log(
+        chalk.gray(`  🔧 Method 1 - Manual parsing: "${cleanedPath}"`)
+      );
+      return cleanedPath;
+    }
+  }
+
+  // Method 2: Look for paths that start with / and contain escaped spaces
+  // This regex looks for / followed by non-space chars, then escaped spaces followed by more chars
+  const pathWithEscapedSpaces = userInput.match(/(\/[^\s]+(?:\\\s[^\s]*)*)/);
+  if (pathWithEscapedSpaces) {
+    const cleanedPath = pathWithEscapedSpaces[1].replace(/\\\s/g, " ").trim();
+    console.log(
+      chalk.gray(
+        `  🔧 Method 2 - Found path with escaped spaces: "${cleanedPath}"`
+      )
+    );
+    return cleanedPath;
+  }
+
+  // Method 3: Look for any string that starts with / and contains backslashes
+  const pathWithBackslashes = userInput.match(/(\/[^\s]+(?:\\[^\s]*)*)/);
+  if (pathWithBackslashes) {
+    const cleanedPath = pathWithBackslashes[1].replace(/\\\s/g, " ").trim();
+    console.log(
+      chalk.gray(
+        `  🔧 Method 3 - Found path with backslashes: "${cleanedPath}"`
+      )
+    );
+    return cleanedPath;
+  }
+
+  // Handle drag-and-drop files with escaped spaces
+  // Look for patterns like: /Users/path/with\ spaces/file.png
+  const escapedPathPattern = /(\/[^\s]+(?:\\\s[^\s]*)+)/;
+  const escapedMatch = userInput.match(escapedPathPattern);
+  if (escapedMatch) {
+    // Clean up the path by removing backslashes before spaces
+    const cleanedPath = escapedMatch[1].replace(/\\\s/g, " ").trim();
+    console.log(chalk.gray(`  🔧 Cleaned escaped path: "${cleanedPath}"`));
+    return cleanedPath;
+  }
+
+  // Handle paths that start with /Users (common on macOS)
+  const usersPathPattern = /\/Users\/[^\s]+(?:\\\s[^\s]*)*/;
+  const usersPathMatch = userInput.match(usersPathPattern);
+  if (usersPathMatch) {
+    const cleanedPath = usersPathMatch[0].replace(/\\\s/g, " ").trim();
+    console.log(chalk.gray(`  🔧 Cleaned /Users path: "${cleanedPath}"`));
+    return cleanedPath;
+  }
+
+  // Handle other absolute paths starting with /
+  const absolutePathPattern = /\/[^\s]+(?:\\\s[^\s]*)*/;
+  const absolutePathMatch = userInput.match(absolutePathPattern);
+  if (absolutePathMatch) {
+    const cleanedPath = absolutePathMatch[0].replace(/\\\s/g, " ").trim();
+    console.log(chalk.gray(`  🔧 Cleaned absolute path: "${cleanedPath}"`));
+    return cleanedPath;
+  }
+
+  // Handle Windows paths
+  const windowsPathPattern = /[C-Z]:\\[^\s]+(?:\\\s[^\s]*)*/;
+  const windowsPathMatch = userInput.match(windowsPathPattern);
+  if (windowsPathMatch) {
+    const cleanedPath = windowsPathMatch[0].replace(/\\\s/g, " ").trim();
+    console.log(chalk.gray(`  🔧 Cleaned Windows path: "${cleanedPath}"`));
+    return cleanedPath;
+  }
+
+  // Handle relative paths
+  const relativePathPattern = /\.\/[^\s]+(?:\\\s[^\s]*)*/;
+  const relativePathMatch = userInput.match(relativePathPattern);
+  if (relativePathMatch) {
+    const cleanedPath = relativePathMatch[0].replace(/\\\s/g, " ").trim();
+    console.log(chalk.gray(`  🔧 Cleaned relative path: "${cleanedPath}"`));
+    return cleanedPath;
+  }
+
+  const parentPathPattern = /\.\.\/[^\s]+(?:\\\s[^\s]*)*/;
+  const parentPathMatch = userInput.match(parentPathPattern);
+  if (parentPathMatch) {
+    const cleanedPath = parentPathMatch[0].replace(/\\\s/g, " ").trim();
+    console.log(chalk.gray(`  🔧 Cleaned parent path: "${cleanedPath}"`));
+    return cleanedPath;
+  }
+
+  // Try to find any path-like string that might have been dropped
+  const anyPathPattern = /(\/[^\s]+(?:\\\s[^\s]*)*)/;
+  const anyPathMatch = userInput.match(anyPathPattern);
+  if (anyPathMatch) {
+    const cleanedPath = anyPathMatch[1].replace(/\\\s/g, " ").trim();
+    console.log(chalk.gray(`  🔧 Cleaned any path: "${cleanedPath}"`));
+    return cleanedPath;
+  }
+
+  return null;
+}
+
 async function handleSlashCommand(
   command: string,
   config: any,
@@ -851,98 +1123,126 @@ async function collectProjectContext() {
 }
 
 // Intelligent model-based decision making
-async function tryDirectResponse(input: string, config: any): Promise<{ needsContext: boolean; response: string }> {
+async function tryDirectResponse(
+  input: string,
+  config: any
+): Promise<{ needsContext: boolean; response: string }> {
   try {
     // Simple hardcoded rules for common cases (more reliable than AI classification)
     const lowerInput = input.toLowerCase().trim();
-    
-    // Simple greetings and common questions that don't need context
+
+    // Only very simple greetings that definitely don't need context
     const simplePatterns = [
-      /^hi$/i, /^hello$/i, /^hey$/i, /^yo$/i,
-      /^who (are you|built you|made you|created you)/i,
-      /^what (are you|can you do|do you do)/i,
-      /^how (are you|do you work)/i,
-      /^thanks?$/i, /^thank you$/i,
-      /^bye$/i, /^goodbye$/i,
-      /^what'?s your name/i
+      /^hi$/i,
+      /^hello$/i,
+      /^hey$/i,
+      /^yo$/i,
+      /^thanks?$/i,
+      /^thank you$/i,
+      /^bye$/i,
+      /^goodbye$/i,
     ];
-    
+
     for (const pattern of simplePatterns) {
       if (pattern.test(input)) {
         return {
           needsContext: false,
-          response: "Hello! I'm MeerAI, your AI coding companion. How can I help you with your project today?"
+          response:
+            "Hello! I'm MeerAI, your AI coding companion. How can I help you with your project today?",
         };
       }
     }
-    
+
     const provider = config.provider;
-    
+
     // Ask the model to decide if it needs project context
     const decisionPrompt = `You are MeerAI, an AI coding companion. The user said: "${input}"
 
-IMPORTANT: Most simple greetings and basic questions do NOT need project context.
+IMPORTANT: Set needsContext=true if the user is asking for ANY of the following:
+- Code analysis, review, or debugging
+- File modifications or creation
+- Project setup or scaffolding
+- Implementation of features (build, create, implement, add, etc.)
+- Technical questions about the codebase
+- Any request that involves working with code or files
+- Questions about project structure or files
+- Requests to build, create, or implement anything
 
-Only set needsContext=true if the user is specifically asking about:
-- Code analysis or review
-- Debugging specific errors
-- File modifications
-- Project-specific technical questions
-
-Set needsContext=false for:
-- Greetings (Hi, Hello, Hey, etc.)
+Set needsContext=false ONLY for:
+- Simple greetings (Hi, Hello, Hey, etc.)
 - General questions about the AI (Who made you, What can you do, How do you work, etc.)
 - Personal questions about the AI (Who are you, Who built you, What's your name, etc.)
-- Introductory conversations
 - Thanks/goodbye messages
-- General chat not related to code
+- General chat not related to code or implementation
+
+Examples that need context:
+- "build a backend" → needsContext=true
+- "create a component" → needsContext=true  
+- "implement auth" → needsContext=true
+- "add a feature" → needsContext=true
+- "fix this error" → needsContext=true
+- "analyze my code" → needsContext=true
+
+Examples that don't need context:
+- "Hi" → needsContext=false
+- "Who are you?" → needsContext=false
+- "What can you do?" → needsContext=false
+- "Thanks" → needsContext=false
 
 Respond ONLY with this exact JSON format (no extra text):
 {
-  "needsContext": false,
-  "response": "Hello! I'm MeerAI, your AI coding companion. How can I help you with your project today?"
+  "needsContext": true,
+  "response": ""
 }
 
 For the user input "${input}", respond with JSON:`;
 
     const response = await provider.chat([
-      { role: "user", content: decisionPrompt }
+      { role: "user", content: decisionPrompt },
     ]);
 
-    console.log(chalk.gray(`🔍 AI raw response: ${response.substring(0, 300)}...`));
+    console.log(
+      chalk.gray(`🔍 AI raw response: ${response.substring(0, 300)}...`)
+    );
 
     // Parse the JSON response
     try {
       // Clean the response to extract JSON
       let cleanResponse = response.trim();
-      
+
       // Look for JSON content between ```json and ``` or { and }
-      const jsonMatch = cleanResponse.match(/```json\s*([\s\S]*?)\s*```/) || 
-                       cleanResponse.match(/(\{[\s\S]*\})/);
-      
+      const jsonMatch =
+        cleanResponse.match(/```json\s*([\s\S]*?)\s*```/) ||
+        cleanResponse.match(/(\{[\s\S]*\})/);
+
       if (jsonMatch) {
         cleanResponse = jsonMatch[1];
       }
-      
+
       const decision = JSON.parse(cleanResponse);
-      
+
       // Validate the response structure
-      if (typeof decision.needsContext === 'boolean') {
+      if (typeof decision.needsContext === "boolean") {
         return {
           needsContext: decision.needsContext,
-          response: decision.response || ""
+          response: decision.response || "",
         };
       } else {
         // Invalid structure, assume needs context
         return { needsContext: true, response: "" };
       }
     } catch (parseError) {
-      console.log(chalk.yellow(`⚠️  JSON parsing error: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`));
+      console.log(
+        chalk.yellow(
+          `⚠️  JSON parsing error: ${
+            parseError instanceof Error ? parseError.message : "Unknown error"
+          }`
+        )
+      );
       console.log(chalk.gray(`Raw response: ${response.substring(0, 200)}...`));
       // If JSON parsing fails, assume it needs context
       return { needsContext: true, response: "" };
     }
-    
   } catch (error) {
     // If API call fails, assume it needs context and fall back to agent workflow
     return { needsContext: true, response: "" };
@@ -1155,6 +1455,13 @@ export function createCLI(): Command {
           continue;
         }
 
+        // Handle image file requests
+        if (await isImageFileRequest(userInput)) {
+          await handleImageFileRequest(userInput, config);
+          console.log(""); // Add spacing
+          continue;
+        }
+
         // Handle slash commands
         if (userInput.startsWith("/")) {
           const result = await handleSlashCommand(
@@ -1176,12 +1483,14 @@ export function createCLI(): Command {
         // Let the model decide if it needs context or can respond directly
         try {
           const messageStartTime = Date.now();
-          
-          console.log(chalk.blue("🤔 Asking AI to decide if context is needed..."));
-          
+
+          console.log(
+            chalk.blue("🤔 Asking AI to decide if context is needed...")
+          );
+
           // First, try a direct response without context
           const quickResponse = await tryDirectResponse(userInput, config);
-          
+
           if (quickResponse.needsContext) {
             console.log(chalk.blue("🔍 AI decided it needs project context"));
             // Model determined it needs context, use agent workflow

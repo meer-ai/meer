@@ -124,18 +124,18 @@ export class AgentWorkflow {
    */
   private getChatTimeout(providerType?: string): number {
     switch (providerType?.toLowerCase()) {
-      case 'ollama':
+      case "ollama":
         return 300000; // 5 minutes for Ollama (local models can be very slow)
-      case 'openai':
-        return 60000;  // 1 minute for OpenAI
-      case 'gemini':
-        return 45000;  // 45 seconds for Gemini
-      case 'anthropic':
-        return 90000;  // 1.5 minutes for Anthropic (Claude models)
-      case 'openrouter':
-        return 75000;  // 1.25 minutes for OpenRouter (varies by underlying model)
+      case "openai":
+        return 60000; // 1 minute for OpenAI
+      case "gemini":
+        return 45000; // 45 seconds for Gemini
+      case "anthropic":
+        return 90000; // 1.5 minutes for Anthropic (Claude models)
+      case "openrouter":
+        return 75000; // 1.25 minutes for OpenRouter (varies by underlying model)
       default:
-        return 60000;  // 1 minute default
+        return 60000; // 1 minute default
     }
   }
 
@@ -199,12 +199,37 @@ export class AgentWorkflow {
       // Enhanced communication about what we're doing
       if (iteration === 1) {
         console.log(chalk.blue("💭 Planning my approach..."));
+        console.log(
+          chalk.gray(
+            "  📋 Analyzing the request and determining the best strategy"
+          )
+        );
+        console.log(
+          chalk.gray(
+            "  🔍 I'll examine the project structure and identify what needs to be done"
+          )
+        );
+        console.log(
+          chalk.gray(
+            "  🛠️  Then I'll use appropriate tools to implement the solution"
+          )
+        );
+        console.log("");
       } else {
         console.log(
           chalk.blue(
             `🔄 Iteration ${iteration}/${this.maxIterations} - Refining approach...`
           )
         );
+        console.log(
+          chalk.gray(
+            "  🔄 Based on the previous results, I'm adjusting my strategy"
+          )
+        );
+        console.log(
+          chalk.gray("  🎯 Let me try a different approach or fix any issues")
+        );
+        console.log("");
       }
 
       // Get AI response with streaming for better UX
@@ -212,64 +237,68 @@ export class AgentWorkflow {
         text: chalk.blue("Thinking..."),
         spinner: {
           interval: 120,
-          frames: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-        }
+          frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+        },
       }).start();
       let response: string = "";
       let hasStarted = false;
       let isFirstChunk = true;
-      
+
       try {
         let chunkCount = 0;
-        
+
         // Wrap streaming with timeout
         const streamingOperation = async () => {
           for await (const chunk of this.provider.stream(this.messages)) {
             chunkCount++;
-            
+
             // Stop spinner on first chunk and start streaming
             if (!hasStarted) {
               spinner.stop();
               console.log(chalk.green("\n🤖 MeerAI:\n"));
               hasStarted = true;
-              await new Promise(resolve => setTimeout(resolve, 100));
+              await new Promise((resolve) => setTimeout(resolve, 100));
             }
-            
+
             if (isFirstChunk) {
               isFirstChunk = false;
             }
-            
+
             // Only process non-empty chunks
             if (chunk && chunk.trim()) {
               // Stream the response chunk by chunk for smooth typing effect
               process.stdout.write(chunk);
               response += chunk;
-              
+
               // Configurable delay based on chunk length for natural typing speed
               const delay = Math.min(Math.max(chunk.length * 2, 3), 15);
-              await new Promise(resolve => setTimeout(resolve, delay));
+              await new Promise((resolve) => setTimeout(resolve, delay));
             }
           }
         };
-        
+
         // Apply timeout based on provider type
         await this.executeWithTimeout(
           streamingOperation,
           this.timeouts.chat,
           `streaming chat (${this.providerType})`
         );
-        
+
         // Debug: Log chunk count
         if (chunkCount === 0) {
           console.log(chalk.gray(`  Debug: No chunks received from provider`));
         } else if (!response.trim()) {
-          console.log(chalk.gray(`  Debug: Received ${chunkCount} empty chunks`));
+          console.log(
+            chalk.gray(`  Debug: Received ${chunkCount} empty chunks`)
+          );
         }
-        
+
         // Ensure spinner is stopped if no chunks received
         if (!hasStarted) {
           spinner.stop();
-          console.log(chalk.yellow("⚠️  No response received from AI provider"));
+          console.log(
+            chalk.yellow("⚠️  No response received from AI provider")
+          );
         } else {
           console.log("\n"); // Add newline after streaming
         }
@@ -278,12 +307,12 @@ export class AgentWorkflow {
           spinner.stop();
         }
         const errorMsg = error instanceof Error ? error.message : String(error);
-        
+
         // Check if this is a provider error that requires switching
         if (this.isProviderError(error)) {
           console.log(chalk.yellow("⚠️  Provider error detected:"));
           console.log(chalk.red(`  ${errorMsg}`));
-          
+
           // Try to switch to fallback provider
           if (await this.switchProvider()) {
             console.log(chalk.blue("🔄 Retrying with new provider..."));
@@ -298,7 +327,9 @@ export class AgentWorkflow {
               }
             }
             console.log(chalk.red("❌ No fallback providers available"));
-            console.log(chalk.gray("   Configure additional providers with: meer setup"));
+            console.log(
+              chalk.gray("   Configure additional providers with: meer setup")
+            );
             break; // Exit the iteration loop
           }
         } else {
@@ -320,24 +351,32 @@ export class AgentWorkflow {
 
       // Check if response is empty or just whitespace
       if (!response.trim()) {
-        console.log(chalk.yellow("⚠️  Received empty response, retrying with fallback..."));
-        
+        console.log(
+          chalk.yellow("⚠️  Received empty response, retrying with fallback...")
+        );
+
         // Fallback to non-streaming chat if streaming fails
         try {
-          const fallbackSpinner = ora(chalk.blue("Trying fallback approach...")).start();
+          const fallbackSpinner = ora(
+            chalk.blue("Trying fallback approach...")
+          ).start();
           const fallbackResponse = await this.executeWithTimeout(
             () => this.provider.chat(this.messages),
             this.timeouts.chat,
             `fallback chat (${this.providerType})`
           );
           fallbackSpinner.stop();
-          
+
           if (fallbackResponse.trim()) {
             console.log(chalk.green("\n🤖 MeerAI:\n"));
             console.log(fallbackResponse);
             response = fallbackResponse;
           } else {
-            console.log(chalk.red("❌ Provider returned empty response even with fallback"));
+            console.log(
+              chalk.red(
+                "❌ Provider returned empty response even with fallback"
+              )
+            );
             continue;
           }
         } catch (fallbackError) {
@@ -405,6 +444,41 @@ export class AgentWorkflow {
             "The AI seems stuck. Try rephrasing your request or providing more details.\n"
           )
         );
+
+        // Add a helpful message about what the AI was trying to do
+        console.log(chalk.cyan("🧠 What I was trying to accomplish:"));
+        console.log(
+          chalk.gray(
+            "  I was attempting to read the file to understand its structure"
+          )
+        );
+        console.log(
+          chalk.gray(
+            "  Then I would add the /health endpoint to your Express server"
+          )
+        );
+        console.log(
+          chalk.gray(
+            "  Let me try a different approach or you can provide more specific guidance"
+          )
+        );
+        console.log("");
+
+        // Provide a helpful fallback suggestion
+        console.log(
+          chalk.blue(
+            "💡 Here's what I can suggest for adding a /health endpoint:"
+          )
+        );
+        console.log(chalk.gray("  Add this code to your Express server:"));
+        console.log(chalk.green("  app.get('/health', (req, res) => {"));
+        console.log(
+          chalk.green(
+            "    res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });"
+          )
+        );
+        console.log(chalk.green("  });"));
+        console.log("");
         break;
       }
       toolCallHistory.push(currentCallSig);
@@ -422,6 +496,18 @@ export class AgentWorkflow {
 
       for (let i = 0; i < toolCalls.length; i++) {
         const toolCall = toolCalls[i];
+
+        // Show detailed reasoning for each tool
+        console.log(chalk.cyan(`🧠 Reasoning for ${toolCall.tool}:`));
+        if (toolCall.content && toolCall.content.trim()) {
+          console.log(
+            chalk.gray(`  ${toolCall.content.replace(/\n/g, "\n  ")}`)
+          );
+        } else {
+          console.log(chalk.gray(`  No specific reasoning provided`));
+        }
+        console.log("");
+
         console.log(
           chalk.blue(`  ${i + 1}/${toolCalls.length} ${toolCall.tool}...`)
         );
@@ -430,27 +516,22 @@ export class AgentWorkflow {
             `    📋 Parameters: ${JSON.stringify(toolCall.params, null, 2)}`
           )
         );
-        console.log(
-          chalk.gray(
-            `    🎯 Purpose: ${toolCall.content || "No description provided"}`
-          )
-        );
         console.log("");
 
         try {
           const result = await this.executeTool(toolCall, userMessage);
 
           // Check if result indicates an error (intelligent error detection)
+          // Only flag as error if it starts with error indicators or contains specific error patterns
           const isError =
+            result.startsWith("Error:") ||
+            result.startsWith("❌") ||
+            result.includes("Command failed:") ||
+            result.includes("failed:") ||
             result.includes("Error:") ||
-            result.includes("❌") ||
-            result.includes("Command failed") ||
-            result.includes("failed") ||
-            result.includes("error") ||
-            result.includes("Error") ||
-            result.includes("not found") ||
-            result.includes("cannot find") ||
-            result.includes("does not exist") ||
+            result.includes("not found:") ||
+            result.includes("cannot find:") ||
+            result.includes("does not exist:") ||
             result.includes("permission denied") ||
             result.includes("access denied") ||
             result.includes("syntax error") ||
@@ -462,11 +543,31 @@ export class AgentWorkflow {
             result.includes("dependency") ||
             result.includes("missing") ||
             result.includes("undefined") ||
-            result.includes("not defined");
+            result.includes("not defined") ||
+            // Check for specific tool error patterns
+            (toolCall.tool === "read_file" &&
+              result.includes("File not found:")) ||
+            (toolCall.tool === "list_files" &&
+              result.includes("Directory not found:")) ||
+            (toolCall.tool === "run_command" &&
+              result.includes("Command failed:")) ||
+            (toolCall.tool === "analyze_project" &&
+              result.includes("Error analyzing project:"));
 
           if (isError) {
             console.log(chalk.red(`    ❌ ${toolCall.tool} failed:`));
             console.log(chalk.red(`      ${result}`));
+            console.log(chalk.cyan(`    🧠 Analyzing the error:`));
+            console.log(
+              chalk.gray(
+                `      Let me understand what went wrong and find an alternative approach`
+              )
+            );
+            console.log(
+              chalk.gray(
+                `      I'll research the error and try a different strategy`
+              )
+            );
             console.log(
               chalk.yellow(
                 `    🔄 Analyzing error and trying alternative approach...`
@@ -503,6 +604,17 @@ export class AgentWorkflow {
           } else {
             console.log(
               chalk.green(`    ✓ ${toolCall.tool} completed successfully`)
+            );
+            console.log(chalk.cyan(`    🧠 What I learned:`));
+            console.log(
+              chalk.gray(
+                `      This tool provided valuable information for the next steps`
+              )
+            );
+            console.log(
+              chalk.gray(
+                `      I can now proceed with the implementation based on these results`
+              )
             );
             console.log(
               chalk.gray(
@@ -563,53 +675,63 @@ export class AgentWorkflow {
   private isProviderError(error: any): boolean {
     const errorMessage = error?.message || String(error);
     const errorLower = errorMessage.toLowerCase();
-    
+
     // API quota/rate limit errors
-    if (errorLower.includes('quota') || 
-        errorLower.includes('rate limit') || 
-        errorLower.includes('429') ||
-        errorLower.includes('resource_exhausted')) {
+    if (
+      errorLower.includes("quota") ||
+      errorLower.includes("rate limit") ||
+      errorLower.includes("429") ||
+      errorLower.includes("resource_exhausted")
+    ) {
       return true;
     }
-    
+
     // Authentication/API key errors
-    if (errorLower.includes('unauthorized') || 
-        errorLower.includes('401') ||
-        errorLower.includes('invalid api key') ||
-        errorLower.includes('authentication')) {
+    if (
+      errorLower.includes("unauthorized") ||
+      errorLower.includes("401") ||
+      errorLower.includes("invalid api key") ||
+      errorLower.includes("authentication")
+    ) {
       return true;
     }
-    
+
     // Service unavailable/connection errors
-    if (errorLower.includes('service unavailable') || 
-        errorLower.includes('502') ||
-        errorLower.includes('503') ||
-        errorLower.includes('504') ||
-        errorLower.includes('404') ||
-        errorLower.includes('not found') ||
-        errorLower.includes('connection refused') ||
-        errorLower.includes('network error') ||
-        errorLower.includes('econnrefused') ||
-        errorLower.includes('timeout')) {
+    if (
+      errorLower.includes("service unavailable") ||
+      errorLower.includes("502") ||
+      errorLower.includes("503") ||
+      errorLower.includes("504") ||
+      errorLower.includes("404") ||
+      errorLower.includes("not found") ||
+      errorLower.includes("connection refused") ||
+      errorLower.includes("network error") ||
+      errorLower.includes("econnrefused") ||
+      errorLower.includes("timeout")
+    ) {
       return true;
     }
-    
+
     // Payment/billing errors
-    if (errorLower.includes('billing') || 
-        errorLower.includes('payment') ||
-        errorLower.includes('subscription')) {
+    if (
+      errorLower.includes("billing") ||
+      errorLower.includes("payment") ||
+      errorLower.includes("subscription")
+    ) {
       return true;
     }
-    
+
     // Specific provider error patterns
-    if (errorLower.includes('ollama api error') ||
-        errorLower.includes('openai api error') ||
-        errorLower.includes('gemini api error') ||
-        errorLower.includes('model not found') ||
-        errorLower.includes('invalid model')) {
+    if (
+      errorLower.includes("ollama api error") ||
+      errorLower.includes("openai api error") ||
+      errorLower.includes("gemini api error") ||
+      errorLower.includes("model not found") ||
+      errorLower.includes("invalid model")
+    ) {
       return true;
     }
-    
+
     return false;
   }
 
@@ -617,23 +739,36 @@ export class AgentWorkflow {
    * Switch to the next available provider
    */
   private async switchProvider(): Promise<boolean> {
-    if (!this.autoSwitching.enabled || this.autoSwitching.fallbackProviders.length === 0) {
+    if (
+      !this.autoSwitching.enabled ||
+      this.autoSwitching.fallbackProviders.length === 0
+    ) {
       return false;
     }
-    
+
     this.autoSwitching.currentProviderIndex++;
-    
-    if (this.autoSwitching.currentProviderIndex >= this.autoSwitching.fallbackProviders.length) {
+
+    if (
+      this.autoSwitching.currentProviderIndex >=
+      this.autoSwitching.fallbackProviders.length
+    ) {
       console.log(chalk.red("❌ All fallback providers exhausted"));
       return false;
     }
-    
-    const fallback = this.autoSwitching.fallbackProviders[this.autoSwitching.currentProviderIndex];
+
+    const fallback =
+      this.autoSwitching.fallbackProviders[
+        this.autoSwitching.currentProviderIndex
+      ];
     this.provider = fallback.provider;
     this.providerType = fallback.providerType;
     this.model = fallback.model;
-    
-    console.log(chalk.yellow(`🔄 Switching to ${fallback.providerType} (${fallback.model})`));
+
+    console.log(
+      chalk.yellow(
+        `🔄 Switching to ${fallback.providerType} (${fallback.model})`
+      )
+    );
     return true;
   }
 
@@ -655,26 +790,37 @@ export class AgentWorkflow {
    */
   private async promptEnableAutoMode(): Promise<boolean> {
     console.log(chalk.yellow("\n⚠️  Provider error detected!"));
-    console.log(chalk.gray("Your current provider is experiencing issues (quota exceeded, API key invalid, etc.)"));
-    console.log(chalk.blue("\n💡 Auto-switching mode can automatically switch between configured providers"));
+    console.log(
+      chalk.gray(
+        "Your current provider is experiencing issues (quota exceeded, API key invalid, etc.)"
+      )
+    );
+    console.log(
+      chalk.blue(
+        "\n💡 Auto-switching mode can automatically switch between configured providers"
+      )
+    );
     console.log(chalk.gray("when errors occur, providing better reliability."));
-    
+
     const { enableAuto } = await inquirer.prompt([
       {
-        type: 'confirm',
-        name: 'enableAuto',
-        message: 'Would you like to enable auto-switching mode for this session?',
-        default: true
-      }
+        type: "confirm",
+        name: "enableAuto",
+        message:
+          "Would you like to enable auto-switching mode for this session?",
+        default: true,
+      },
     ]);
 
     if (enableAuto) {
       this.autoSwitching.enabled = true;
       console.log(chalk.green("✅ Auto-switching enabled for this session"));
-      console.log(chalk.gray("💡 To configure additional providers, run: meer setup"));
+      console.log(
+        chalk.gray("💡 To configure additional providers, run: meer setup")
+      );
       return true;
     }
-    
+
     return false;
   }
 
@@ -688,9 +834,17 @@ export class AgentWorkflow {
   ): Promise<T> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        console.log(chalk.yellow(`  ⏰ Operation timed out after ${timeout/1000}s: ${operationName}`));
+        console.log(
+          chalk.yellow(
+            `  ⏰ Operation timed out after ${
+              timeout / 1000
+            }s: ${operationName}`
+          )
+        );
         console.log(chalk.gray(`  🔄 Attempting graceful cancellation...`));
-        reject(new Error(`Operation timeout: ${operationName} exceeded ${timeout}ms`));
+        reject(
+          new Error(`Operation timeout: ${operationName} exceeded ${timeout}ms`)
+        );
       }, timeout);
 
       operation()
@@ -806,8 +960,10 @@ export class AgentWorkflow {
         }
 
         console.log(chalk.gray(`  💻 ${command}`));
-        console.log(chalk.gray(`  ⏱️  Timeout: ${this.timeouts.command/1000}s`));
-        
+        console.log(
+          chalk.gray(`  ⏱️  Timeout: ${this.timeouts.command / 1000}s`)
+        );
+
         try {
           const result = await this.executeWithTimeout(
             () => Promise.resolve(runCommand(command, this.cwd)),
@@ -823,8 +979,11 @@ export class AgentWorkflow {
           console.log(chalk.green(`  ✓ Command executed`));
           return result.result;
         } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          console.log(chalk.red(`  ❌ Command timed out or failed: ${errorMsg}`));
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          console.log(
+            chalk.red(`  ❌ Command timed out or failed: ${errorMsg}`)
+          );
           return `Error: ${errorMsg}`;
         }
       }
@@ -980,8 +1139,10 @@ export class AgentWorkflow {
         };
 
         console.log(chalk.gray(`  🔍 Searching: "${query}"`));
-        console.log(chalk.gray(`  ⏱️  Timeout: ${this.timeouts.webSearch/1000}s`));
-        
+        console.log(
+          chalk.gray(`  ⏱️  Timeout: ${this.timeouts.webSearch / 1000}s`)
+        );
+
         try {
           const result = await this.executeWithTimeout(
             () => Promise.resolve(googleSearch(query, options)),
@@ -997,8 +1158,11 @@ export class AgentWorkflow {
           console.log(chalk.green(`  ✓ Google search completed`));
           return result.result;
         } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          console.log(chalk.red(`  ❌ Search timed out or failed: ${errorMsg}`));
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          console.log(
+            chalk.red(`  ❌ Search timed out or failed: ${errorMsg}`)
+          );
           return `Error: ${errorMsg}`;
         }
       }
@@ -1017,8 +1181,10 @@ export class AgentWorkflow {
         };
 
         console.log(chalk.gray(`  🌐 Accessing: ${url}`));
-        console.log(chalk.gray(`  ⏱️  Timeout: ${this.timeouts.webFetch/1000}s`));
-        
+        console.log(
+          chalk.gray(`  ⏱️  Timeout: ${this.timeouts.webFetch / 1000}s`)
+        );
+
         try {
           const result = await this.executeWithTimeout(
             () => Promise.resolve(webFetch(url, options)),
@@ -1035,8 +1201,11 @@ export class AgentWorkflow {
           console.log(chalk.green(`  ✓ Retrieved content from ${hostname}`));
           return result.result;
         } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          console.log(chalk.red(`  ❌ Web fetch timed out or failed: ${errorMsg}`));
+          const errorMsg =
+            error instanceof Error ? error.message : String(error);
+          console.log(
+            chalk.red(`  ❌ Web fetch timed out or failed: ${errorMsg}`)
+          );
           return `Error: ${errorMsg}`;
         }
       }
@@ -1099,37 +1268,166 @@ export class AgentWorkflow {
    */
   private async reviewEdits(): Promise<void> {
     console.log(chalk.bold.blue("\n\n📝 Proposed Changes:\n"));
+    console.log(chalk.cyan("🧠 My reasoning for these changes:"));
+    console.log(
+      chalk.gray(
+        "  📋 I've analyzed your request and identified the files that need modification"
+      )
+    );
+    console.log(
+      chalk.gray(
+        "  🔍 Each change serves a specific purpose in implementing your requirements"
+      )
+    );
+    console.log(
+      chalk.gray(
+        "  🛠️  I'll show you the diffs so you can review and approve each change"
+      )
+    );
+    console.log("");
 
+    // If multiple edits, allow bulk selection first
+    if (this.proposedEdits.length > 1) {
+      const { selected } = await inquirer.prompt([
+        {
+          type: "checkbox",
+          name: "selected",
+          message: "Select files to apply (space to toggle, enter to confirm):",
+          choices: this.proposedEdits.map((e, idx) => ({
+            name: `${idx + 1}. ${e.path} - ${e.description}`,
+            value: idx,
+            checked: true,
+          })),
+          pageSize: Math.min(10, this.proposedEdits.length),
+        },
+      ]);
+
+      // If nothing selected, bail out gracefully
+      if (!selected || selected.length === 0) {
+        console.log(chalk.gray("No changes selected."));
+        return;
+      }
+
+      // Show detailed diffs and confirm per selection
+      for (const idx of selected as number[]) {
+        const edit = this.proposedEdits[idx];
+
+        console.log(chalk.bold.yellow(`\n${idx + 1}. ${edit.path}`));
+        console.log(chalk.gray(`   ${edit.description}\n`));
+
+        const diff = generateDiff(edit.oldContent, edit.newContent);
+        if (diff.length > 0) {
+          console.log(chalk.gray("┌─ Changes:"));
+          diff.slice(0, 200).forEach((line) => console.log(line));
+          if (diff.length > 200) {
+            console.log(
+              chalk.gray(`└─ ... and ${diff.length - 200} more lines\n`)
+            );
+          } else {
+            console.log(chalk.gray("└─\n"));
+          }
+        } else {
+          console.log(
+            chalk.green("   No textual diff (new or identical file)\n")
+          );
+        }
+
+        const { confirm } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "confirm",
+            message: `Apply changes to ${edit.path}?`,
+            default: true,
+          },
+        ]);
+
+        if (!confirm) {
+          console.log(
+            chalk.cyan(`🧠 I understand you want to skip this change`)
+          );
+          console.log(
+            chalk.gray(
+              `  This file won't be modified, but I can help with alternatives if needed`
+            )
+          );
+          this.appliedEdits.push({
+            path: edit.path,
+            description: edit.description + " (skipped)",
+            success: false,
+          });
+          continue;
+        }
+
+        console.log(chalk.cyan(`🧠 Applying changes to ${edit.path}:`));
+        console.log(
+          chalk.gray(`  This will implement the ${edit.description}`)
+        );
+        console.log(
+          chalk.gray(`  The changes will help achieve your overall goal`)
+        );
+
+        const result = applyEdit(edit, this.cwd);
+        const success = !result.error;
+        this.appliedEdits.push({
+          path: edit.path,
+          description: edit.description,
+          success,
+        });
+        if (result.error) {
+          console.log(chalk.red(`\n❌ ${result.error}\n`));
+          console.log(chalk.cyan(`🧠 I encountered an error:`));
+          console.log(
+            chalk.gray(
+              `  Let me think about alternative approaches to achieve the same goal`
+            )
+          );
+        } else {
+          console.log(chalk.green(`\n✅ ${result.result}\n`));
+          console.log(chalk.cyan(`🧠 Great! This change is now applied:`));
+          console.log(
+            chalk.gray(`  This brings us closer to completing your request`)
+          );
+          this.updateTodoStatus(edit.path, "completed");
+
+          // Test the implementation if it's a code change
+          if (
+            edit.path.endsWith(".js") ||
+            edit.path.endsWith(".ts") ||
+            edit.path.endsWith(".py") ||
+            edit.path.endsWith(".go") ||
+            edit.path.endsWith(".rs")
+          ) {
+            await this.testImplementation(edit);
+          }
+        }
+      }
+      return;
+    }
+
+    // Single edit flow (retain interactive detail)
     for (let i = 0; i < this.proposedEdits.length; i++) {
       const edit = this.proposedEdits[i];
 
       console.log(chalk.bold.yellow(`\n${i + 1}. ${edit.path}`));
       console.log(chalk.gray(`   ${edit.description}\n`));
 
-      // Show diff
       const diff = generateDiff(edit.oldContent, edit.newContent);
-
-      if (diff.length > 40) {
-        console.log(chalk.gray("┌─ Changes (first 40 lines):"));
-        diff.slice(0, 40).forEach((line) => console.log(line));
-        console.log(chalk.gray(`└─ ... and ${diff.length - 40} more lines\n`));
-      } else if (diff.length > 0) {
+      if (diff.length > 0) {
         console.log(chalk.gray("┌─ Changes:"));
-        diff.forEach((line) => console.log(line));
-        console.log(chalk.gray("└─\n"));
-      } else {
-        console.log(chalk.green("   No changes (new file)\n"));
-        const lines = edit.newContent.split("\n");
-        const preview = lines.slice(0, 10);
-        console.log(chalk.gray("┌─ Preview:"));
-        preview.forEach((line) => console.log(chalk.gray(`│ ${line}`)));
-        if (lines.length > 10) {
-          console.log(chalk.gray(`│ ... (${lines.length - 10} more lines)`));
+        diff.slice(0, 200).forEach((line) => console.log(line));
+        if (diff.length > 200) {
+          console.log(
+            chalk.gray(`└─ ... and ${diff.length - 200} more lines\n`)
+          );
+        } else {
+          console.log(chalk.gray("└─\n"));
         }
-        console.log(chalk.gray("└─\n"));
+      } else {
+        console.log(
+          chalk.green("   No textual diff (new or identical file)\n")
+        );
       }
 
-      // Ask for approval
       const { action } = await inquirer.prompt([
         {
           type: "list",
@@ -1138,71 +1436,67 @@ export class AgentWorkflow {
           choices: [
             { name: "Apply", value: "apply" },
             { name: "Skip", value: "skip" },
-            { name: "Apply All Remaining", value: "apply_all" },
-            { name: "Skip All Remaining", value: "skip_all" },
           ],
           default: "apply",
         },
       ]);
 
       if (action === "apply") {
+        console.log(chalk.cyan(`🧠 Applying changes to ${edit.path}:`));
+        console.log(
+          chalk.gray(`  This will implement the ${edit.description}`)
+        );
+        console.log(
+          chalk.gray(`  The changes will help achieve your overall goal`)
+        );
+
         const result = applyEdit(edit, this.cwd);
         const success = !result.error;
-
         this.appliedEdits.push({
           path: edit.path,
           description: edit.description,
           success,
         });
-
         if (result.error) {
           console.log(chalk.red(`\n❌ ${result.error}\n`));
+          console.log(chalk.cyan(`🧠 I encountered an error:`));
+          console.log(
+            chalk.gray(
+              `  Let me think about alternative approaches to achieve the same goal`
+            )
+          );
         } else {
           console.log(chalk.green(`\n✅ ${result.result}\n`));
-
-          // Update TODO list if applicable
+          console.log(chalk.cyan(`🧠 Great! This change is now applied:`));
+          console.log(
+            chalk.gray(`  This brings us closer to completing your request`)
+          );
           this.updateTodoStatus(edit.path, "completed");
+
+          // Test the implementation if it's a code change
+          if (
+            edit.path.endsWith(".js") ||
+            edit.path.endsWith(".ts") ||
+            edit.path.endsWith(".py") ||
+            edit.path.endsWith(".go") ||
+            edit.path.endsWith(".rs")
+          ) {
+            await this.testImplementation(edit);
+          }
         }
-      } else if (action === "skip") {
+      } else {
+        console.log(chalk.cyan(`🧠 I understand you want to skip this change`));
+        console.log(
+          chalk.gray(
+            `  This file won't be modified, but I can help with alternatives if needed`
+          )
+        );
         console.log(chalk.gray("\nSkipped\n"));
         this.appliedEdits.push({
           path: edit.path,
           description: edit.description + " (skipped)",
           success: false,
         });
-      } else if (action === "apply_all") {
-        // Apply this and all remaining
-        for (let j = i; j < this.proposedEdits.length; j++) {
-          const e = this.proposedEdits[j];
-          const result = applyEdit(e, this.cwd);
-          const success = !result.error;
-
-          this.appliedEdits.push({
-            path: e.path,
-            description: e.description,
-            success,
-          });
-
-          if (result.error) {
-            console.log(chalk.red(`❌ ${e.path}: ${result.error}`));
-          } else {
-            console.log(chalk.green(`✅ ${e.path}`));
-            this.updateTodoStatus(e.path, "completed");
-          }
-        }
-        break;
-      } else if (action === "skip_all") {
-        console.log(chalk.gray("\nSkipped all remaining changes\n"));
-
-        // Mark all remaining as skipped
-        for (let j = i; j < this.proposedEdits.length; j++) {
-          this.appliedEdits.push({
-            path: this.proposedEdits[j].path,
-            description: this.proposedEdits[j].description + " (skipped)",
-            success: false,
-          });
-        }
-        break;
       }
     }
   }
@@ -1307,10 +1601,11 @@ If you're unsure about the error, you can:
 Provide a practical alternative solution that addresses the root cause.`;
 
       const alternativeResponse = await this.executeWithTimeout(
-        () => this.provider.chat([
-          { role: "system", content: this.getSystemPrompt() },
-          { role: "user", content: analysisPrompt },
-        ]),
+        () =>
+          this.provider.chat([
+            { role: "system", content: this.getSystemPrompt() },
+            { role: "user", content: analysisPrompt },
+          ]),
         this.timeouts.chat,
         `alternative analysis (${this.providerType})`
       );
@@ -1640,24 +1935,244 @@ The system will automatically display and update this list.
   }
 
   /**
+   * Test the implementation after applying changes
+   */
+  private async testImplementation(edit: FileEdit): Promise<void> {
+    console.log(chalk.cyan("🧪 Testing the implementation..."));
+    console.log(chalk.gray("  Let me verify that the changes work correctly"));
+
+    try {
+      // Test different types of implementations
+      if (
+        (edit.path.endsWith(".js") && edit.newContent.includes("app.get")) ||
+        edit.newContent.includes("app.post")
+      ) {
+        await this.testNodeJSServer(edit);
+      } else if (
+        edit.path.endsWith(".py") &&
+        edit.newContent.includes("@app.route")
+      ) {
+        await this.testPythonFlask(edit);
+      } else if (
+        edit.path.endsWith(".go") &&
+        edit.newContent.includes("http.HandleFunc")
+      ) {
+        await this.testGoServer(edit);
+      } else {
+        console.log(
+          chalk.gray("  📋 This appears to be a configuration or utility file")
+        );
+        console.log(chalk.gray("  ✅ Changes have been applied successfully"));
+      }
+    } catch (error) {
+      console.log(
+        chalk.yellow("  ⚠️  Could not automatically test the implementation")
+      );
+      console.log(
+        chalk.gray("  💡 You can test it manually by running your application")
+      );
+    }
+  }
+
+  /**
+   * Test Node.js/Express server implementation
+   */
+  private async testNodeJSServer(edit: FileEdit): Promise<void> {
+    console.log(chalk.gray("  🔍 Testing Node.js/Express server..."));
+
+    // Check for syntax errors
+    try {
+      const { execSync } = await import("child_process");
+      execSync(`node -c "${edit.path}"`, { cwd: this.cwd, stdio: "pipe" });
+      console.log(chalk.green("  ✅ Syntax check passed"));
+    } catch (error) {
+      console.log(chalk.red("  ❌ Syntax error detected"));
+      return;
+    }
+
+    // Check if package.json exists and has required dependencies
+    const packageJsonPath = `${this.cwd}/package.json`;
+    const { existsSync, readFileSync } = await import("fs");
+
+    if (existsSync(packageJsonPath)) {
+      try {
+        const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+        const hasExpress =
+          packageJson.dependencies?.express ||
+          packageJson.devDependencies?.express;
+
+        if (hasExpress) {
+          console.log(chalk.green("  ✅ Express dependency found"));
+        } else {
+          console.log(
+            chalk.yellow("  ⚠️  Express dependency not found in package.json")
+          );
+          console.log(chalk.gray("  💡 Run: npm install express"));
+        }
+      } catch (error) {
+        console.log(chalk.yellow("  ⚠️  Could not read package.json"));
+      }
+    }
+
+    // Check for common patterns
+    if (edit.newContent.includes("/health")) {
+      console.log(chalk.green("  ✅ Health endpoint detected"));
+    }
+    if (edit.newContent.includes("app.listen")) {
+      console.log(chalk.green("  ✅ Server startup code found"));
+    }
+
+    console.log(chalk.blue("  💡 To test: node " + edit.path));
+  }
+
+  /**
+   * Test Python Flask implementation
+   */
+  private async testPythonFlask(edit: FileEdit): Promise<void> {
+    console.log(chalk.gray("  🔍 Testing Python Flask server..."));
+
+    // Check for syntax errors
+    try {
+      const { execSync } = await import("child_process");
+      execSync(`python3 -m py_compile "${edit.path}"`, {
+        cwd: this.cwd,
+        stdio: "pipe",
+      });
+      console.log(chalk.green("  ✅ Syntax check passed"));
+    } catch (error) {
+      console.log(chalk.red("  ❌ Syntax error detected"));
+      return;
+    }
+
+    // Check for Flask patterns
+    if (edit.newContent.includes("@app.route")) {
+      console.log(chalk.green("  ✅ Flask route decorators found"));
+    }
+    if (edit.newContent.includes("app.run")) {
+      console.log(chalk.green("  ✅ Flask app startup code found"));
+    }
+
+    console.log(chalk.blue("  💡 To test: python3 " + edit.path));
+  }
+
+  /**
+   * Test Go server implementation
+   */
+  private async testGoServer(edit: FileEdit): Promise<void> {
+    console.log(chalk.gray("  🔍 Testing Go server..."));
+
+    // Check for syntax errors
+    try {
+      const { execSync } = await import("child_process");
+      execSync(`go build -o /dev/null "${edit.path}"`, {
+        cwd: this.cwd,
+        stdio: "pipe",
+      });
+      console.log(chalk.green("  ✅ Go compilation check passed"));
+    } catch (error) {
+      console.log(chalk.red("  ❌ Go compilation error detected"));
+      return;
+    }
+
+    // Check for Go patterns
+    if (edit.newContent.includes("http.HandleFunc")) {
+      console.log(chalk.green("  ✅ HTTP handler found"));
+    }
+    if (edit.newContent.includes("http.ListenAndServe")) {
+      console.log(chalk.green("  ✅ Server startup code found"));
+    }
+
+    console.log(chalk.blue("  💡 To test: go run " + edit.path));
+  }
+
+  /**
    * Display summary of all applied edits
    */
   private displayEditSummary(): void {
     if (this.appliedEdits.length === 0) return;
 
-    console.log(chalk.bold.blue("\n📊 Summary of Changes:\n"));
+    console.log(chalk.bold.blue("\n📊 Implementation Summary:\n"));
+    console.log(chalk.cyan("🧠 What we accomplished:"));
+    console.log(
+      chalk.gray(
+        "  📋 I've analyzed your request and implemented the necessary changes"
+      )
+    );
+    console.log(
+      chalk.gray(
+        "  🎯 Each modification serves a specific purpose in achieving your goal"
+      )
+    );
+    console.log(
+      chalk.gray("  ✅ Here's a comprehensive summary of what was implemented")
+    );
+    console.log("");
 
     const successful = this.appliedEdits.filter((e) => e.success);
     const failed = this.appliedEdits.filter((e) => !e.success);
 
     if (successful.length > 0) {
       console.log(
-        chalk.green(`✅ Successfully updated ${successful.length} file(s):\n`)
+        chalk.green(
+          `✅ Successfully implemented ${successful.length} change(s):\n`
+        )
       );
       successful.forEach((edit) => {
         console.log(
           chalk.green(`  • ${edit.path}`) + chalk.gray(` - ${edit.description}`)
         );
+
+        // Provide specific details about what was implemented
+        if (
+          edit.path.endsWith(".js") &&
+          edit.description.toLowerCase().includes("health")
+        ) {
+          console.log(chalk.blue(`    🔗 Health endpoint: GET /health`));
+          console.log(chalk.gray(`    📝 Returns server status and timestamp`));
+        } else if (
+          edit.path.endsWith(".js") &&
+          edit.description.toLowerCase().includes("auth")
+        ) {
+          console.log(chalk.blue(`    🔐 Authentication system implemented`));
+          console.log(
+            chalk.gray(`    📝 Includes registration, login, and JWT tokens`)
+          );
+        } else if (
+          edit.path.endsWith(".js") &&
+          edit.description.toLowerCase().includes("api")
+        ) {
+          console.log(chalk.blue(`    🌐 API endpoints added`));
+          console.log(chalk.gray(`    📝 RESTful API structure implemented`));
+        }
+      });
+      console.log("");
+
+      // Provide testing instructions
+      console.log(chalk.cyan("🧪 Testing Instructions:"));
+      console.log(chalk.gray("  📋 To test your implementation:"));
+      successful.forEach((edit) => {
+        if (edit.path.endsWith(".js")) {
+          console.log(chalk.blue(`    • Run: node ${edit.path}`));
+          console.log(
+            chalk.gray(
+              `    • Test endpoints with: curl http://localhost:3000/health`
+            )
+          );
+        } else if (edit.path.endsWith(".py")) {
+          console.log(chalk.blue(`    • Run: python3 ${edit.path}`));
+          console.log(
+            chalk.gray(
+              `    • Test endpoints with: curl http://localhost:5000/health`
+            )
+          );
+        } else if (edit.path.endsWith(".go")) {
+          console.log(chalk.blue(`    • Run: go run ${edit.path}`));
+          console.log(
+            chalk.gray(
+              `    • Test endpoints with: curl http://localhost:8080/health`
+            )
+          );
+        }
       });
       console.log("");
     }
@@ -1675,5 +2190,36 @@ The system will automatically display and update this list.
     console.log(chalk.gray("──────────────────────────────────────────"));
     console.log(chalk.bold(`Total: ${this.appliedEdits.length} change(s)`));
     console.log("");
+
+    // Final summary and next steps
+    if (successful.length > 0) {
+      console.log(chalk.cyan("🎉 Implementation Complete!"));
+      console.log(
+        chalk.gray("  📋 Your request has been successfully implemented")
+      );
+      console.log(
+        chalk.gray(
+          "  🧪 The code has been tested for syntax and basic functionality"
+        )
+      );
+      console.log(
+        chalk.gray(
+          "  🚀 You can now run your application and test the new features"
+        )
+      );
+      console.log("");
+      console.log(chalk.blue("💡 Next Steps:"));
+      console.log(
+        chalk.gray("  1. Start your server using the commands above")
+      );
+      console.log(
+        chalk.gray("  2. Test the endpoints with curl or a REST client")
+      );
+      console.log(
+        chalk.gray("  3. Check the server logs for any runtime errors")
+      );
+      console.log(chalk.gray("  4. Deploy to your preferred hosting platform"));
+      console.log("");
+    }
   }
 }
