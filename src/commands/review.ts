@@ -6,6 +6,7 @@ import { join, extname } from 'path';
 import { glob } from 'glob';
 import { loadConfig } from '../config.js';
 import type { ChatMessage } from '../providers/base.js';
+import { detectLanguageFromPath } from '../utils/language.js';
 
 const SUPPORTED_EXTENSIONS = new Set([
   '.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.sql', '.md', '.json', '.yaml', '.yml'
@@ -70,7 +71,8 @@ export function createReviewCommand(): Command {
         fileSpinner.succeed(chalk.green(`Analyzing ${fileContents.length} files`));
         
         const context = fileContents.join('\n\n---\n\n');
-        
+        const dominantLanguage = detectLanguageFromPath(files);
+
         const messages: ChatMessage[] = [
           {
             role: 'system',
@@ -81,6 +83,9 @@ export function createReviewCommand(): Command {
               '- Code quality issues (readability, maintainability)\n' +
               '- Best practices violations\n' +
               '- Edge cases not handled\n\n' +
+              (dominantLanguage
+                ? `The code appears to be mainly ${dominantLanguage}. Tailor the feedback to ${dominantLanguage} conventions.\n`
+                : '') +
               'Provide concise, actionable feedback. Focus on the most important issues first.\n' +
               'Format as bullet points with specific file/line references when possible.'
           },

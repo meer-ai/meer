@@ -35,6 +35,7 @@ import {
   getContextLimit,
 } from "../token/utils.js";
 import type { SessionTracker } from "../session/tracker.js";
+import { detectLanguageFromPath } from "../utils/language.js";
 
 export interface AgentConfig {
   provider: Provider;
@@ -528,30 +529,9 @@ export class AgentWorkflow {
         );
         console.log(
           chalk.gray(
-            "  Then I would add the /health endpoint to your Express server"
-          )
-        );
-        console.log(
-          chalk.gray(
             "  Let me try a different approach or you can provide more specific guidance"
           )
         );
-        console.log("");
-
-        // Provide a helpful fallback suggestion
-        console.log(
-          chalk.blue(
-            "💡 Here's what I can suggest for adding a /health endpoint:"
-          )
-        );
-        console.log(chalk.gray("  Add this code to your Express server:"));
-        console.log(chalk.green("  app.get('/health', (req, res) => {"));
-        console.log(
-          chalk.green(
-            "    res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });"
-          )
-        );
-        console.log(chalk.green("  });"));
         console.log("");
         break;
       }
