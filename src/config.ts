@@ -41,6 +41,13 @@ const ConfigSchema = z.object({
     baseURL: z.string().optional(),
     siteName: z.string().optional(),
     siteUrl: z.string().optional()
+  }).optional(),
+  context: z.object({
+    embedding: z.object({
+      enabled: z.boolean().optional(),
+      dimensions: z.number().optional(),
+      maxFileSize: z.number().optional()
+    }).optional()
   }).optional()
 });
 
@@ -50,6 +57,16 @@ export interface LoadedConfig {
   provider: Provider;
   providerType: string;
   model: string;
+  retry?: {
+    attempts: number;
+    delayMs: number;
+    backoffFactor: number;
+  };
+  contextEmbedding?: {
+    enabled: boolean;
+    dimensions: number;
+    maxFileSize: number;
+  };
 }
 
 export function configExists(): boolean {
@@ -99,6 +116,13 @@ export function loadConfig(): LoadedConfig {
         baseURL: 'https://openrouter.ai/api',
         siteName: 'MeerAI CLI',
         siteUrl: 'https://github.com/anthropics/meer'
+      },
+      context: {
+        embedding: {
+          enabled: false,
+          dimensions: 256,
+          maxFileSize: 200_000
+        }
       }
     };
 
@@ -176,6 +200,16 @@ export function loadConfig(): LoadedConfig {
   return {
     provider,
     providerType: config.provider,
-    model: defaultModel
+    model: defaultModel,
+    retry: {
+      attempts: 3,
+      delayMs: 1000,
+      backoffFactor: 2,
+    },
+    contextEmbedding: {
+      enabled: config.context?.embedding?.enabled ?? false,
+      dimensions: config.context?.embedding?.dimensions ?? 256,
+      maxFileSize: config.context?.embedding?.maxFileSize ?? 200_000,
+    },
   };
 }

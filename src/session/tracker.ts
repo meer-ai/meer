@@ -15,6 +15,11 @@ export interface SessionStats {
   toolTime: number;
   provider: string;
   model: string;
+  promptTokens: number;
+  completionTokens: number;
+  currentPromptTokens: number;
+  maxPromptTokens: number;
+  contextLimit?: number;
 }
 
 export class SessionTracker {
@@ -35,7 +40,12 @@ export class SessionTracker {
       apiTime: 0,
       toolTime: 0,
       provider,
-      model
+      model,
+      promptTokens: 0,
+      completionTokens: 0,
+      currentPromptTokens: 0,
+      maxPromptTokens: 0,
+      contextLimit: undefined
     };
     this.isActive = true;
   }
@@ -50,6 +60,28 @@ export class SessionTracker {
   trackApiCall(duration: number): void {
     if (!this.isActive) return;
     this.stats.apiTime += duration;
+  }
+
+  trackPromptTokens(count: number): void {
+    if (!this.isActive) return;
+    this.stats.promptTokens += count;
+  }
+
+  trackCompletionTokens(count: number): void {
+    if (!this.isActive) return;
+    this.stats.completionTokens += count;
+  }
+
+  trackContextUsage(tokens: number): void {
+    if (!this.isActive) return;
+    this.stats.currentPromptTokens = tokens;
+    if (tokens > this.stats.maxPromptTokens) {
+      this.stats.maxPromptTokens = tokens;
+    }
+  }
+
+  setContextLimit(limit: number): void {
+    this.stats.contextLimit = limit;
   }
 
   // Track tool call
@@ -105,6 +137,33 @@ export class SessionTracker {
   // Get agent active time (API + tool time)
   getAgentActiveTime(): number {
     return this.stats.apiTime + this.stats.toolTime;
+  }
+
+  getTokenUsage(): { prompt: number; completion: number; total: number } {
+    return {
+      prompt: this.stats.promptTokens,
+      completion: this.stats.completionTokens,
+      total: this.stats.promptTokens + this.stats.completionTokens
+    };
+  }
+
+  getContextUsage(): {
+    current: number;
+    max: number;
+    limit?: number;
+    percent?: number;
+  } {
+    const { currentPromptTokens, maxPromptTokens, contextLimit } = this.stats;
+    const percent = contextLimit
+      ? (currentPromptTokens / contextLimit) * 100
+      : undefined;
+
+    return {
+      current: currentPromptTokens,
+      max: maxPromptTokens,
+      limit: contextLimit,
+      percent,
+    };
   }
 
   // Format duration to human readable

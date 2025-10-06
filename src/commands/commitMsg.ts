@@ -27,6 +27,15 @@ export function createCommitMsgCommand(): Command {
         }
         
         const config = loadConfig();
+
+        if (config.contextEmbedding?.enabled) {
+          const { ProjectContextManager } = await import("../context/manager.js");
+          ProjectContextManager.getInstance().configureEmbeddings({
+            enabled: true,
+            dimensions: config.contextEmbedding.dimensions,
+            maxFileSize: config.contextEmbedding.maxFileSize,
+          });
+        }
         
         // Show analysis spinner
         const analysisSpinner = ora({

@@ -20,6 +20,15 @@ export function createReviewCommand(): Command {
     .action(async (path: string) => {
       try {
         const config = loadConfig();
+
+        if (config.contextEmbedding?.enabled) {
+          const { ProjectContextManager } = await import('../context/manager.js');
+          ProjectContextManager.getInstance().configureEmbeddings({
+            enabled: true,
+            dimensions: config.contextEmbedding.dimensions,
+            maxFileSize: config.contextEmbedding.maxFileSize,
+          });
+        }
         
         console.log(chalk.blue(`Reviewing: ${path}`));
         
@@ -105,6 +114,7 @@ export function createReviewCommand(): Command {
         let isFirstChunk = true;
         let hasStarted = false;
         
+        let streamedResponse = '';
         for await (const chunk of config.provider.stream(messages)) {
           if (isFirstChunk && !hasStarted) {
             // Stop thinking spinner when first chunk arrives
@@ -115,16 +125,34 @@ export function createReviewCommand(): Command {
           if (isFirstChunk) {
             isFirstChunk = false;
           }
+          streamedResponse += chunk;
           process.stdout.write(chunk);
         }
-        
+
         // Make sure spinner is stopped
         if (!hasStarted) {
           thinkingSpinner.stop();
         }
-        
+
+        if (!streamedResponse.trim()) {
+          try {
+            const fallback = await config.provider.chat(messages);
+            console.log(fallback);
+          } catch (fallbackError) {
+            console.log(
+              chalk.red(
+                `\n❌ Unable to retrieve review: ${
+                  fallbackError instanceof Error
+                    ? fallbackError.message
+                    : String(fallbackError)
+                }`
+              )
+            );
+          }
+        }
+
         console.log('\n');
-        
+
       } catch (error) {
         console.error(chalk.red('Error:'), error instanceof Error ? error.message : String(error));
         process.exit(1);

@@ -6,13 +6,15 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createAskCommand } from "./commands/ask.js";
-import { createChatCommand } from "./commands/chat.js";
 import { createCommitMsgCommand } from "./commands/commitMsg.js";
 import { createReviewCommand } from "./commands/review.js";
 import { createMemoryCommand } from "./commands/memory.js";
 import { createSetupCommand } from "./commands/setup.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
+import { logVerbose, setVerboseLogging } from "./logger.js";
+import { showSlashHelp } from "./ui/slashHelp.js";
+import { ProjectContextManager } from "./context/manager.js";
 
 // Get package.json path and read version
 const __filename = fileURLToPath(import.meta.url);
@@ -104,6 +106,12 @@ async function showWelcomeScreen() {
     const { loadConfig } = await import("./config.js");
     const config = loadConfig();
 
+    ProjectContextManager.getInstance().configureEmbeddings({
+      enabled: config.contextEmbedding?.enabled ?? false,
+      dimensions: config.contextEmbedding?.dimensions,
+      maxFileSize: config.contextEmbedding?.maxFileSize,
+    });
+
     const providerLabel =
       config.providerType === "ollama"
         ? "🦙 Ollama"
@@ -130,9 +138,7 @@ async function showWelcomeScreen() {
       " " +
       chalk.cyan('meer ask "What does this code do?"')
   );
-  console.log(
-    chalk.white("• Interactive chat:") + " " + chalk.cyan("meer chat")
-  );
+  console.log(chalk.white("• Interactive chat:") + " " + chalk.cyan("meer"));
   console.log(
     chalk.white("• Generate commits:") + " " + chalk.cyan("meer commit-msg")
   );
@@ -459,6 +465,23 @@ async function handleSlashCommand(
     case "/help":
       showSlashHelp();
       return "continue"; // Continue chat session
+
+    case "/history": {
+      const entries = ChatBoxUI.getHistoryEntries(10);
+      console.log(chalk.bold.blue("\n🕑 Recent Prompts:"));
+      if (entries.length === 0) {
+        console.log(chalk.gray("  (history is empty for this profile)"));
+      } else {
+        entries.forEach((entry, index) => {
+          console.log(
+            chalk.cyan(`${index + 1}. `) +
+              chalk.gray(entry.length > 120 ? `${entry.slice(0, 117)}...` : entry)
+          );
+        });
+      }
+      console.log("");
+      return "continue";
+    }
 
     case "/stats":
       if (sessionTracker) {
@@ -807,39 +830,6 @@ async function handleSetupCommand() {
   }
 }
 
-function showSlashHelp() {
-  console.log(chalk.bold.blue("\n📚 Available Slash Commands:\n"));
-  console.log(
-    chalk.cyan("/init") +
-      " " +
-      chalk.gray("- Create AGENTS.md for project tracking")
-  );
-  console.log(
-    chalk.cyan("/stats") + " " + chalk.gray("- Show current session statistics")
-  );
-  console.log(
-    chalk.cyan("/setup") +
-      " " +
-      chalk.gray("- Run setup wizard to reconfigure providers")
-  );
-  console.log(
-    chalk.cyan("/provider") +
-      " " +
-      chalk.gray("- Switch AI provider (Ollama, OpenAI, Gemini)")
-  );
-  console.log(chalk.cyan("/model") + " " + chalk.gray("- Switch AI model"));
-  console.log(
-    chalk.cyan("/help") + " " + chalk.gray("- Show this help message")
-  );
-  console.log(chalk.cyan("/exit") + " " + chalk.gray("- Exit chat session"));
-  console.log("");
-  console.log(
-    chalk.gray(
-      "💡 Tip: Use /setup for full reconfiguration or /stats for session info"
-    )
-  );
-}
-
 async function handleCodeBlocks(aiResponse: string) {
   const { writeFileSync, existsSync, mkdirSync, readFileSync } = await import(
     "fs"
@@ -1027,16 +1017,13 @@ function showFilePreview(content: string) {
 }
 
 async function collectProjectContext() {
-  const { readFileSync, existsSync, readdirSync, statSync } = await import(
-    "fs"
+  const { ProjectContextManager } = await import(
+    "./context/manager.js"
   );
-  const { join, extname } = await import("path");
 
-  const cwd = process.cwd();
-  const contextFiles: Array<{ name: string; content: string; path: string }> =
-    [];
+  const manager = ProjectContextManager.getInstance();
+  const { files } = manager.getContext(process.cwd());
 
-  // Patterns to include
   const includePatterns = [
     "*.html",
     "*.css",
@@ -1050,76 +1037,33 @@ async function collectProjectContext() {
     "*.go",
     "*.rs",
     "*.md",
-    "README*",
+    "readme",
     "package.json",
     "tsconfig.json",
-    "AGENTS.md",
+    "agents.md",
     "*.yml",
     "*.yaml",
   ];
 
-  // Directories to ignore
-  const ignoreDirs = [
-    "node_modules",
-    ".git",
-    "dist",
-    "build",
-    ".next",
-    "coverage",
-    "__pycache__",
-  ];
-
-  function scanDirectory(dir: string, depth: number = 0): void {
-    if (depth > 2) return; // Limit depth to avoid deep recursion
-
-    try {
-      const items = readdirSync(dir);
-
-      for (const item of items) {
-        const fullPath = join(dir, item);
-
-        try {
-          const stats = statSync(fullPath);
-
-          if (stats.isDirectory()) {
-            if (!ignoreDirs.includes(item) && !item.startsWith(".")) {
-              scanDirectory(fullPath, depth + 1);
-            }
-          } else if (stats.isFile()) {
-            const ext = extname(item);
-            const shouldInclude = includePatterns.some((pattern) => {
-              if (pattern.startsWith("*")) {
-                return item.endsWith(pattern.slice(1));
-              }
-              return item === pattern || item.startsWith(pattern);
-            });
-
-            if (shouldInclude && stats.size < 100000) {
-              // Max 100KB per file
-              try {
-                const content = readFileSync(fullPath, "utf-8");
-                const relativePath = fullPath
-                  .replace(cwd, "")
-                  .replace(/\\/g, "/")
-                  .replace(/^\//, "");
-                contextFiles.push({ name: item, content, path: relativePath });
-              } catch (error) {
-                // Skip files that can't be read
-              }
-            }
-          }
-        } catch (error) {
-          // Skip items that can't be accessed
+  let filtered = files
+    .filter((file) => {
+      const lowerPath = file.path.toLowerCase();
+      return includePatterns.some((pattern) => {
+        if (pattern.startsWith("*")) {
+          return lowerPath.endsWith(pattern.slice(1));
         }
-      }
-    } catch (error) {
-      // Skip directories that can't be read
-    }
+        return lowerPath === pattern || lowerPath.startsWith(pattern);
+      });
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  if (filtered.length === 0) {
+    filtered = [...files]
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .slice(0, Math.min(files.length, 200));
   }
 
-  scanDirectory(cwd);
-
-  return contextFiles;
+  return filtered.map((file) => ({ path: file.path }));
 }
 
 // Intelligent model-based decision making
@@ -1201,7 +1145,7 @@ For the user input "${input}", respond with JSON:`;
       { role: "user", content: decisionPrompt },
     ]);
 
-    console.log(
+    logVerbose(
       chalk.gray(`🔍 AI raw response: ${response.substring(0, 300)}...`)
     );
 
@@ -1367,17 +1311,18 @@ export function createCLI(): Command {
     )
     .version("1.0.0")
     .option("-p, --profile <name>", "Override the active profile")
+    .option("-v, --verbose", "Enable verbose logging output")
     .hook("preAction", (thisCommand) => {
       const options = thisCommand.opts();
       if (options.profile) {
         process.env.DEVAI_PROFILE = options.profile;
       }
+      setVerboseLogging(Boolean(options.verbose));
     });
 
   // Add commands
   program.addCommand(createSetupCommand());
   program.addCommand(createAskCommand());
-  program.addCommand(createChatCommand());
   program.addCommand(createCommitMsgCommand());
   program.addCommand(createReviewCommand());
   program.addCommand(createMemoryCommand());
@@ -1386,143 +1331,167 @@ export function createCLI(): Command {
   program.action(async () => {
     await showWelcomeScreen();
 
-    // Import and start the chat functionality
     const { loadConfig } = await import("./config.js");
+    const { AgentWorkflow } = await import("./agent/workflow.js");
 
-    try {
-      const config = loadConfig();
+    let restarting = false;
 
-      // Initialize session tracker
-      const sessionTracker = new SessionTracker(
-        config.providerType,
-        config.model
-      );
+    do {
+      restarting = false;
 
-      // Initialize agent workflow
-      const { AgentWorkflow } = await import("./agent/workflow.js");
-      const agent = new AgentWorkflow({
-        provider: config.provider,
-        cwd: process.cwd(),
-        maxIterations: 10,
-        providerType: config.providerType,
-        model: config.model,
-      });
+      try {
+        let config = loadConfig();
 
-      // Collect lightweight context (just file list, not full contents)
-      console.log(chalk.gray("📂 Scanning project..."));
-      const contextFiles = await collectProjectContext();
-      console.log(
-        chalk.gray(`✓ Found ${contextFiles.length} relevant files\n`)
-      );
-
-      // Build minimal context prompt (just file list)
-      const fileList = contextFiles.map((f) => `- ${f.path}`).join("\n");
-      const contextPrompt = `## Available Files in Project:\n\n${fileList}\n\nUse the read_file tool to read any files you need.`;
-
-      // Initialize agent
-      agent.initialize(contextPrompt);
-
-      // Setup graceful exit handlers
-      const handleExit = () => {
-        const finalStats = sessionTracker.endSession();
-        console.log("\n");
-        ChatBoxUI.displayGoodbye(finalStats);
-        process.exit(0);
-      };
-
-      process.on("SIGINT", handleExit);
-      process.on("SIGTERM", handleExit);
-
-      const askQuestion = async (): Promise<string> => {
-        return ChatBoxUI.handleInput({
-          provider: config.providerType,
-          model: config.model,
-          cwd: process.cwd(),
+        ProjectContextManager.getInstance().configureEmbeddings({
+          enabled: config.contextEmbedding?.enabled ?? false,
+          dimensions: config.contextEmbedding?.dimensions,
+          maxFileSize: config.contextEmbedding?.maxFileSize,
         });
-      };
 
-      while (true) {
-        const userInput = await askQuestion();
+        const sessionTracker = new SessionTracker(
+          config.providerType,
+          config.model
+        );
 
-        if (
-          userInput.toLowerCase() === "exit" ||
-          userInput.toLowerCase() === "quit"
-        ) {
+        const agent = new AgentWorkflow({
+          provider: config.provider,
+          cwd: process.cwd(),
+          maxIterations: 10,
+          providerType: config.providerType,
+          model: config.model,
+          sessionTracker,
+        });
+
+        console.log(chalk.gray("📂 Scanning project..."));
+        const contextFiles = await collectProjectContext();
+        console.log(
+          chalk.gray(`✓ Found ${contextFiles.length} relevant files\n`)
+        );
+
+        const fileList = contextFiles.map((f) => `- ${f.path}`).join("\n");
+        const contextPrompt = `## Available Files in Project:\n\n${fileList}\n\nUse the read_file tool to read any files you need.`;
+
+        agent.initialize(contextPrompt);
+
+        const handleExit = () => {
+          const finalStats = sessionTracker.endSession();
+          console.log("\n");
+          ChatBoxUI.displayGoodbye(finalStats);
+          process.exit(0);
+        };
+
+        process.on("SIGINT", handleExit);
+        process.on("SIGTERM", handleExit);
+
+        const askQuestion = async (): Promise<string> => {
+          return ChatBoxUI.handleInput({
+            provider: config.providerType,
+            model: config.model,
+            cwd: process.cwd(),
+          });
+        };
+
+        let exitRequested = false;
+
+        while (!exitRequested && !restarting) {
+          ChatBoxUI.renderStatusBar({
+            provider: config.providerType,
+            model: config.model,
+            cwd: process.cwd(),
+          });
+
+          const userInput = await askQuestion();
+
+          if (
+            userInput.toLowerCase() === "exit" ||
+            userInput.toLowerCase() === "quit"
+          ) {
+            exitRequested = true;
+            break;
+          }
+
+          if (!userInput) {
+            continue;
+          }
+
+          if (await isImageFileRequest(userInput)) {
+            await handleImageFileRequest(userInput, config);
+            console.log("");
+            continue;
+          }
+
+          if (userInput.startsWith("/")) {
+            const result = await handleSlashCommand(
+              userInput,
+              config,
+              sessionTracker
+            );
+
+            if (result === "exit") {
+              exitRequested = true;
+              break;
+            }
+
+            if (result === "restart") {
+              restarting = true;
+              console.log(chalk.yellow("\n🔄 Reloading configuration...\n"));
+              break;
+            }
+
+            console.log("");
+            continue;
+          }
+
+          sessionTracker.trackMessage();
+
+          try {
+            const messageStartTime = Date.now();
+
+            logVerbose(chalk.blue("🤔 Deciding whether context is necessary"));
+
+            const quickResponse = await tryDirectResponse(userInput, config);
+
+            if (quickResponse.needsContext) {
+              logVerbose(chalk.blue("🔍 Context required, invoking agent"));
+              await agent.processMessage(userInput);
+            } else {
+              logVerbose(chalk.blue("✨ Responding directly without project context"));
+              console.log(chalk.green("\n💬 ") + quickResponse.response);
+            }
+
+            sessionTracker.trackApiCall(Date.now() - messageStartTime);
+          } catch (error) {
+            console.log(
+              chalk.red("\n❌ Error:"),
+              error instanceof Error ? error.message : String(error)
+            );
+          }
+
+          console.log("\n");
+        }
+
+        process.off("SIGINT", handleExit);
+        process.off("SIGTERM", handleExit);
+
+        const finalStats = sessionTracker.endSession();
+
+        if (!restarting) {
+          ChatBoxUI.displayGoodbye(finalStats);
           break;
         }
-
-        if (!userInput) {
-          continue;
-        }
-
-        // Handle image file requests
-        if (await isImageFileRequest(userInput)) {
-          await handleImageFileRequest(userInput, config);
-          console.log(""); // Add spacing
-          continue;
-        }
-
-        // Handle slash commands
-        if (userInput.startsWith("/")) {
-          const result = await handleSlashCommand(
-            userInput,
-            config,
-            sessionTracker
-          );
-          if (result === "exit") {
-            break; // Exit the chat loop
-          }
-          // Continue the chat loop after slash command execution
-          console.log(""); // Add spacing
-          continue;
-        }
-
-        // Track the message
-        sessionTracker.trackMessage();
-
-        // Let the model decide if it needs context or can respond directly
-        try {
-          const messageStartTime = Date.now();
-
-          console.log(
-            chalk.blue("🤔 Asking AI to decide if context is needed...")
-          );
-
-          // First, try a direct response without context
-          const quickResponse = await tryDirectResponse(userInput, config);
-
-          if (quickResponse.needsContext) {
-            console.log(chalk.blue("🔍 AI decided it needs project context"));
-            // Model determined it needs context, use agent workflow
-            await agent.processMessage(userInput);
-          } else {
-            console.log(chalk.blue("✨ AI responded directly without context"));
-            // Model handled it directly
-            console.log(chalk.green("\n💬 ") + quickResponse.response);
-          }
-
-          // Track API time (approximate)
-          sessionTracker.trackApiCall(Date.now() - messageStartTime);
-        } catch (error) {
-          console.log(
-            chalk.red("\n❌ Error:"),
-            error instanceof Error ? error.message : String(error)
-          );
-        }
-
-        console.log("\n");
+      } catch (error) {
+        console.error(
+          chalk.red("\n❌ Failed to start chat session:"),
+          error instanceof Error ? error.message : String(error)
+        );
+        console.error(
+          chalk.gray(
+            "💡 Tip: Run meer setup to configure your providers or check your config file."
+          )
+        );
+        break;
       }
-
-      // End session and show goodbye
-      const finalStats = sessionTracker.endSession();
-      ChatBoxUI.displayGoodbye(finalStats);
-    } catch (error) {
-      console.error(
-        chalk.red("Error:"),
-        error instanceof Error ? error.message : String(error)
-      );
-      process.exit(1);
-    }
+    } while (restarting);
   });
 
   // Global error handling

@@ -7,8 +7,9 @@ import {
 } from "fs";
 import { join, relative, dirname } from "path";
 import chalk from "chalk";
-import { execSync } from "child_process";
+import { spawn, execSync } from "child_process";
 import { glob } from "glob";
+import { ProjectContextManager } from "../context/manager.js";
 
 export interface ToolResult {
   tool: string;
@@ -140,6 +141,7 @@ export function applyEdit(edit: FileEdit, cwd: string): ToolResult {
     }
 
     writeFileSync(fullPath, edit.newContent, "utf-8");
+    ProjectContextManager.getInstance().invalidate(cwd);
 
     return {
       tool: "apply_edit",
@@ -596,6 +598,54 @@ export function analyzeProject(cwd: string): ToolResult {
       result += `- You can add components to src/components/\n`;
     }
 
+    const context = ProjectContextManager.getInstance().getContext(cwd);
+    if (context.files.length > 0) {
+      result += "\nFile overview:\n";
+      result += `- Total files scanned: ${context.files.length}\n`;
+
+      const byExtension = new Map<string, number>();
+      const byTopDir = new Map<string, number>();
+
+      for (const file of context.files) {
+        const extIndex = file.path.lastIndexOf(".");
+        const ext = extIndex >= 0 ? file.path.slice(extIndex).toLowerCase() : "(no ext)";
+        byExtension.set(ext, (byExtension.get(ext) ?? 0) + 1);
+
+        const topDir = file.path.includes("/") ? file.path.split("/")[0] : "(root)";
+        byTopDir.set(topDir, (byTopDir.get(topDir) ?? 0) + 1);
+      }
+
+      const topExtensions = Array.from(byExtension.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+      if (topExtensions.length) {
+        result += "- Top file types:\n";
+        topExtensions.forEach(([ext, count]) => {
+          result += `  • ${ext} (${count})\n`;
+        });
+      }
+
+      const topDirs = Array.from(byTopDir.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5);
+      if (topDirs.length) {
+        result += "- Top directories:\n";
+        topDirs.forEach(([dir, count]) => {
+          result += `  • ${dir} (${count} file${count === 1 ? "" : "s"})\n`;
+        });
+      }
+
+      const recentFiles = [...context.files]
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .slice(0, 3);
+      if (recentFiles.length) {
+        result += "- Recently modified:\n";
+        recentFiles.forEach((file) => {
+          result += `  • ${file.path}\n`;
+        });
+      }
+    }
+
     return {
       tool: "analyze_project",
       result,
@@ -612,27 +662,120 @@ export function analyzeProject(cwd: string): ToolResult {
 /**
  * Tool: Run shell commands for project setup
  */
-export function runCommand(command: string, cwd: string): ToolResult {
-  try {
-    console.log(chalk.gray(`  🚀 Running: ${command}`));
-    const result = execSync(command, {
+export async function runCommand(
+  command: string,
+  cwd: string,
+  options?: { timeoutMs?: number }
+): Promise<ToolResult> {
+  console.log(chalk.gray(`  🚀 Running: ${command}`));
+
+  return new Promise((resolve) => {
+    const child = spawn(command, {
       cwd,
-      encoding: "utf-8",
-      stdio: "pipe",
+      shell: true,
+      env: process.env,
     });
 
-    return {
-      tool: "run_command",
-      result: `Command executed successfully:\n${result}`,
+    let stdoutBuffer = "";
+    let stderrBuffer = "";
+    let didTimeout = false;
+
+    const timeoutMs = options?.timeoutMs ?? 0;
+    const timeoutHandle =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            didTimeout = true;
+            console.log(
+              chalk.yellow(
+                `  ⏰ Command timed out after ${timeoutMs / 1000}s, sending SIGTERM...`
+              )
+            );
+            child.kill("SIGTERM");
+            // Force kill if still running after grace period
+            setTimeout(() => {
+              if (!child.killed) {
+                console.log(
+                  chalk.red(
+                    "  ⛔ Command unresponsive, sending SIGKILL to terminate"
+                  )
+                );
+                child.kill("SIGKILL");
+              }
+            }, 5000);
+          }, timeoutMs)
+        : null;
+
+    child.stdout?.on("data", (chunk) => {
+      const text = chunk.toString();
+      stdoutBuffer += text;
+      process.stdout.write(text);
+    });
+
+    child.stderr?.on("data", (chunk) => {
+      const text = chunk.toString();
+      stderrBuffer += text;
+      process.stderr.write(text);
+    });
+
+    const finalize = (result: ToolResult) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+      resolve(result);
     };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return {
-      tool: "run_command",
-      result: "",
-      error: `Command failed: ${errorMessage}`,
-    };
-  }
+
+    child.on("error", (error) => {
+      finalize({
+        tool: "run_command",
+        result: stdoutBuffer,
+        error: `Failed to start command: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+    });
+
+    child.on("close", (code, signal) => {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+
+      if (didTimeout) {
+        finalize({
+          tool: "run_command",
+          result: stdoutBuffer,
+          error: `Command timed out after ${timeoutMs}ms`,
+        });
+        return;
+      }
+
+      if (signal && signal !== "SIGTERM") {
+        finalize({
+          tool: "run_command",
+          result: stdoutBuffer,
+          error: `Command terminated with signal ${signal}`,
+        });
+        return;
+      }
+
+      if (code === 0) {
+        ProjectContextManager.getInstance().invalidate(cwd);
+        finalize({
+          tool: "run_command",
+          result: stdoutBuffer || "Command executed successfully.",
+        });
+      } else {
+        const stderrText = stderrBuffer.trim();
+        finalize({
+          tool: "run_command",
+          result: stdoutBuffer,
+          error:
+            stderrText.length > 0
+              ? `Command failed with exit code ${code}: ${stderrText}`
+              : `Command failed with exit code ${code}.`,
+        });
+      }
+    });
+  });
 }
 
 /**
@@ -701,6 +844,7 @@ export function scaffoldProject(
       encoding: "utf-8",
       stdio: "pipe",
     });
+    ProjectContextManager.getInstance().invalidate(cwd);
 
     return {
       tool: "scaffold_project",

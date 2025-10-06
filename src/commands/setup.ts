@@ -152,6 +152,13 @@ async function runSetupWizard(): Promise<void> {
       baseURL: 'https://openrouter.ai/api',
       siteName: 'MeerAI CLI',
       siteUrl: 'https://github.com/anthropics/meer'
+    },
+    context: {
+      embedding: {
+        enabled: false,
+        dimensions: 256,
+        maxFileSize: 200_000
+      }
     }
   };
 
@@ -406,6 +413,56 @@ async function runSetupWizard(): Promise<void> {
 
   config.temperature = temperature;
 
+  const { enableEmbeddings } = await inquirer.prompt([
+    {
+      type: 'confirm',
+      name: 'enableEmbeddings',
+      message:
+        'Enable embedding-based context suggestions? (improves retrieval on large projects)',
+      default: false
+    }
+  ]);
+
+  if (enableEmbeddings) {
+    const { dimensionsInput } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'dimensionsInput',
+        message: 'Embedding dimensions (16-1024, higher = more detail, more storage):',
+        default: '256',
+        validate: (input: string) => {
+          const value = Number.parseInt(input, 10);
+          if (!Number.isInteger(value) || value < 16 || value > 1024) {
+            return 'Please enter an integer between 16 and 1024';
+          }
+          return true;
+        }
+      }
+    ]);
+
+    const { maxFileSizeInput } = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'maxFileSizeInput',
+        message: 'Maximum file size to embed (bytes):',
+        default: '200000',
+        validate: (input: string) => {
+          const value = Number.parseInt(input, 10);
+          if (!Number.isInteger(value) || value <= 0) {
+            return 'Please enter a positive integer (e.g., 200000 for ~200KB)';
+          }
+          return true;
+        }
+      }
+    ]);
+
+    config.context.embedding.enabled = true;
+    config.context.embedding.dimensions = Number.parseInt(dimensionsInput, 10);
+    config.context.embedding.maxFileSize = Number.parseInt(maxFileSizeInput, 10);
+  } else {
+    config.context.embedding.enabled = false;
+  }
+
   // Save configuration
   const configDir = join(homedir(), '.meer');
   if (!existsSync(configDir)) {
@@ -422,6 +479,14 @@ async function runSetupWizard(): Promise<void> {
   console.log(chalk.white('   • Try the chat:') + ' ' + chalk.cyan('meer'));
   console.log(chalk.white('   • Ask a question:') + ' ' + chalk.cyan('meer ask "What does this code do?"'));
   console.log(chalk.white('   • Get help:') + ' ' + chalk.cyan('meer --help'));
+  if (config.context.embedding.enabled) {
+    console.log(
+      chalk.white('   • Embedding cache:') +
+        ' ' +
+        chalk.cyan('~/.meer/cache/embeddings.json') +
+        chalk.gray(' (auto-managed)')
+    );
+  }
   console.log('');
   console.log(chalk.bold.cyan('🌊 Happy coding with MeerAI!\n'));
 }

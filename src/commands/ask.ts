@@ -16,6 +16,15 @@ export function createAskCommand(): Command {
       try {
         const question = questionParts.join(' ');
         const config = loadConfig();
+
+        if (config.contextEmbedding?.enabled) {
+          const { ProjectContextManager } = await import('../context/manager.js');
+          ProjectContextManager.getInstance().configureEmbeddings({
+            enabled: true,
+            dimensions: config.contextEmbedding.dimensions,
+            maxFileSize: config.contextEmbedding.maxFileSize,
+          });
+        }
         
         console.log(chalk.blue(`Using provider: ${config.providerType} - Model: ${config.model}`));
         

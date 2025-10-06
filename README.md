@@ -33,8 +33,8 @@ MeerAI brings intelligent developer assistance **to your command line** — no c
 
 | Command | Description |
 |----------|-------------|
+| `meer` | Interactive chat session with live context |
 | `meer ask "<prompt>"` | One-shot Q&A with repo context |
-| `meer chat` | Interactive streaming REPL |
 | `meer commit-msg` | Generate commit messages from staged diffs |
 | `meer review [path]` | Review code and suggest improvements |
 | `meer memory` | View or clear local memory |
@@ -71,12 +71,6 @@ meer --help
 
 ```bash
 meer ask "Explain how the database layer handles transactions."
-```
-
-### Interactive chat
-
-```bash
-meer chat
 ```
 
 ### Generate a commit message

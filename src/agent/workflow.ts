@@ -1,6 +1,8 @@
 import chalk from "chalk";
 import ora from "ora";
 import inquirer from "inquirer";
+import path from "path";
+import { existsSync } from "fs";
 import type { Provider, ChatMessage } from "../providers/base.js";
 import {
   readFile,
@@ -24,6 +26,15 @@ import {
   type FileEdit,
 } from "../tools/index.js";
 import { memory } from "../memory/index.js";
+import { ChatBoxUI } from "../ui/chatbox.js";
+import { logVerbose } from "../logger.js";
+import { ProjectContextManager } from "../context/manager.js";
+import {
+  countTokens,
+  countMessageTokens,
+  getContextLimit,
+} from "../token/utils.js";
+import type { SessionTracker } from "../session/tracker.js";
 
 export interface AgentConfig {
   provider: Provider;
@@ -47,6 +58,7 @@ export interface AgentConfig {
     }>;
     maxRetries?: number;
   };
+  sessionTracker?: SessionTracker;
 }
 
 interface TodoItem {
@@ -69,6 +81,18 @@ export class AgentWorkflow {
   private enableMemory: boolean;
   private providerType: string;
   private model: string;
+  private currentDirectory: string;
+  private plan: Array<{ title: string; status: "pending" | "in_progress" | "done" }> = [];
+  private validationResults: Array<{
+    label: string;
+    success: boolean;
+    output: string;
+  }> = [];
+  private contextManager = ProjectContextManager.getInstance();
+  private sessionTracker?: SessionTracker;
+  private contextLimit?: number;
+  private contextWarningLevel = 0;
+  private lastPromptTokens = 0;
   private timeouts: {
     command: number;
     webFetch: number;
@@ -99,6 +123,12 @@ export class AgentWorkflow {
     this.enableMemory = config.enableMemory ?? true;
     this.providerType = config.providerType || "unknown";
     this.model = config.model || "unknown";
+    this.currentDirectory = config.cwd;
+    this.sessionTracker = config.sessionTracker;
+    this.contextLimit = getContextLimit(this.model);
+    if (this.contextLimit) {
+      this.sessionTracker?.setContextLimit(this.contextLimit);
+    }
     this.timeouts = {
       command: config.timeouts?.command || 30000, // 30 seconds default
       webFetch: config.timeouts?.webFetch || 15000, // 15 seconds default
@@ -155,6 +185,8 @@ export class AgentWorkflow {
    * Process a user message with agentic workflow
    */
   async processMessage(userMessage: string): Promise<string> {
+    this.plan = [];
+    this.validationResults = [];
     // Add user message
     this.messages.push({ role: "user", content: userMessage });
 
@@ -171,7 +203,42 @@ export class AgentWorkflow {
     console.log(chalk.blue("🧠 Understanding your request..."));
     console.log(chalk.gray(`  📝 Request: "${userMessage}"`));
 
+    const relevantFiles = this.contextManager.getRelevantFiles(
+      this.cwd,
+      userMessage,
+      8
+    );
+
+    if (
+      this.contextManager.isEmbeddingActive() &&
+      relevantFiles.some((file) => file.score > 0)
+    ) {
+      console.log(chalk.gray("📂 Suggested files:"));
+      relevantFiles.forEach((file) => {
+        const scoreLabel = file.score
+          ? ` (${(file.score * 100).toFixed(1)}%)`
+          : "";
+        console.log(chalk.gray(`  • ${file.path}${scoreLabel}`));
+      });
+      console.log("");
+
+      const summary = relevantFiles
+        .map((file) => {
+          const scoreLabel = file.score
+            ? ` (${(file.score * 100).toFixed(1)}%)`
+            : "";
+          return `- ${file.path}${scoreLabel}`;
+        })
+        .join("\n");
+
+      this.messages.push({
+        role: "system",
+        content: `Relevant project files (most similar to the latest request):\n${summary}\n\nUse the read_file tool to inspect any file you need.`,
+      });
+    }
+
     // First, analyze the project to understand context
+    this.markPlanStepInProgress("Collect project context");
     console.log(chalk.blue("🔍 Analyzing project context..."));
     const projectAnalysis = analyzeProject(this.cwd);
     if (projectAnalysis.error) {
@@ -179,6 +246,7 @@ export class AgentWorkflow {
         chalk.red(`  ❌ Project analysis failed: ${projectAnalysis.error}`)
       );
       console.log(chalk.yellow("  🔄 Continuing with limited context..."));
+      this.markPlanStepPending("Collect project context");
     } else {
       console.log(chalk.green("  ✓ Project context understood"));
       // Add project analysis to context
@@ -186,7 +254,10 @@ export class AgentWorkflow {
         role: "system",
         content: `Project Analysis:\n${projectAnalysis.result}`,
       });
+      this.markPlanStepDone("Collect project context");
     }
+
+    this.displayPlanProgress();
 
     let iteration = 0;
     let fullResponse = "";
@@ -198,23 +269,10 @@ export class AgentWorkflow {
 
       // Enhanced communication about what we're doing
       if (iteration === 1) {
-        console.log(chalk.blue("💭 Planning my approach..."));
-        console.log(
-          chalk.gray(
-            "  📋 Analyzing the request and determining the best strategy"
-          )
-        );
-        console.log(
-          chalk.gray(
-            "  🔍 I'll examine the project structure and identify what needs to be done"
-          )
-        );
-        console.log(
-          chalk.gray(
-            "  🛠️  Then I'll use appropriate tools to implement the solution"
-          )
-        );
-        console.log("");
+        this.plan = this.buildPlan(userMessage);
+        this.markPlanStepInProgress("Understand request");
+        this.markPlanStepDone("Understand request");
+        this.displayPlan();
       } else {
         console.log(
           chalk.blue(
@@ -229,10 +287,22 @@ export class AgentWorkflow {
         console.log(
           chalk.gray("  🎯 Let me try a different approach or fix any issues")
         );
-        console.log("");
+        this.displayPlanProgress();
       }
 
       // Get AI response with streaming for better UX
+      const promptTokenEstimate = countMessageTokens(this.model, this.messages);
+      const deltaPromptTokens = Math.max(
+        promptTokenEstimate - this.lastPromptTokens,
+        0
+      );
+      this.sessionTracker?.trackPromptTokens(deltaPromptTokens);
+      this.sessionTracker?.trackContextUsage(promptTokenEstimate);
+
+      this.maybeWarnAboutContext(promptTokenEstimate);
+
+      this.lastPromptTokens = promptTokenEstimate;
+
       const spinner = ora({
         text: chalk.blue("Thinking..."),
         spinner: {
@@ -286,9 +356,9 @@ export class AgentWorkflow {
 
         // Debug: Log chunk count
         if (chunkCount === 0) {
-          console.log(chalk.gray(`  Debug: No chunks received from provider`));
+          logVerbose(chalk.gray(`  Debug: No chunks received from provider`));
         } else if (!response.trim()) {
-          console.log(
+          logVerbose(
             chalk.gray(`  Debug: Received ${chunkCount} empty chunks`)
           );
         }
@@ -296,9 +366,7 @@ export class AgentWorkflow {
         // Ensure spinner is stopped if no chunks received
         if (!hasStarted) {
           spinner.stop();
-          console.log(
-            chalk.yellow("⚠️  No response received from AI provider")
-          );
+          logVerbose(chalk.yellow("⚠️  No response received from AI provider"));
         } else {
           console.log("\n"); // Add newline after streaming
         }
@@ -349,9 +417,14 @@ export class AgentWorkflow {
 
       fullResponse += response;
 
+      if (response.trim()) {
+        const completionTokenEstimate = countTokens(this.model, response);
+        this.sessionTracker?.trackCompletionTokens(completionTokenEstimate);
+      }
+
       // Check if response is empty or just whitespace
       if (!response.trim()) {
-        console.log(
+        logVerbose(
           chalk.yellow("⚠️  Received empty response, retrying with fallback...")
         );
 
@@ -398,6 +471,7 @@ export class AgentWorkflow {
 
       // If no tool calls, break the loop
       if (toolCalls.length === 0) {
+        this.markPlanStepDone("Execute tool");
         // Parse TODO list if present
         this.parseTodoList(response);
 
@@ -486,9 +560,9 @@ export class AgentWorkflow {
       // Show AI's thinking with step-by-step communication
       const textBeforeTools = response.split("<tool")[0].trim();
       if (textBeforeTools) {
-        console.log(chalk.cyan("💭 AI Thinking:"));
-        console.log(chalk.gray("  " + textBeforeTools.replace(/\n/g, "\n  ")));
-        console.log("");
+        logVerbose(chalk.cyan("💭 AI Thinking:"));
+        logVerbose(chalk.gray("  " + textBeforeTools.replace(/\n/g, "\n  ")));
+        logVerbose("");
       }
 
       // Execute tools with enhanced communication
@@ -519,40 +593,48 @@ export class AgentWorkflow {
         console.log("");
 
         try {
+          this.markPlanStepInProgress("Execute tool");
           const result = await this.executeTool(toolCall, userMessage);
 
           // Check if result indicates an error (intelligent error detection)
           // Only flag as error if it starts with error indicators or contains specific error patterns
+          const trimmedResult = result.trim();
+          const lowerResult = trimmedResult.toLowerCase();
+          const benignPatterns = ["error: no test specified"];
+          const containsBenign = benignPatterns.some((pattern) =>
+            lowerResult.includes(pattern)
+          );
+
           const isError =
-            result.startsWith("Error:") ||
-            result.startsWith("❌") ||
-            result.includes("Command failed:") ||
-            result.includes("failed:") ||
-            result.includes("Error:") ||
-            result.includes("not found:") ||
-            result.includes("cannot find:") ||
-            result.includes("does not exist:") ||
-            result.includes("permission denied") ||
-            result.includes("access denied") ||
-            result.includes("syntax error") ||
-            result.includes("compilation error") ||
-            result.includes("build failed") ||
-            result.includes("import error") ||
-            result.includes("module not found") ||
-            result.includes("package not found") ||
-            result.includes("dependency") ||
-            result.includes("missing") ||
-            result.includes("undefined") ||
-            result.includes("not defined") ||
-            // Check for specific tool error patterns
-            (toolCall.tool === "read_file" &&
-              result.includes("File not found:")) ||
-            (toolCall.tool === "list_files" &&
-              result.includes("Directory not found:")) ||
-            (toolCall.tool === "run_command" &&
-              result.includes("Command failed:")) ||
-            (toolCall.tool === "analyze_project" &&
-              result.includes("Error analyzing project:"));
+            !containsBenign &&
+            (trimmedResult.startsWith("Error:") ||
+              trimmedResult.startsWith("❌") ||
+              lowerResult.includes("command failed") ||
+              lowerResult.includes("failed:") ||
+              lowerResult.includes("not found:") ||
+              lowerResult.includes("cannot find:") ||
+              lowerResult.includes("does not exist:") ||
+              lowerResult.includes("permission denied") ||
+              lowerResult.includes("access denied") ||
+              lowerResult.includes("syntax error") ||
+              lowerResult.includes("compilation error") ||
+              lowerResult.includes("build failed") ||
+              lowerResult.includes("import error") ||
+              lowerResult.includes("module not found") ||
+              lowerResult.includes("package not found") ||
+              lowerResult.includes("dependency error") ||
+              lowerResult.includes("missing dependency") ||
+              lowerResult.includes("undefined") ||
+              lowerResult.includes("not defined") ||
+              // Check for specific tool error patterns
+              (toolCall.tool === "read_file" &&
+                lowerResult.includes("file not found:")) ||
+              (toolCall.tool === "list_files" &&
+                lowerResult.includes("directory not found:")) ||
+              (toolCall.tool === "run_command" &&
+                lowerResult.includes("command failed:")) ||
+              (toolCall.tool === "analyze_project" &&
+                lowerResult.includes("error analyzing project:")));
 
           if (isError) {
             console.log(chalk.red(`    ❌ ${toolCall.tool} failed:`));
@@ -581,6 +663,7 @@ export class AgentWorkflow {
               result
             );
             if (alternativeResult) {
+              this.markPlanStepDone("Execute tool");
               console.log(chalk.green(`    ✓ Alternative approach succeeded`));
               console.log(
                 chalk.gray(
@@ -591,6 +674,7 @@ export class AgentWorkflow {
               );
               toolResults.push(alternativeResult);
             } else {
+              this.markPlanStepPending("Execute tool");
               console.log(chalk.red(`    ❌ Alternative approach also failed`));
               console.log(
                 chalk.gray(
@@ -623,6 +707,7 @@ export class AgentWorkflow {
                 }`
               )
             );
+            this.markPlanStepDone("Execute tool");
             toolResults.push(result);
           }
           console.log("");
@@ -643,9 +728,11 @@ export class AgentWorkflow {
             errorMsg
           );
           if (alternativeResult) {
+            this.markPlanStepDone("Execute tool");
             console.log(chalk.green(`    ✓ Alternative approach succeeded`));
             toolResults.push(alternativeResult);
           } else {
+            this.markPlanStepPending("Execute tool");
             console.log(chalk.red(`    ❌ Alternative approach also failed`));
             toolResults.push(`Error: ${errorMsg}`);
           }
@@ -660,10 +747,18 @@ export class AgentWorkflow {
 
     // If we have proposed edits, show them and ask for approval
     if (this.proposedEdits.length > 0) {
+      this.markPlanStepInProgress("Review changes");
       await this.reviewEdits();
 
-      // Show summary of all edits
+      this.markPlanStepDone("Review changes");
+
+      this.markPlanStepInProgress("Summarize next steps");
+      await this.runPostEditValidation();
       this.displayEditSummary();
+      this.markPlanStepDone("Summarize next steps");
+    } else {
+      this.markPlanStepInProgress("Summarize next steps");
+      this.markPlanStepDone("Summarize next steps");
     }
 
     return fullResponse;
@@ -959,31 +1054,70 @@ export class AgentWorkflow {
           return `Error: Missing command parameter`;
         }
 
-        console.log(chalk.gray(`  💻 ${command}`));
+        const prepared = this.prepareRunCommand(command);
+        if (prepared.message) {
+          console.log(chalk.gray(`  ${prepared.message}`));
+        }
+
+        if (prepared.skipExecution) {
+          const message = prepared.resultMessage ?? `Command skipped: ${command}`;
+          if (message.toLowerCase().includes("changed directory")) {
+            this.markPlanStepDone("Execute tool");
+          } else {
+            this.markPlanStepPending("Execute tool");
+          }
+          return message;
+        }
+
+        const commandToRun = prepared.command;
+
+        if (!commandToRun) {
+          return prepared.resultMessage ?? "No command to execute.";
+        }
+
+        console.log(chalk.gray(`  💻 ${commandToRun}`));
+        console.log(
+          chalk.gray(`  📁 Working directory: ${this.currentDirectory}`)
+        );
         console.log(
           chalk.gray(`  ⏱️  Timeout: ${this.timeouts.command / 1000}s`)
         );
 
-        try {
-          const result = await this.executeWithTimeout(
-            () => Promise.resolve(runCommand(command, this.cwd)),
-            this.timeouts.command,
-            `run_command: ${command}`
+        const approval = this.requiresRunCommandApproval(commandToRun);
+        if (approval.required) {
+          const approved = await this.confirmRunCommand(
+            commandToRun,
+            approval.reason
           );
+          if (!approved) {
+            console.log(chalk.yellow("  ⚠️  Command cancelled by user"));
+            return `Command cancelled: ${commandToRun}`;
+          }
+        }
+
+        this.markPlanStepInProgress("Execute tool");
+        try {
+          const result = await runCommand(commandToRun, this.currentDirectory, {
+            timeoutMs: this.timeouts.command,
+          });
 
           if (result.error) {
             console.log(chalk.red(`  ❌ ${result.error}`));
+            this.markPlanStepPending("Execute tool");
             return `Error running command: ${result.error}`;
           }
 
           console.log(chalk.green(`  ✓ Command executed`));
+          this.markPlanStepDone("Execute tool");
           return result.result;
         } catch (error) {
           const errorMsg =
             error instanceof Error ? error.message : String(error);
+          this.markPlanStepPending("Execute tool");
           console.log(
             chalk.red(`  ❌ Command timed out or failed: ${errorMsg}`)
           );
+          this.markPlanStepPending("Execute tool");
           return `Error: ${errorMsg}`;
         }
       }
@@ -1263,6 +1397,266 @@ export class AgentWorkflow {
     }
   }
 
+  private requiresRunCommandApproval(command: string): {
+    required: boolean;
+    reason: string;
+  } {
+    const lower = command.toLowerCase();
+
+    const destructivePatterns: Array<{ regex: RegExp; reason: string }> = [
+      { regex: /\brm\b/, reason: "Deletes files" },
+      { regex: /\bdel\b/, reason: "Deletes files" },
+      { regex: /\bshred\b/, reason: "Overwrites files" },
+      { regex: /\bmkfs\b/, reason: "Formats drives" },
+      { regex: /\bdd\b.*\bof=/, reason: "Writes raw data" },
+      { regex: /\bgit\s+reset\b/, reason: "Resets git history" },
+      { regex: /\bgit\s+clean\b/, reason: "Removes untracked files" },
+      { regex: /\bgit\s+checkout\b\s+--/, reason: "Overwrites files" },
+      { regex: /\bsudo\b/, reason: "Requires elevated privileges" },
+      { regex: /\bchown\b/, reason: "Changes ownership" },
+      { regex: /\bchmod\b/, reason: "Changes permissions" },
+      { regex: /\bkill\b/, reason: "Terminates processes" },
+      { regex: /\breboot\b/, reason: "Reboots system" },
+      { regex: /\bshutdown\b/, reason: "Shuts down system" },
+    ];
+
+    for (const pattern of destructivePatterns) {
+      if (pattern.regex.test(lower)) {
+        return { required: true, reason: pattern.reason };
+      }
+    }
+
+    const installPatterns: Array<{ regex: RegExp; reason: string }> = [
+      { regex: /\bnpm\s+(install|ci)\b/, reason: "Installs npm packages" },
+      { regex: /\byarn\s+add\b/, reason: "Installs yarn packages" },
+      { regex: /\bpnpm\s+add\b/, reason: "Installs pnpm packages" },
+      { regex: /\bpip(?:3)?\s+install\b/, reason: "Installs Python packages" },
+      { regex: /\bapt(?:-get)?\s+install\b/, reason: "Installs system packages" },
+      { regex: /\bbrew\s+install\b/, reason: "Installs Homebrew packages" },
+      { regex: /\bgo\s+install\b/, reason: "Installs Go packages" },
+      { regex: /\bcargo\s+install\b/, reason: "Installs Cargo packages" },
+      { regex: /\bbundle\s+install\b/, reason: "Installs Ruby gems" },
+    ];
+
+    for (const pattern of installPatterns) {
+      if (pattern.regex.test(lower)) {
+        return { required: true, reason: pattern.reason };
+      }
+    }
+
+    if (/[;&|]/.test(command)) {
+      return {
+        required: true,
+        reason: "Contains multiple chained commands",
+      };
+    }
+
+    if (/\b(?:curl|wget)\b.*\|/.test(lower)) {
+      return {
+        required: true,
+        reason: "Pipes remote script to shell",
+      };
+    }
+
+    return { required: false, reason: "" };
+  }
+
+  private async confirmRunCommand(
+    command: string,
+    reason: string
+  ): Promise<boolean> {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      console.log(
+        chalk.yellow(
+          `  ⚠️  Refusing to run "${command}" without interactive approval (${reason}).`
+        )
+      );
+      return false;
+    }
+
+    try {
+      const { approve } = await inquirer.prompt<{
+        approve: boolean;
+      }>([
+        {
+          type: "confirm",
+          name: "approve",
+          default: false,
+          message: `Run command "${command}"? (${reason})`,
+        },
+      ]);
+
+      return approve;
+    } catch (error) {
+      console.log(
+        chalk.red(
+          `  ❌ Failed to prompt for command approval: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      );
+      return false;
+    }
+  }
+
+  private prepareRunCommand(command: string): {
+    command: string;
+    skipExecution: boolean;
+    message?: string;
+    resultMessage?: string;
+  } {
+    const trimmed = command.trim();
+
+    if (!trimmed) {
+      return {
+        command: trimmed,
+        skipExecution: true,
+        resultMessage: "No command provided",
+      };
+    }
+
+    const cdWithRest = trimmed.match(/^cd\s+([^&]+?)\s*&&\s*(.+)$/);
+    if (cdWithRest) {
+      const targetInput = cdWithRest[1].trim();
+      const target = this.resolveDirectory(targetInput);
+      if (!target) {
+        return {
+          command: "",
+          skipExecution: true,
+          resultMessage: `Directory not found: ${targetInput}`,
+          message: `⚠️  Directory not found: ${targetInput}`,
+        };
+      }
+
+      this.currentDirectory = target;
+      return {
+        command: cdWithRest[2].trim(),
+        skipExecution: false,
+        message: `Changed directory to ${target}`,
+      };
+    }
+
+    const cdOnly = trimmed.match(/^cd\s+(.+)$/);
+    if (cdOnly) {
+      const targetInput = cdOnly[1].trim();
+      const target = this.resolveDirectory(targetInput);
+      if (!target) {
+        return {
+          command: "",
+          skipExecution: true,
+          resultMessage: `Directory not found: ${targetInput}`,
+          message: `⚠️  Directory not found: ${targetInput}`,
+        };
+      }
+
+      this.currentDirectory = target;
+      return {
+        command: "",
+        skipExecution: true,
+        resultMessage: `Changed directory to ${target}`,
+        message: `Changed directory to ${target}`,
+      };
+    }
+
+    return {
+      command: trimmed,
+      skipExecution: false,
+    };
+  }
+
+  private resolveDirectory(input: string): string | null {
+    const cleaned = input.replace(/^['"]|['"]$/g, "");
+    if (!cleaned) {
+      return null;
+    }
+
+    const target = path.isAbsolute(cleaned)
+      ? cleaned
+      : path.resolve(this.currentDirectory, cleaned);
+
+    if (!existsSync(target)) {
+      return null;
+    }
+
+    return target;
+  }
+
+  private buildPlan(userMessage: string): Array<{
+    title: string;
+    status: "pending" | "in_progress" | "done";
+  }> {
+    const steps = [
+      "Understand request",
+      "Collect project context",
+      "Execute tool",
+      "Review changes",
+      "Summarize next steps",
+    ];
+
+    return steps.map((title) => ({ title, status: "pending" }));
+  }
+
+  private displayPlan(): void {
+    if (this.plan.length === 0) {
+      return;
+    }
+
+    console.log(chalk.blue("💭 Plan"));
+    this.plan.forEach((step, index) => {
+      const marker =
+        step.status === "done"
+          ? chalk.green("✓")
+          : step.status === "in_progress"
+          ? chalk.yellow("…")
+          : chalk.gray("•");
+      console.log(
+        chalk.gray(`  ${index + 1}. `) +
+          marker +
+          chalk.gray(" ") +
+          (step.status === "done"
+            ? chalk.green(step.title)
+            : step.status === "in_progress"
+            ? chalk.yellow(step.title)
+            : chalk.white(step.title))
+      );
+    });
+    console.log("");
+  }
+
+  private displayPlanProgress(): void {
+    if (this.plan.length === 0) {
+      return;
+    }
+
+    const completed = this.plan.filter((step) => step.status === "done").length;
+    const total = this.plan.length;
+    console.log(
+      chalk.blue(`📈 Plan progress: ${completed}/${total} steps completed`)
+    );
+    console.log("");
+  }
+
+  private markPlanStepInProgress(title: string): void {
+    const step = this.plan.find((item) => item.title === title);
+    if (step) {
+      step.status = "in_progress";
+    }
+  }
+
+  private markPlanStepDone(title: string): void {
+    const step = this.plan.find((item) => item.title === title);
+    if (step) {
+      step.status = "done";
+    }
+  }
+
+  private markPlanStepPending(title: string): void {
+    const step = this.plan.find((item) => item.title === title);
+    if (step) {
+      step.status = "pending";
+    }
+  }
+
   /**
    * Review and apply proposed edits
    */
@@ -1327,10 +1721,10 @@ export class AgentWorkflow {
             console.log(chalk.gray("└─\n"));
           }
         } else {
-          console.log(
-            chalk.green("   No textual diff (new or identical file)\n")
-          );
-        }
+      console.log(
+        chalk.green("   No textual diff (new or identical file)\n")
+      );
+    }
 
         const { confirm } = await inquirer.prompt([
           {
@@ -1368,10 +1762,10 @@ export class AgentWorkflow {
 
         const result = applyEdit(edit, this.cwd);
         const success = !result.error;
-        this.appliedEdits.push({
-          path: edit.path,
-          description: edit.description,
-          success,
+      this.appliedEdits.push({
+        path: edit.path,
+        description: edit.description,
+        success,
         });
         if (result.error) {
           console.log(chalk.red(`\n❌ ${result.error}\n`));
@@ -1414,18 +1808,11 @@ export class AgentWorkflow {
       const diff = generateDiff(edit.oldContent, edit.newContent);
       if (diff.length > 0) {
         console.log(chalk.gray("┌─ Changes:"));
-        diff.slice(0, 200).forEach((line) => console.log(line));
-        if (diff.length > 200) {
-          console.log(
-            chalk.gray(`└─ ... and ${diff.length - 200} more lines\n`)
-          );
-        } else {
-          console.log(chalk.gray("└─\n"));
-        }
-      } else {
-        console.log(
-          chalk.green("   No textual diff (new or identical file)\n")
-        );
+      await this.showDiff(diff);
+    } else {
+      console.log(
+        chalk.green("   No textual diff (new or identical file)\n")
+      );
       }
 
       const { action } = await inquirer.prompt([
@@ -2153,25 +2540,30 @@ The system will automatically display and update this list.
       successful.forEach((edit) => {
         if (edit.path.endsWith(".js")) {
           console.log(chalk.blue(`    • Run: node ${edit.path}`));
-          console.log(
-            chalk.gray(
-              `    • Test endpoints with: curl http://localhost:3000/health`
-            )
-          );
         } else if (edit.path.endsWith(".py")) {
           console.log(chalk.blue(`    • Run: python3 ${edit.path}`));
-          console.log(
-            chalk.gray(
-              `    • Test endpoints with: curl http://localhost:5000/health`
-            )
-          );
         } else if (edit.path.endsWith(".go")) {
           console.log(chalk.blue(`    • Run: go run ${edit.path}`));
-          console.log(
-            chalk.gray(
-              `    • Test endpoints with: curl http://localhost:8080/health`
-            )
-          );
+        }
+      });
+      console.log("");
+    }
+
+    if (this.validationResults.length > 0) {
+      console.log(chalk.cyan("🧪 Automated Validation:"));
+      this.validationResults.forEach((result) => {
+        const status = result.success
+          ? chalk.green("PASS")
+          : chalk.red("FAIL");
+        console.log(chalk.gray(`  • ${result.label}: `) + status);
+        if (result.output.trim()) {
+          const snippet = result.output.trim().split("\n").slice(0, 5);
+          snippet.forEach((line) => {
+            console.log(chalk.gray(`      ${line}`));
+          });
+          if (result.output.trim().includes("\n")) {
+            console.log(chalk.gray("      ..."));
+          }
         }
       });
       console.log("");
@@ -2191,34 +2583,287 @@ The system will automatically display and update this list.
     console.log(chalk.bold(`Total: ${this.appliedEdits.length} change(s)`));
     console.log("");
 
-    // Final summary and next steps
     if (successful.length > 0) {
-      console.log(chalk.cyan("🎉 Implementation Complete!"));
-      console.log(
-        chalk.gray("  📋 Your request has been successfully implemented")
-      );
+      console.log(chalk.cyan("✅ Changes applied successfully."));
       console.log(
         chalk.gray(
-          "  🧪 The code has been tested for syntax and basic functionality"
-        )
-      );
-      console.log(
-        chalk.gray(
-          "  🚀 You can now run your application and test the new features"
+          "  Run the commands above when you're ready to verify the behaviour."
         )
       );
       console.log("");
-      console.log(chalk.blue("💡 Next Steps:"));
+    }
+  }
+
+  private async runPostEditValidation(): Promise<void> {
+    if (!this.appliedEdits.some((edit) => edit.success)) {
+      return;
+    }
+
+    console.log(chalk.bold.blue("\n🧪 Running validation checks..."));
+
+    const runners = await this.detectValidationCommands();
+    if (runners.length === 0) {
       console.log(
-        chalk.gray("  1. Start your server using the commands above")
+        chalk.gray(
+          "  📋 No automated tests detected. Skipping validation run."
+        )
       );
-      console.log(
-        chalk.gray("  2. Test the endpoints with curl or a REST client")
-      );
-      console.log(
-        chalk.gray("  3. Check the server logs for any runtime errors")
-      );
-      console.log(chalk.gray("  4. Deploy to your preferred hosting platform"));
+      return;
+    }
+
+    for (const runner of runners) {
+      console.log(chalk.gray(`  ▶ ${runner.label}`));
+
+      try {
+        const result = await runCommand(runner.command, this.cwd, {
+          timeoutMs: runner.timeoutMs ?? this.timeouts.command,
+        });
+
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          this.validationResults.push({
+            label: runner.label,
+            success: false,
+            output: result.error,
+          });
+        } else {
+          console.log(chalk.green("  ✅ Passed"));
+          this.validationResults.push({
+            label: runner.label,
+            success: true,
+            output: result.result,
+          });
+        }
+      } catch (error) {
+        console.log(
+          chalk.red(
+            `  ❌ Validation command failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          )
+        );
+        this.validationResults.push({
+          label: runner.label,
+          success: false,
+          output: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    console.log("");
+  }
+
+  private async detectValidationCommands(): Promise<
+    Array<{ label: string; command: string; timeoutMs?: number }>
+  > {
+    const runners: Array<{ label: string; command: string; timeoutMs?: number }> = [];
+
+    const fs = await import("fs");
+    const path = await import("path");
+    const { existsSync, readFileSync } = fs;
+    const { join } = path;
+    const cwd = this.cwd;
+
+    const packageJsonPath = join(cwd, "package.json");
+    if (existsSync(packageJsonPath)) {
+      let packageJson: any = null;
+      try {
+        packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+      } catch {
+        packageJson = null;
+      }
+
+      const hasPnpmLock = existsSync(join(cwd, "pnpm-lock.yaml"));
+      const hasYarnLock = existsSync(join(cwd, "yarn.lock"));
+      const hasBunLock = existsSync(join(cwd, "bun.lockb"));
+
+      const pm = hasPnpmLock
+        ? "pnpm"
+        : hasYarnLock
+        ? "yarn"
+        : hasBunLock
+        ? "bun"
+        : "npm";
+
+      const buildScriptCommand = (script: string): string => {
+        switch (pm) {
+          case "pnpm":
+            return `pnpm ${script}`;
+          case "yarn":
+            return `yarn ${script}`;
+          case "bun":
+            return script === "test" ? "bun test" : `bun run ${script}`;
+          default:
+            return script === "test" ? "npm test" : `npm run ${script}`;
+        }
+      };
+
+      if (packageJson?.scripts?.test) {
+        const scriptValue = String(packageJson.scripts.test).trim();
+        const isPlaceholder = scriptValue.includes("no test specified");
+        if (!isPlaceholder) {
+          runners.push({
+            label: `${pm} test`,
+            command: buildScriptCommand("test"),
+            timeoutMs: 120_000,
+          });
+        }
+      }
+
+      if (packageJson?.scripts?.lint) {
+        runners.push({
+          label: `${pm} lint`,
+          command: buildScriptCommand("lint"),
+          timeoutMs: 120_000,
+        });
+      }
+
+      if (packageJson?.scripts?.["typecheck"]) {
+        runners.push({
+          label: `${pm} typecheck`,
+          command: buildScriptCommand("typecheck"),
+          timeoutMs: 120_000,
+        });
+      }
+    }
+
+    const pytestIni = join(cwd, "pytest.ini");
+    const testsDir = join(cwd, "tests");
+    const requirementsPath = join(cwd, "requirements.txt");
+
+    let hasPytest = false;
+    if (existsSync(pytestIni) || existsSync(testsDir)) {
+      hasPytest = true;
+    } else if (existsSync(requirementsPath)) {
+      try {
+        const requirements = readFileSync(requirementsPath, "utf-8")
+          .toLowerCase()
+          .split("\n");
+        if (requirements.some((line) => line.startsWith("pytest"))) {
+          hasPytest = true;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (hasPytest) {
+      runners.push({
+        label: "pytest",
+        command: "pytest",
+        timeoutMs: 120_000,
+      });
+    }
+
+    if (existsSync(join(cwd, "go.mod"))) {
+      runners.push({
+        label: "go test",
+        command: "go test ./...",
+        timeoutMs: 120_000,
+      });
+    }
+
+    if (existsSync(join(cwd, "Cargo.toml"))) {
+      runners.push({
+        label: "cargo test",
+        command: "cargo test",
+        timeoutMs: 180_000,
+      });
+    }
+
+    return runners;
+  }
+
+  private async showDiff(diffLines: string[]): Promise<void> {
+    if (diffLines.length === 0) {
+      console.log(chalk.green("   No textual diff (new or identical file)\n"));
+      return;
+    }
+
+    const totalLines = diffLines.length;
+    const chunkSize = 80;
+    let offset = 0;
+
+    console.log(chalk.gray("┌─ Diff"));
+
+    while (offset < totalLines) {
+      const chunk = diffLines
+        .slice(offset, offset + chunkSize)
+        .map((line) => ChatBoxUI.colorizeDiffLine(line));
+      await ChatBoxUI.printPaged(chunk, 40);
+
+      offset += chunkSize;
+      if (offset < totalLines) {
+        const { continueDiff } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "continueDiff",
+            message: `Show more diff (${totalLines - offset} lines remaining)?`,
+            default: true,
+          },
+        ]);
+
+        if (!continueDiff) {
+          console.log(
+            chalk.gray(`└─ (diff truncated, ${totalLines - offset} lines hidden)\n`)
+          );
+          return;
+        }
+      }
+    }
+
+    console.log(chalk.gray("└─\n"));
+  }
+
+  private maybeWarnAboutContext(promptTokens: number): void {
+    if (!this.contextLimit) {
+      return;
+    }
+
+    const ratio = promptTokens / this.contextLimit;
+    let level = 0;
+
+    if (ratio >= 0.95) {
+      level = 2;
+    } else if (ratio >= 0.8) {
+      level = 1;
+    }
+
+    if (level === 0 && this.contextWarningLevel !== 0 && ratio < 0.7) {
+      this.contextWarningLevel = 0;
+      return;
+    }
+
+    if (level > this.contextWarningLevel) {
+      this.contextWarningLevel = level;
+      const percentValue = ratio * 100;
+      const percentLabel = percentValue.toFixed(1);
+      const remaining = Math.max(this.contextLimit - promptTokens, 0);
+      const remainingPercent = Math.max(0, 100 - percentValue).toFixed(1);
+
+      if (level === 1) {
+        console.log(
+          chalk.yellow(
+            `⚠️  Context usage at ${percentLabel}% (${promptTokens.toLocaleString()}/${this.contextLimit.toLocaleString()} tokens, ~${remainingPercent}% remaining)`
+          )
+        );
+        console.log(
+          chalk.gray(
+            "   Consider using /compact or trimming earlier instructions to free up space."
+          )
+        );
+      } else if (level === 2) {
+        console.log(
+          chalk.red(
+            `🚨 Context nearly full (${percentLabel}% used, only ${remaining.toLocaleString()} tokens left).`
+          )
+        );
+        console.log(
+          chalk.gray(
+            "   I may summarize older turns automatically; you can also run /compact manually."
+          )
+        );
+      }
       console.log("");
     }
   }
