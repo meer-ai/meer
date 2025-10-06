@@ -10,6 +10,7 @@ import { createCommitMsgCommand } from "./commands/commitMsg.js";
 import { createReviewCommand } from "./commands/review.js";
 import { createMemoryCommand } from "./commands/memory.js";
 import { createSetupCommand } from "./commands/setup.js";
+import { createMCPCommand } from "./commands/mcp.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { logVerbose, setVerboseLogging } from "./logger.js";
@@ -475,7 +476,9 @@ async function handleSlashCommand(
         entries.forEach((entry, index) => {
           console.log(
             chalk.cyan(`${index + 1}. `) +
-              chalk.gray(entry.length > 120 ? `${entry.slice(0, 117)}...` : entry)
+              chalk.gray(
+                entry.length > 120 ? `${entry.slice(0, 117)}...` : entry
+              )
           );
         });
       }
@@ -1017,9 +1020,7 @@ function showFilePreview(content: string) {
 }
 
 async function collectProjectContext() {
-  const { ProjectContextManager } = await import(
-    "./context/manager.js"
-  );
+  const { ProjectContextManager } = await import("./context/manager.js");
 
   const manager = ProjectContextManager.getInstance();
   const { files } = manager.getContext(process.cwd());
@@ -1326,6 +1327,7 @@ export function createCLI(): Command {
   program.addCommand(createCommitMsgCommand());
   program.addCommand(createReviewCommand());
   program.addCommand(createMemoryCommand());
+  program.addCommand(createMCPCommand());
 
   // Show welcome screen and start chat when no command is provided
   program.action(async () => {
@@ -1371,7 +1373,7 @@ export function createCLI(): Command {
         const fileList = contextFiles.map((f) => `- ${f.path}`).join("\n");
         const contextPrompt = `## Available Files in Project:\n\n${fileList}\n\nUse the read_file tool to read any files you need.`;
 
-        agent.initialize(contextPrompt);
+        await agent.initialize(contextPrompt);
 
         const handleExit = () => {
           const finalStats = sessionTracker.endSession();
@@ -1455,7 +1457,9 @@ export function createCLI(): Command {
               logVerbose(chalk.blue("🔍 Context required, invoking agent"));
               await agent.processMessage(userInput);
             } else {
-              logVerbose(chalk.blue("✨ Responding directly without project context"));
+              logVerbose(
+                chalk.blue("✨ Responding directly without project context")
+              );
               console.log(chalk.green("\n💬 ") + quickResponse.response);
             }
 

@@ -36,6 +36,8 @@ import {
 } from "../token/utils.js";
 import type { SessionTracker } from "../session/tracker.js";
 import { detectLanguageFromPath } from "../utils/language.js";
+import { MCPManager } from "../mcp/manager.js";
+import type { MCPTool } from "../mcp/types.js";
 
 export interface AgentConfig {
   provider: Provider;
@@ -90,6 +92,8 @@ export class AgentWorkflow {
     output: string;
   }> = [];
   private contextManager = ProjectContextManager.getInstance();
+  private mcpManager = MCPManager.getInstance();
+  private mcpTools: MCPTool[] = [];
   private sessionTracker?: SessionTracker;
   private contextLimit?: number;
   private contextWarningLevel = 0;
@@ -173,7 +177,23 @@ export class AgentWorkflow {
   /**
    * Initialize the agent with system prompt
    */
-  initialize(contextPrompt: string) {
+  async initialize(contextPrompt: string) {
+    // Initialize MCP if not already done
+    if (!this.mcpManager.isInitialized()) {
+      try {
+        await this.mcpManager.initialize();
+        this.mcpTools = this.mcpManager.listAllTools();
+
+        if (this.mcpTools.length > 0) {
+          logVerbose(chalk.green(`✓ Loaded ${this.mcpTools.length} MCP tools`));
+        }
+      } catch (error) {
+        logVerbose(chalk.yellow('⚠️  MCP initialization failed, continuing without MCP tools'));
+      }
+    } else {
+      this.mcpTools = this.mcpManager.listAllTools();
+    }
+
     this.messages = [
       {
         role: "system",
@@ -1372,8 +1392,42 @@ export class AgentWorkflow {
       }
 
       default:
+        // Check if it's an MCP tool (format: serverName.toolName)
+        if (tool.includes('.')) {
+          return await this.executeMCPTool(tool, params);
+        }
+
         console.log(chalk.red(`  ❌ Unknown tool: ${tool}`));
         return `Error: Unknown tool ${tool}`;
+    }
+  }
+
+  /**
+   * Execute an MCP tool
+   */
+  private async executeMCPTool(toolName: string, params: Record<string, string>): Promise<string> {
+    try {
+      console.log(chalk.gray(`  🔌 Executing MCP tool: ${toolName}`));
+
+      const result = await this.mcpManager.executeTool(toolName, params);
+
+      if (!result.success) {
+        console.log(chalk.red(`  ❌ ${result.error}`));
+        return `Error executing ${toolName}: ${result.error}`;
+      }
+
+      // Extract text content from MCP result
+      const textContent = result.content
+        .filter(c => c.type === 'text')
+        .map(c => c.text)
+        .join('\n');
+
+      console.log(chalk.green(`  ✓ MCP tool completed`));
+      return textContent || 'Tool executed successfully';
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.log(chalk.red(`  ❌ MCP tool failed: ${errorMsg}`));
+      return `Error: ${errorMsg}`;
     }
   }
 
@@ -2064,7 +2118,40 @@ Provide a practical alternative solution that addresses the root cause.`;
   /**
    * Get system prompt for the agent
    */
+  /**
+   * Generate MCP tools section for system prompt
+   */
+  private getMCPToolsSection(): string {
+    if (this.mcpTools.length === 0) {
+      return '';
+    }
+
+    let section = '\n## MCP Tools (External Integrations)\n\n';
+    section += `You have access to ${this.mcpTools.length} additional tools from connected MCP servers:\n\n`;
+
+    this.mcpTools.forEach((tool, index) => {
+      section += `${index + 16}. **${tool.name}** - ${tool.description}\n`;
+      section += `   Format: <tool name="${tool.name}"`;
+
+      // Add parameter hints from schema
+      if (tool.inputSchema.properties) {
+        const params = Object.keys(tool.inputSchema.properties);
+        params.forEach(param => {
+          section += ` ${param}="value"`;
+        });
+      }
+
+      section += `></tool>\n\n`;
+    });
+
+    section += '**Note**: MCP tools are prefixed with their server name (e.g., `github.create_issue`)\n';
+
+    return section;
+  }
+
   private getSystemPrompt(): string {
+    const mcpSection = this.getMCPToolsSection();
+
     return `You are an intelligent coding assistant with access to tools for project analysis, file operations, and project setup.
 
 ## Communication Style
@@ -2135,6 +2222,8 @@ Provide a practical alternative solution that addresses the root cause.`;
 
 15. **load_memory** - Load information from persistent memory
     Format: <tool name="load_memory" key="project-notes"></tool>
+
+${mcpSection}
 
 ## Critical Rules
 
