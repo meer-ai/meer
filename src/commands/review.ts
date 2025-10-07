@@ -1,9 +1,10 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { readFileSync, existsSync, statSync } from 'fs';
+import { readFileSync, existsSync, statSync, writeFileSync } from 'fs';
 import { join, extname } from 'path';
 import { glob } from 'glob';
+import inquirer from 'inquirer';
 import { loadConfig } from '../config.js';
 import type { ChatMessage } from '../providers/base.js';
 import { detectLanguageFromPath } from '../utils/language.js';
@@ -41,12 +42,27 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.html', '.css', '.scss', '.sass', '.less', '.vue', '.svelte'
 ]);
 
+interface ReviewIssue {
+  title: string;
+  location: string;
+  impact?: string;
+  recommendation?: string;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  category: string;
+}
+
 class ReviewFormatter {
   private buffer = '';
   private inCodeBlock = false;
+  private fullText = ''; // Store full review text for parsing
+
+  getFullText(): string {
+    return this.fullText;
+  }
 
   formatChunk(chunk: string): string {
     this.buffer += chunk;
+    this.fullText += chunk; // Store unformatted text
     const lines = this.buffer.split('\n');
 
     // Keep the last incomplete line in the buffer
@@ -59,6 +75,7 @@ class ReviewFormatter {
 
   flush(): string {
     if (this.buffer) {
+      this.fullText += this.buffer; // Add remaining buffer to full text
       const formatted = this.formatLine(this.buffer);
       this.buffer = '';
       return formatted;
@@ -81,32 +98,37 @@ class ReviewFormatter {
     let formatted = line;
 
     // Section headers with emojis
-    if (line.includes('### 📊 Overview')) {
-      return chalk.bold.blue(line);
+    if (line.includes('### 📊 Overview') || line.includes('###📊 Overview')) {
+      formatted = formatted.replace(/###\s*📊\s*Overview/g, '📊 Overview');
+      return '\n' + chalk.bold.blue(formatted);
     }
-    if (line.includes('### ✅ Strengths')) {
-      return chalk.bold.green(line);
+    if (line.includes('### ✅ Strengths') || line.includes('###✅ Strengths')) {
+      formatted = formatted.replace(/###\s*✅\s*Strengths/g, '✅ Strengths');
+      return '\n' + chalk.bold.green(formatted);
     }
-    if (line.includes('### 🚨 Critical Issues')) {
-      return chalk.bold.red(line);
+    if (line.includes('### 🚨 Critical Issues') || line.includes('###🚨 Critical Issues')) {
+      formatted = formatted.replace(/###\s*🚨\s*Critical Issues/g, '🚨 Critical Issues');
+      return '\n' + chalk.bold.red(formatted);
     }
-    if (line.includes('### 💡 Improvement Opportunities')) {
-      return chalk.bold.yellow(line);
+    if (line.includes('### 💡 Improvement Opportunities') || line.includes('###💡 Improvement Opportunities')) {
+      formatted = formatted.replace(/###\s*💡\s*Improvement Opportunities/g, '💡 Improvement Opportunities');
+      return '\n' + chalk.bold.yellow(formatted);
     }
-    if (line.includes('### ❓ Questions')) {
-      return chalk.bold.magenta(line);
+    if (line.includes('### ❓ Questions') || line.includes('###❓ Questions')) {
+      formatted = formatted.replace(/###\s*❓\s*Questions/g, '❓ Questions');
+      return '\n' + chalk.bold.magenta(formatted);
     }
 
-    // Priority levels
-    formatted = formatted.replace(/\*\*High Priority:\*\*/g, chalk.bold.red('⚠️  High Priority:'));
-    formatted = formatted.replace(/\*\*Medium Priority:\*\*/g, chalk.bold.yellow('⚡ Medium Priority:'));
-    formatted = formatted.replace(/\*\*Low Priority[^:]*:\*\*/g, chalk.bold.cyan('💡 Low Priority:'));
+    // Priority levels - remove ** and use colors/bold
+    formatted = formatted.replace(/\*\*High Priority:\*\*/g, chalk.bold.red('⚠️  HIGH PRIORITY:'));
+    formatted = formatted.replace(/\*\*Medium Priority:\*\*/g, chalk.bold.yellow('⚡ MEDIUM PRIORITY:'));
+    formatted = formatted.replace(/\*\*Low Priority[^:]*:\*\*/g, chalk.bold.cyan('💡 LOW PRIORITY:'));
 
-    // Critical issue components
+    // Critical issue components - remove ** and apply colors
     formatted = formatted.replace(/\*\*\[([^\]]+)\]\*\*:/g, chalk.bold.red('[$1]') + chalk.white(':'));
-    formatted = formatted.replace(/- \*\*Location\*\*:/g, chalk.gray('  📍 Location:'));
-    formatted = formatted.replace(/- \*\*Impact\*\*:/g, chalk.red('  ⚡ Impact:'));
-    formatted = formatted.replace(/- \*\*Recommendation\*\*:/g, chalk.green('  ✅ Fix:'));
+    formatted = formatted.replace(/- \*\*Location\*\*:/g, chalk.gray('  📍 ') + chalk.bold('Location:'));
+    formatted = formatted.replace(/- \*\*Impact\*\*:/g, chalk.red('  ⚡ ') + chalk.bold('Impact:'));
+    formatted = formatted.replace(/- \*\*Recommendation\*\*:/g, chalk.green('  ✅ ') + chalk.bold('Fix:'));
 
     // File:line references
     formatted = formatted.replace(
@@ -119,13 +141,228 @@ class ReviewFormatter {
       formatted = formatted.replace(/^- /, chalk.blue('  • '));
     }
 
-    // Inline code
+    // Inline code - keep backticks but color them
     formatted = formatted.replace(/`([^`]+)`/g, (_, code) => chalk.cyan.bold(`\`${code}\``));
 
-    // Bold text (but preserve already colored text)
-    formatted = formatted.replace(/\*\*([^*]+)\*\*/g, chalk.bold('$1'));
+    // Bold text - remove ** markers and apply ANSI bold
+    // Process from inside out to handle nested formatting
+    while (/\*\*([^*]+)\*\*/.test(formatted)) {
+      formatted = formatted.replace(/\*\*([^*]+)\*\*/g, (match, text) => {
+        // Check if already colored, if not apply bold
+        if (match.includes('\x1b[')) {
+          return text; // Already has ANSI codes
+        }
+        return chalk.bold(text);
+      });
+    }
 
     return formatted;
+  }
+}
+
+function parseReviewIssues(reviewText: string): ReviewIssue[] {
+  const issues: ReviewIssue[] = [];
+  const lines = reviewText.split('\n');
+
+  let currentPriority: 'critical' | 'high' | 'medium' | 'low' | null = null;
+  let currentCategory = '';
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    // Detect priority sections
+    if (line.includes('🚨 Critical Issues') || line.includes('Critical Issues')) {
+      currentPriority = 'critical';
+      i++;
+      continue;
+    }
+    if (line.includes('High Priority') || line.includes('HIGH PRIORITY')) {
+      currentPriority = 'high';
+      i++;
+      continue;
+    }
+    if (line.includes('Medium Priority') || line.includes('MEDIUM PRIORITY')) {
+      currentPriority = 'medium';
+      i++;
+      continue;
+    }
+    if (line.includes('Low Priority') || line.includes('LOW PRIORITY')) {
+      currentPriority = 'low';
+      i++;
+      continue;
+    }
+
+    // Parse issue blocks (format: **[Category]**: description)
+    const categoryMatch = line.match(/\*\*\[([^\]]+)\]\*\*:|^\[([^\]]+)\]:/);
+    if (categoryMatch && currentPriority) {
+      currentCategory = categoryMatch[1] || categoryMatch[2];
+      const title = line.split(/\*\*:|:/).slice(1).join(':').trim();
+
+      // Look ahead for Location, Impact, Recommendation
+      let location = '';
+      let impact = '';
+      let recommendation = '';
+
+      for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+        const nextLine = lines[j].trim();
+
+        if (nextLine.match(/\*\*Location\*\*:|Location:/)) {
+          location = nextLine.split(/\*\*:|:/).slice(1).join(':').trim();
+        }
+        if (nextLine.match(/\*\*Impact\*\*:|Impact:/)) {
+          impact = nextLine.split(/\*\*:|:/).slice(1).join(':').trim();
+        }
+        if (nextLine.match(/\*\*Recommendation\*\*:|Fix:/)) {
+          recommendation = nextLine.split(/\*\*:|:/).slice(1).join(':').trim();
+        }
+
+        // Stop if we hit another issue or section
+        if (nextLine.match(/\*\*\[|^\[|###|High Priority|Medium Priority|Low Priority/)) {
+          break;
+        }
+      }
+
+      if (location) {
+        issues.push({
+          title: title || currentCategory,
+          location,
+          impact,
+          recommendation,
+          priority: currentPriority,
+          category: currentCategory
+        });
+      }
+    }
+
+    i++;
+  }
+
+  return issues;
+}
+
+async function applyFix(issue: ReviewIssue, fileContents: Map<string, string>): Promise<void> {
+  const config = loadConfig();
+
+  // Parse location (format: filename.ext:line)
+  const locationMatch = issue.location.match(/([^:]+):(\d+)/);
+  if (!locationMatch) {
+    console.log(chalk.red('  ✗ Could not parse file location'));
+    return;
+  }
+
+  const [, filename, lineNumber] = locationMatch;
+
+  // Find the file in the review context
+  let fileContent = fileContents.get(filename);
+  if (!fileContent) {
+    // Try to find by partial match
+    for (const [path, content] of fileContents.entries()) {
+      if (path.endsWith(filename)) {
+        fileContent = content;
+        break;
+      }
+    }
+  }
+
+  if (!fileContent) {
+    console.log(chalk.red(`  ✗ File not found: ${filename}`));
+    return;
+  }
+
+  const fixSpinner = ora({
+    text: chalk.blue('Generating fix...'),
+    spinner: 'dots',
+    color: 'blue'
+  }).start();
+
+  // Generate fix using AI
+  const fixPrompt = `You are a code fixing assistant. Given a code issue, generate ONLY the fixed code snippet.
+
+**Issue**: ${issue.title}
+**Category**: ${issue.category}
+**Location**: ${issue.location}
+${issue.impact ? `**Impact**: ${issue.impact}` : ''}
+${issue.recommendation ? `**Recommendation**: ${issue.recommendation}` : ''}
+
+**Current Code**:
+\`\`\`
+${fileContent}
+\`\`\`
+
+Please provide ONLY the complete fixed version of the file. Do not include explanations, just the code.
+Format your response as:
+\`\`\`
+[fixed code here]
+\`\`\``;
+
+  try {
+    const messages: ChatMessage[] = [
+      { role: 'user', content: fixPrompt }
+    ];
+
+    const fixedCode = await config.provider.chat(messages);
+    fixSpinner.stop();
+
+    // Extract code from markdown code block
+    const codeMatch = fixedCode.match(/```[\w]*\n([\s\S]+?)\n```/);
+    const extractedCode = codeMatch ? codeMatch[1] : fixedCode.trim();
+
+    // Show diff preview
+    console.log(chalk.cyan('\n  Preview of changes:'));
+    console.log(chalk.dim('  ─────────────────────────────────────'));
+
+    const originalLines = fileContent.split('\n');
+    const fixedLines = extractedCode.split('\n');
+    const contextLines = 3;
+    const targetLine = parseInt(lineNumber) - 1;
+
+    const startLine = Math.max(0, targetLine - contextLines);
+    const endLine = Math.min(originalLines.length, targetLine + contextLines + 1);
+
+    for (let i = startLine; i < endLine; i++) {
+      if (i === targetLine) {
+        if (originalLines[i] !== fixedLines[i]) {
+          console.log(chalk.red(`  - ${originalLines[i]}`));
+          console.log(chalk.green(`  + ${fixedLines[i] || ''}`));
+        } else {
+          console.log(chalk.gray(`    ${originalLines[i]}`));
+        }
+      } else {
+        console.log(chalk.gray(`    ${originalLines[i]}`));
+      }
+    }
+    console.log(chalk.dim('  ─────────────────────────────────────\n'));
+
+    // Confirm application
+    const { confirmFix } = await inquirer.prompt([
+      {
+        type: 'confirm',
+        name: 'confirmFix',
+        message: 'Apply this fix?',
+        default: true
+      }
+    ]);
+
+    if (confirmFix) {
+      // Find the actual file path
+      let actualPath = filename;
+      for (const [path] of fileContents.entries()) {
+        if (path.endsWith(filename)) {
+          actualPath = path;
+          break;
+        }
+      }
+
+      writeFileSync(actualPath, extractedCode, 'utf-8');
+      console.log(chalk.green(`  ✓ Fix applied to ${filename}`));
+    } else {
+      console.log(chalk.yellow('  ⊘ Fix cancelled'));
+    }
+
+  } catch (error) {
+    fixSpinner.fail(chalk.red('Failed to generate fix'));
+    console.error(chalk.red(`  Error: ${error instanceof Error ? error.message : String(error)}`));
   }
 }
 
@@ -330,11 +567,13 @@ export function createReviewCommand(): Command {
 
         // Read file contents
         const fileContents: string[] = [];
+        const fileContentsMap = new Map<string, string>(); // For fix application
         for (const file of filesToReview) {
           try {
             const content = readFileSync(file, 'utf-8');
             if (!isBinaryContent(content)) {
               fileContents.push(`File: ${file}\n${content}`);
+              fileContentsMap.set(file, content);
             }
           } catch (error) {
             console.warn(chalk.yellow(`Could not read ${file}: ${error}`));
@@ -440,6 +679,67 @@ export function createReviewCommand(): Command {
         }
 
         console.log('\n');
+
+        // Parse issues and offer to fix them
+        const reviewText = formatter.getFullText();
+        const issues = parseReviewIssues(reviewText);
+
+        if (issues.length > 0) {
+          console.log(chalk.bold.cyan('🔧 Fixable Issues Found\n'));
+
+          const { shouldFix } = await inquirer.prompt([
+            {
+              type: 'confirm',
+              name: 'shouldFix',
+              message: `Found ${issues.length} issue${issues.length > 1 ? 's' : ''} with location info. Would you like to apply fixes?`,
+              default: true
+            }
+          ]);
+
+          if (shouldFix) {
+            // Let user select which issues to fix
+            const choices = issues.map((issue, idx) => {
+              const priorityIcon = {
+                critical: '🔴',
+                high: '🟠',
+                medium: '🟡',
+                low: '🟢'
+              }[issue.priority];
+
+              return {
+                name: `${priorityIcon} [${issue.category}] ${issue.title} (${issue.location})`,
+                value: idx,
+                short: issue.title
+              };
+            });
+
+            const { selectedIssues } = await inquirer.prompt([
+              {
+                type: 'checkbox',
+                name: 'selectedIssues',
+                message: 'Select issues to fix:',
+                choices,
+                pageSize: 10
+              }
+            ]);
+
+            if (selectedIssues.length > 0) {
+              console.log(chalk.cyan(`\nApplying ${selectedIssues.length} fix${selectedIssues.length > 1 ? 'es' : ''}...\n`));
+
+              for (const idx of selectedIssues) {
+                const issue = issues[idx];
+                console.log(chalk.bold.white(`\n📍 Fixing: ${issue.title}`));
+                console.log(chalk.gray(`   Location: ${issue.location}`));
+
+                await applyFix(issue, fileContentsMap);
+              }
+
+              console.log(chalk.bold.green('\n✓ All selected fixes processed!\n'));
+            } else {
+              console.log(chalk.yellow('\nNo fixes selected.\n'));
+            }
+          }
+        }
 
       } catch (error) {
         console.error(chalk.red('Error:'), error instanceof Error ? error.message : String(error));
