@@ -13,6 +13,10 @@ export const slashCommands: SlashCommandDefinition[] = [
     description: "Show current session statistics",
   },
   {
+    command: "/account",
+    description: "View account info and subscription benefits",
+  },
+  {
     command: "/setup",
     description: "Run setup wizard to reconfigure providers",
   },

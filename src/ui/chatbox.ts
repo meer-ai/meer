@@ -338,7 +338,27 @@ export class ChatBoxUI {
     const cwd = config.cwd || process.cwd();
     const shortCwd = cwd.length > 40 ? `...${cwd.slice(-37)}` : cwd;
     const statusLabel = config.status || "ready";
-    const signature = `${shortCwd}|${statusLabel}|${config.provider}:${config.model}`;
+
+    // Get auth status
+    let authInfo = "";
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const os = require("os");
+      const authPath = path.join(os.homedir(), ".meer", "auth.json");
+      if (fs.existsSync(authPath)) {
+        const authData = JSON.parse(fs.readFileSync(authPath, "utf-8"));
+        if (authData.user) {
+          const name = authData.user.name.split(" ")[0]; // First name only
+          const tier = authData.user.subscription_tier;
+          authInfo = ` ${chalk.gray("|")} ${chalk.cyan(name)} ${chalk.dim(`(${tier})`)}`;
+        }
+      }
+    } catch (error) {
+      // Silently ignore auth errors
+    }
+
+    const signature = `${shortCwd}|${statusLabel}|${config.provider}:${config.model}|${authInfo}`;
 
     if (!config.force && ChatBoxUI.lastStatusSignature === signature) {
       return;
@@ -352,7 +372,8 @@ export class ChatBoxUI {
         chalk.gray(" | ") +
         chalk.green(statusLabel) +
         chalk.gray(" | ") +
-        chalk.white(`${config.provider}:${config.model}`)
+        chalk.white(`${config.provider}:${config.model}`) +
+        authInfo
     );
   }
 

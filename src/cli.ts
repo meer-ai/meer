@@ -11,6 +11,9 @@ import { createReviewCommand } from "./commands/review.js";
 import { createMemoryCommand } from "./commands/memory.js";
 import { createSetupCommand } from "./commands/setup.js";
 import { createMCPCommand } from "./commands/mcp.js";
+import { createLoginCommand } from "./commands/login.js";
+import { createLogoutCommand } from "./commands/logout.js";
+import { createWhoamiCommand } from "./commands/whoami.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { logVerbose, setVerboseLogging } from "./logger.js";
@@ -126,6 +129,28 @@ async function showWelcomeScreen() {
     console.log(chalk.white("  Provider:") + " " + chalk.yellow(providerLabel));
     console.log(chalk.white("  Model:") + " " + chalk.green(config.model));
     console.log(chalk.white("  Version:") + " " + chalk.gray(VERSION));
+
+    // Show auth status
+    const { AuthStorage } = await import("./auth/storage.js");
+    const authStorage = new AuthStorage();
+    if (authStorage.isAuthenticated()) {
+      const user = authStorage.getUser();
+      console.log(
+        chalk.white("  Account:") +
+          " " +
+          chalk.cyan(user?.name || "Unknown") +
+          " " +
+          chalk.gray(`(${user?.subscription_tier || "free"})`)
+      );
+    } else {
+      console.log(
+        chalk.white("  Account:") +
+          " " +
+          chalk.gray("Not logged in") +
+          " " +
+          chalk.dim("(run 'meer login')")
+      );
+    }
     console.log("");
   } catch (error) {
     console.log(chalk.yellow("⚠️  Configuration not loaded"));
@@ -134,6 +159,7 @@ async function showWelcomeScreen() {
 
   console.log(chalk.bold.yellow("🚀 Quick Commands:"));
   console.log(chalk.white("• Setup wizard:") + " " + chalk.cyan("meer setup"));
+  console.log(chalk.white("• Login/logout:") + " " + chalk.cyan("meer login") + " " + chalk.gray("| meer logout"));
   console.log(
     chalk.white("• Ask questions:") +
       " " +
@@ -494,6 +520,10 @@ async function handleSlashCommand(
       }
       return "continue"; // Continue chat session
 
+    case "/account":
+      await handleAccountCommand();
+      return "continue"; // Continue chat session
+
     case "/model":
       await handleModelCommand(config);
       return "continue"; // Continue chat session
@@ -515,6 +545,69 @@ async function handleSlashCommand(
       console.log(chalk.gray("Type /help for available commands"));
       return "continue"; // Continue chat session
   }
+}
+
+async function handleAccountCommand() {
+  const { AuthStorage } = await import("./auth/storage.js");
+  const authStorage = new AuthStorage();
+
+  if (!authStorage.isAuthenticated()) {
+    console.log(chalk.yellow("\n⚠️  Not logged in"));
+    console.log(chalk.gray("   Run ") + chalk.cyan("meer login") + chalk.gray(" to authenticate"));
+    console.log("");
+    return;
+  }
+
+  const user = authStorage.getUser();
+  if (!user) {
+    console.log(chalk.yellow("\n⚠️  No user information found\n"));
+    return;
+  }
+
+  console.log(chalk.bold.blue("\n👤 Account Information\n"));
+  console.log(chalk.white("   Name:") + "          " + chalk.cyan(user.name));
+  console.log(chalk.white("   Email:") + "         " + chalk.gray(user.email));
+  console.log(chalk.white("   ID:") + "            " + chalk.dim(user.id));
+  console.log(chalk.white("   Subscription:") + "  " + chalk.yellow(user.subscription_tier.toUpperCase()));
+
+  if (user.avatar_url) {
+    console.log(chalk.white("   Avatar:") + "        " + chalk.blue(user.avatar_url));
+  }
+
+  const memberSince = new Date(user.created_at).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  console.log(chalk.white("   Member since:") + "  " + chalk.gray(memberSince));
+
+  // Show tier benefits
+  console.log("");
+  console.log(chalk.bold.white("   Benefits:"));
+  if (user.subscription_tier === "free") {
+    console.log(chalk.gray("   • Basic features"));
+    console.log(chalk.gray("   • Local model support"));
+    console.log(chalk.gray("   • Session history"));
+    console.log("");
+    console.log(chalk.yellow("   💡 Upgrade to unlock:"));
+    console.log(chalk.gray("   • Cloud sync across devices"));
+    console.log(chalk.gray("   • Priority support"));
+    console.log(chalk.gray("   • Advanced features"));
+  } else if (user.subscription_tier === "pro") {
+    console.log(chalk.green("   ✓ All basic features"));
+    console.log(chalk.green("   ✓ Cloud sync"));
+    console.log(chalk.green("   ✓ Priority support"));
+    console.log(chalk.green("   ✓ Advanced features"));
+  } else if (user.subscription_tier === "enterprise") {
+    console.log(chalk.cyan("   ✓ All Pro features"));
+    console.log(chalk.cyan("   ✓ Team collaboration"));
+    console.log(chalk.cyan("   ✓ Custom integrations"));
+    console.log(chalk.cyan("   ✓ Dedicated support"));
+  }
+
+  console.log("");
+  console.log(chalk.gray("   Commands: ") + chalk.cyan("meer whoami") + chalk.gray(" | ") + chalk.cyan("meer logout"));
+  console.log("");
 }
 
 async function handleInitCommand() {
@@ -1323,6 +1416,9 @@ export function createCLI(): Command {
 
   // Add commands
   program.addCommand(createSetupCommand());
+  program.addCommand(createLoginCommand());
+  program.addCommand(createLogoutCommand());
+  program.addCommand(createWhoamiCommand());
   program.addCommand(createAskCommand());
   program.addCommand(createCommitMsgCommand());
   program.addCommand(createReviewCommand());
