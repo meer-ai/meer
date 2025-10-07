@@ -7,6 +7,7 @@ import { join } from "path";
 import { showSlashHelp } from "./slashHelp.js";
 import { slashCommands } from "./slashCommands.js";
 import { SessionStats, SessionTracker } from "../session/tracker.js";
+import { displayWave } from "./logo.js";
 
 export class ChatBoxUI {
   /**
@@ -565,8 +566,10 @@ export class ChatBoxUI {
         : 0
     );
 
+    console.log("");
+    displayWave();
     console.log(
-      "\n" + chalk.blue("Agent powering down. ") + chalk.magenta("Goodbye!")
+      chalk.cyan("  Agent powering down. ") + chalk.blue("Thanks for diving in!")
     );
     console.log("");
 

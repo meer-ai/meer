@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { fetch } from 'undici';
 
 export interface SessionStats {
   sessionId: string;
@@ -25,8 +26,11 @@ export interface SessionStats {
 export class SessionTracker {
   private stats: SessionStats;
   private isActive: boolean = false;
+  private apiUrl: string;
+  private lastCommandName: string = 'interactive';
 
-  constructor(provider: string, model: string) {
+  constructor(provider: string, model: string, apiUrl?: string) {
+    this.apiUrl = apiUrl || process.env.MEERAI_API_URL || 'https://api.meerai.dev';
     this.stats = {
       sessionId: randomUUID(),
       startTime: Date.now(),
@@ -48,6 +52,11 @@ export class SessionTracker {
       contextLimit: undefined
     };
     this.isActive = true;
+  }
+
+  // Set command name (for logging)
+  setCommandName(command: string): void {
+    this.lastCommandName = command;
   }
 
   // Track a user message
@@ -111,10 +120,57 @@ export class SessionTracker {
   }
 
   // End the session
-  endSession(): SessionStats {
+  async endSession(): Promise<SessionStats> {
     this.stats.endTime = Date.now();
     this.isActive = false;
+
+    // Log usage to backend if authenticated
+    await this.logUsageToBackend();
+
     return { ...this.stats };
+  }
+
+  /**
+   * Log usage to backend API
+   * Only sends if user is authenticated
+   */
+  private async logUsageToBackend(): Promise<void> {
+    try {
+      // Check if user is authenticated
+      const { AuthStorage } = await import('../auth/storage.js');
+      const authStorage = new AuthStorage();
+
+      if (!authStorage.isAuthenticated()) {
+        return; // Skip logging if not authenticated
+      }
+
+      const accessToken = authStorage.getAccessToken();
+      if (!accessToken) {
+        return;
+      }
+
+      const tokenUsage = this.getTokenUsage();
+
+      // Send usage log to backend
+      await fetch(`${this.apiUrl}/api/usage/log`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          command: this.lastCommandName,
+          model: this.stats.model,
+          tokens_used: tokenUsage.total,
+          cost: 0, // Can be calculated based on model pricing
+          success: this.stats.toolCalls.failed === 0,
+          error_message: this.stats.toolCalls.failed > 0 ? `${this.stats.toolCalls.failed} tool calls failed` : null,
+        }),
+      });
+    } catch (error) {
+      // Silently fail - don't interrupt user experience if logging fails
+      // Could add optional verbose logging here
+    }
   }
 
   // Get current stats without ending session

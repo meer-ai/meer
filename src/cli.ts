@@ -30,44 +30,44 @@ const VERSION = packageJson.version;
 async function showWelcomeScreen() {
   console.clear();
 
-  // Large MeerAI ASCII art logo with wave emoji-style pattern
+  // Large MEER ASCII art logo with ocean wave pattern
   console.log(
-    chalk.hex("#0077B6")("    ███╗   ███╗███████╗███████╗██████╗     ") +
-      chalk.hex("#48CAE4")("   ∿∿∿∿∿∿")
+    chalk.hex("#06b6d4")("    ███╗   ███╗███████╗███████╗██████╗     ") +
+      chalk.hex("#0ea5e9")("   ~≈~≈~≈")
   );
   console.log(
-    chalk.hex("#0096C7")("    ████╗ ████║██╔════╝██╔════╝██╔══██╗    ") +
-      chalk.hex("#0077B6")("  ∿∿∿∿∿∿∿")
+    chalk.hex("#0ea5e9")("    ████╗ ████║██╔════╝██╔════╝██╔══██╗    ") +
+      chalk.hex("#06b6d4")("  ~≈~≈~≈~")
   );
   console.log(
-    chalk.hex("#00B4D8")("    ██╔████╔██║█████╗  █████╗  ██████╔╝    ") +
-      chalk.hex("#48CAE4")(" ∿∿∿∿∿∿∿∿")
+    chalk.hex("#0284c7")("    ██╔████╔██║█████╗  █████╗  ██████╔╝    ") +
+      chalk.hex("#0ea5e9")(" ~≈~≈~≈~≈")
   );
   console.log(
-    chalk.hex("#0096C7")("    ██║╚██╔╝██║██╔══╝  ██╔══╝  ██╔══██╗    ") +
-      chalk.hex("#0077B6")("∿∿∿∿∿∿∿∿∿")
+    chalk.hex("#0ea5e9")("    ██║╚██╔╝██║██╔══╝  ██╔══╝  ██╔══██╗    ") +
+      chalk.hex("#06b6d4")("~≈~≈~≈~≈~")
   );
   console.log(
-    chalk.hex("#0077B6")("    ██║ ╚═╝ ██║███████╗███████╗██║  ██║    ") +
-      chalk.hex("#48CAE4")("∿∿∿∿∿∿∿∿")
+    chalk.hex("#06b6d4")("    ██║ ╚═╝ ██║███████╗███████╗██║  ██║    ") +
+      chalk.hex("#0ea5e9")("~≈~≈~≈~≈")
   );
   console.log(
-    chalk.hex("#023E8A")("    ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝    ") +
-      chalk.hex("#0077B6")(" ∿∿∿∿∿∿∿")
+    chalk.hex("#0369a1")("    ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝    ") +
+      chalk.hex("#06b6d4")(" ~≈~≈~≈~")
   );
   console.log("");
   console.log(
     chalk.bold.cyan(
-      "                  🌊 Your AI companion that flows like the sea"
+      "            🌊 Dive deep into your code like the vast ocean"
     )
   );
   console.log(
     chalk.gray(
-      "                Model-agnostic CLI supporting Ollama, OpenAI, Anthropic, Gemini, and OpenRouter"
+      "          Model-agnostic CLI • Ollama • OpenAI • Anthropic • Gemini • OpenRouter"
     )
   );
   console.log("");
-  console.log(chalk.hex("#48CAE4")("═".repeat(85)));
+  console.log(chalk.hex("#0ea5e9")("═".repeat(85)));
   console.log("");
 
   // Check if this is first-time setup
@@ -75,7 +75,7 @@ async function showWelcomeScreen() {
   if (!configExists()) {
     console.log(
       chalk.yellow(
-        "👋 Welcome! It looks like this is your first time using MeerAI.\n"
+        "👋 Welcome! It looks like this is your first time using Meer.\n"
       )
     );
 
@@ -100,7 +100,7 @@ async function showWelcomeScreen() {
       console.log(
         chalk.yellow("💡 Tip: Run ") +
           chalk.cyan("meer setup") +
-          chalk.yellow(" anytime to configure MeerAI.\n")
+          chalk.yellow(" anytime to configure Meer.\n")
       );
     }
   }
@@ -1471,8 +1471,8 @@ export function createCLI(): Command {
 
         await agent.initialize(contextPrompt);
 
-        const handleExit = () => {
-          const finalStats = sessionTracker.endSession();
+        const handleExit = async () => {
+          const finalStats = await sessionTracker.endSession();
           console.log("\n");
           ChatBoxUI.displayGoodbye(finalStats);
           process.exit(0);
@@ -1573,7 +1573,7 @@ export function createCLI(): Command {
         process.off("SIGINT", handleExit);
         process.off("SIGTERM", handleExit);
 
-        const finalStats = sessionTracker.endSession();
+        const finalStats = await sessionTracker.endSession();
 
         if (!restarting) {
           ChatBoxUI.displayGoodbye(finalStats);
