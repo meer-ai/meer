@@ -144,19 +144,23 @@ export class SessionTracker {
         return; // Skip logging if not authenticated
       }
 
+      // Use refresh token for authentication (access token might not be in database)
+      const refreshToken = authStorage.getRefreshToken();
       const accessToken = authStorage.getAccessToken();
-      if (!accessToken) {
+      const token = refreshToken || accessToken;
+
+      if (!token) {
         return;
       }
 
       const tokenUsage = this.getTokenUsage();
 
       // Send usage log to backend
-      await fetch(`${this.apiUrl}/api/usage/log`, {
+      const response = await fetch(`${this.apiUrl}/api/usage/log`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`,
+          'Authorization': `Bearer ${token}`,
         },
         body: JSON.stringify({
           command: this.lastCommandName,
@@ -167,9 +171,16 @@ export class SessionTracker {
           error_message: this.stats.toolCalls.failed > 0 ? `${this.stats.toolCalls.failed} tool calls failed` : null,
         }),
       });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('Failed to log usage:', response.status, errorData);
+      }
     } catch (error) {
-      // Silently fail - don't interrupt user experience if logging fails
-      // Could add optional verbose logging here
+      // Log errors in development
+      if (process.env.DEBUG || process.env.NODE_ENV === 'development') {
+        console.error('Usage logging error:', error);
+      }
     }
   }
 

@@ -8,6 +8,8 @@ import { stringify } from 'yaml';
 import { OllamaProvider } from '../providers/ollama.js';
 import { AnthropicProvider } from '../providers/anthropic.js';
 import { OpenRouterProvider } from '../providers/openrouter.js';
+import { OpenAIProvider } from '../providers/openai.js';
+import { GeminiProvider } from '../providers/gemini.js';
 
 export function createSetupCommand(): Command {
   return new Command('setup')
@@ -41,6 +43,52 @@ async function fetchAnthropicModels(apiKey: string): Promise<string[]> {
       'claude-3-opus-20240229',
       'claude-3-sonnet-20240229',
       'claude-3-haiku-20240307'
+    ];
+  }
+}
+
+async function fetchOpenAIModels(apiKey: string): Promise<string[]> {
+  try {
+    if (!apiKey) throw new Error('No API key');
+    const provider = new OpenAIProvider({ apiKey, model: 'temp' });
+    const models = await provider.listModels();
+    return models.length > 0 ? models.map(m => m.id) : [
+      'o3-mini',
+      'o1',
+      'o1-mini',
+      'gpt-4o',
+      'gpt-4o-mini',
+      'gpt-4-turbo',
+      'gpt-3.5-turbo'
+    ];
+  } catch {
+    return [
+      'o3-mini',
+      'o1',
+      'o1-mini',
+      'gpt-4o',
+      'gpt-4o-mini',
+      'gpt-4-turbo',
+      'gpt-3.5-turbo'
+    ];
+  }
+}
+
+async function fetchGeminiModels(apiKey: string): Promise<string[]> {
+  try {
+    if (!apiKey) throw new Error('No API key');
+    const provider = new GeminiProvider({ apiKey, model: 'temp' });
+    const models = await provider.listModels();
+    return models.length > 0 ? models.map(m => m.id) : [
+      'gemini-2.0-flash-exp',
+      'gemini-1.5-pro',
+      'gemini-1.5-flash'
+    ];
+  } catch {
+    return [
+      'gemini-2.0-flash-exp',
+      'gemini-1.5-pro',
+      'gemini-1.5-flash'
     ];
   }
 }
@@ -226,27 +274,46 @@ async function runSetupWizard(): Promise<void> {
     }
 
   } else if (provider === 'openai') {
-    const { apiKey, model } = await inquirer.prompt([
+    const { apiKey } = await inquirer.prompt([
       {
         type: 'password',
         name: 'apiKey',
         message: 'Enter your OpenAI API key (or press Enter to set via OPENAI_API_KEY env var):',
         mask: '*'
-      },
-      {
-        type: 'list',
-        name: 'model',
-        message: 'Choose a model:',
-        choices: [
-          { name: 'gpt-4o (recommended)', value: 'gpt-4o' },
-          { name: 'gpt-4o-mini (faster, cheaper)', value: 'gpt-4o-mini' },
-          { name: 'gpt-4-turbo', value: 'gpt-4-turbo' },
-          { name: 'gpt-3.5-turbo', value: 'gpt-3.5-turbo' }
-        ]
       }
     ]);
 
     config.openai.apiKey = apiKey || '';
+
+    // Fetch available models dynamically if API key is provided
+    let availableModels: string[] = [];
+    if (apiKey) {
+      console.log(chalk.gray('🔍 Fetching available models from OpenAI...'));
+      availableModels = await fetchOpenAIModels(apiKey);
+    } else {
+      availableModels = await fetchOpenAIModels('');
+    }
+
+    // Add annotations to popular models
+    const modelChoices = availableModels.map(model => {
+      let name = model;
+      if (model.includes('o3-mini')) name += ' (fastest reasoning)';
+      else if (model.includes('o1-mini')) name += ' (faster reasoning)';
+      else if (model.includes('o1') && !model.includes('mini')) name += ' (advanced reasoning)';
+      else if (model === 'gpt-4o') name += ' (recommended)';
+      else if (model.includes('gpt-4o-mini')) name += ' (faster, cheaper)';
+      return { name, value: model };
+    });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices
+      }
+    ]);
+
     config.model = model;
 
     console.log(chalk.green('\n✅ OpenAI configured!'));
@@ -257,26 +324,44 @@ async function runSetupWizard(): Promise<void> {
     }
 
   } else if (provider === 'gemini') {
-    const { apiKey, model } = await inquirer.prompt([
+    const { apiKey } = await inquirer.prompt([
       {
         type: 'password',
         name: 'apiKey',
         message: 'Enter your Gemini API key (or press Enter to set via GEMINI_API_KEY env var):',
         mask: '*'
-      },
-      {
-        type: 'list',
-        name: 'model',
-        message: 'Choose a model:',
-        choices: [
-          { name: 'gemini-2.0-flash-exp (recommended)', value: 'gemini-2.0-flash-exp' },
-          { name: 'gemini-1.5-pro', value: 'gemini-1.5-pro' },
-          { name: 'gemini-1.5-flash', value: 'gemini-1.5-flash' }
-        ]
       }
     ]);
 
     config.gemini.apiKey = apiKey || '';
+
+    // Fetch available models dynamically if API key is provided
+    let availableModels: string[] = [];
+    if (apiKey) {
+      console.log(chalk.gray('🔍 Fetching available models from Gemini...'));
+      availableModels = await fetchGeminiModels(apiKey);
+    } else {
+      availableModels = await fetchGeminiModels('');
+    }
+
+    // Add annotations to popular models
+    const modelChoices = availableModels.map(model => {
+      let name = model;
+      if (model.includes('2.0-flash')) name += ' (recommended)';
+      else if (model.includes('1.5-pro')) name += ' (most capable)';
+      else if (model.includes('1.5-flash')) name += ' (faster, cheaper)';
+      return { name, value: model };
+    });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices
+      }
+    ]);
+
     config.model = model;
 
     console.log(chalk.green('\n✅ Gemini configured!'));
