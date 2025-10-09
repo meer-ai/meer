@@ -11,6 +11,24 @@ import { spawn, execSync } from "child_process";
 import { glob } from "glob";
 import { ProjectContextManager } from "../context/manager.js";
 
+const DEFAULT_IGNORE_GLOBS = [
+  "node_modules/**",
+  ".git/**",
+  "dist/**",
+  "build/**",
+  "venv/**",
+  ".venv/**",
+  "env/**",
+  "site-packages/**",
+  "__pycache__/**",
+  "deps/**",
+  "vendor/**",
+  "coverage/**",
+  "bower_components/**",
+  ".mypy_cache/**",
+  ".pytest_cache/**",
+];
+
 export interface ToolResult {
   tool: string;
   result: string;
@@ -1067,11 +1085,13 @@ export function findFiles(
     console.log(chalk.gray(`  🔍 Finding files matching: ${pattern}`));
 
     const searchPattern = pattern.includes("*") ? pattern : `**/${pattern}`;
+    const ignorePatterns = options.excludePattern
+      ? [...DEFAULT_IGNORE_GLOBS, options.excludePattern]
+      : DEFAULT_IGNORE_GLOBS;
+
     const globOptions = {
       cwd,
-      ignore: options.excludePattern
-        ? [options.excludePattern]
-        : ["node_modules/**", ".git/**", "dist/**", "build/**"],
+      ignore: ignorePatterns,
       maxDepth: options.maxDepth || 10,
     };
 
@@ -1185,9 +1205,13 @@ export function searchText(
     const searchPattern =
       options.filePattern ||
       "**/*.{js,ts,jsx,tsx,py,go,rs,java,cpp,c,html,css,md,json,yaml,yml}";
+    const ignorePatterns = options.excludePattern
+      ? [...DEFAULT_IGNORE_GLOBS, options.excludePattern]
+      : DEFAULT_IGNORE_GLOBS;
+
     const files = glob.sync(searchPattern, {
       cwd,
-      ignore: ["node_modules/**", ".git/**", "dist/**", "build/**"],
+      ignore: ignorePatterns,
     });
 
     const results: string[] = [];

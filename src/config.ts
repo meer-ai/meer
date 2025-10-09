@@ -43,6 +43,7 @@ const ConfigSchema = z.object({
     siteUrl: z.string().optional()
   }).optional(),
   context: z.object({
+    autoCollect: z.boolean().optional(),
     embedding: z.object({
       enabled: z.boolean().optional(),
       dimensions: z.number().optional(),
@@ -67,6 +68,7 @@ export interface LoadedConfig {
     dimensions: number;
     maxFileSize: number;
   };
+  autoCollectContext?: boolean;
 }
 
 export function configExists(): boolean {
@@ -118,6 +120,7 @@ export function loadConfig(): LoadedConfig {
         siteUrl: 'https://github.com/anthropics/meer'
       },
       context: {
+        autoCollect: false,
         embedding: {
           enabled: false,
           dimensions: 256,
@@ -206,6 +209,7 @@ export function loadConfig(): LoadedConfig {
       delayMs: 1000,
       backoffFactor: 2,
     },
+    autoCollectContext: config.context?.autoCollect ?? false,
     contextEmbedding: {
       enabled: config.context?.embedding?.enabled ?? false,
       dimensions: config.context?.embedding?.dimensions ?? 256,

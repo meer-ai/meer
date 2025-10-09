@@ -22,15 +22,23 @@ const SUPPORTED_EXTENSIONS = new Set([
 const IGNORE_PATTERNS = [
   '**/.git/**',
   '**/node_modules/**',
+  '**/venv/**',
+  '**/.venv/**',
+  '**/env/**',
   '**/.next/**',
   '**/dist/**',
   '**/build/**',
-  '**/.venv/**',
   '**/.turbo/**',
   '**/coverage/**',
   '**/.cache/**',
   '**/target/**',
-  '**/vendor/**'
+  '**/vendor/**',
+  '**/deps/**',
+  '**/site-packages/**',
+  '**/__pycache__/**',
+  '**/bower_components/**',
+  '**/.mypy_cache/**',
+  '**/.pytest_cache/**'
 ];
 
 export function collectRepoFiles(rootPath: string = '.'): ContextResult {

@@ -42,6 +42,15 @@ export class ProjectContextManager {
     "out",
     "tmp",
     "__pycache__",
+    "venv",
+    ".venv",
+    "env",
+    "site-packages",
+    "vendor",
+    "deps",
+    "bower_components",
+    ".mypy_cache",
+    ".pytest_cache",
   ]);
   private readonly textExtensions = new Set([
     ".js",

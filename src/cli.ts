@@ -1430,7 +1430,7 @@ export function createCLI(): Command {
     await showWelcomeScreen();
 
     const { loadConfig } = await import("./config.js");
-    const { AgentWorkflow } = await import("./agent/workflow.js");
+    const { AgentWorkflowV2 } = await import("./agent/workflow-v2.js");
 
     let restarting = false;
 
@@ -1451,7 +1451,7 @@ export function createCLI(): Command {
           config.model
         );
 
-        const agent = new AgentWorkflow({
+        const agent = new AgentWorkflowV2({
           provider: config.provider,
           cwd: process.cwd(),
           maxIterations: 10,
@@ -1460,16 +1460,8 @@ export function createCLI(): Command {
           sessionTracker,
         });
 
-        console.log(chalk.gray("📂 Scanning project..."));
-        const contextFiles = await collectProjectContext();
-        console.log(
-          chalk.gray(`✓ Found ${contextFiles.length} relevant files\n`)
-        );
-
-        const fileList = contextFiles.map((f) => `- ${f.path}`).join("\n");
-        const contextPrompt = `## Available Files in Project:\n\n${fileList}\n\nUse the read_file tool to read any files you need.`;
-
-        await agent.initialize(contextPrompt);
+        // Simple initialization - no forced context loading
+        await agent.initialize();
 
         const handleExit = async () => {
           const finalStats = await sessionTracker.endSession();
@@ -1545,19 +1537,8 @@ export function createCLI(): Command {
           try {
             const messageStartTime = Date.now();
 
-            logVerbose(chalk.blue("🤔 Deciding whether context is necessary"));
-
-            const quickResponse = await tryDirectResponse(userInput, config);
-
-            if (quickResponse.needsContext) {
-              logVerbose(chalk.blue("🔍 Context required, invoking agent"));
-              await agent.processMessage(userInput);
-            } else {
-              logVerbose(
-                chalk.blue("✨ Responding directly without project context")
-              );
-              console.log(chalk.green("\n💬 ") + quickResponse.response);
-            }
+            // Simple: just pass to the agent - it decides everything
+            await agent.processMessage(userInput);
 
             sessionTracker.trackApiCall(Date.now() - messageStartTime);
           } catch (error) {

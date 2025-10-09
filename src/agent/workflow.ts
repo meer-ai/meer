@@ -69,6 +69,8 @@ interface TodoItem {
   status: "pending" | "in_progress" | "completed";
 }
 
+const BUILT_IN_TOOL_COUNT = 16;
+
 export class AgentWorkflow {
   private provider: Provider;
   private cwd: string;
@@ -335,8 +337,9 @@ export class AgentWorkflow {
       let hasStarted = false;
       let isFirstChunk = true;
 
+      let chunkCount = 0;
+
       try {
-        let chunkCount = 0;
 
         // Wrap streaming with timeout
         const streamingOperation = async () => {
@@ -449,10 +452,16 @@ export class AgentWorkflow {
           chalk.yellow("⚠️  Received empty response, retrying with fallback...")
         );
 
+        const fallbackReason =
+          chunkCount === 0
+            ? "   Provider stream returned no content; retrying without streaming."
+            : "   Stream output was blank; retrying without streaming.";
+        console.log(chalk.gray(fallbackReason));
+
         // Fallback to non-streaming chat if streaming fails
         try {
           const fallbackSpinner = ora(
-            chalk.blue("Trying fallback approach...")
+            chalk.blue("Retrying without streaming...")
           ).start();
           const fallbackResponse = await this.executeWithTimeout(
             () => this.provider.chat(this.messages),
@@ -600,7 +609,12 @@ export class AgentWorkflow {
           // Only flag as error if it starts with error indicators or contains specific error patterns
           const trimmedResult = result.trim();
           const lowerResult = trimmedResult.toLowerCase();
-          const benignPatterns = ["error: no test specified"];
+          const benignPatterns = [
+            "error: no test specified",
+            "note: this file does not exist yet",
+            "file doesn't exist yet",
+            "file is missing and can be created",
+          ];
           const containsBenign = benignPatterns.some((pattern) =>
             lowerResult.includes(pattern)
           );
@@ -637,6 +651,9 @@ export class AgentWorkflow {
                 lowerResult.includes("error analyzing project:")));
 
           if (isError) {
+            if (this.handleSimpleToolFailure(toolCall, result, toolResults)) {
+              continue;
+            }
             console.log(chalk.red(`    ❌ ${toolCall.tool} failed:`));
             console.log(chalk.red(`      ${result}`));
             console.log(chalk.cyan(`    🧠 Analyzing the error:`));
@@ -1391,6 +1408,148 @@ export class AgentWorkflow {
         return result.result;
       }
 
+      case "todo": {
+        const action = (params.action || params.mode || "list").toLowerCase();
+        const rawItemsSource =
+          (typeof content === "string" && content.trim().length > 0
+            ? content
+            : params.items || params.tasks || params.list || "");
+        const tasks = this.parseTasksFromInput(String(rawItemsSource));
+
+        const listResponse = () =>
+          this.todoList.length > 0
+            ? `TODO list:\n${this.formatTodoList()}`
+            : "TODO list is currently empty.";
+
+        const resolveReference = () => {
+          const indexParam =
+            params.index ??
+            params.item_index ??
+            params.position ??
+            params.id ??
+            params.number;
+          let index: number | undefined;
+          if (typeof indexParam === "string" && indexParam.trim().length > 0) {
+            const numeric = parseInt(indexParam, 10);
+            if (!Number.isNaN(numeric)) {
+              const candidate = numeric - 1;
+              if (candidate >= 0 && candidate < this.todoList.length) {
+                index = candidate;
+              }
+            }
+          }
+          const patternSource =
+            (params.task && params.task.trim()) ||
+            (params.item && params.item.trim()) ||
+            (params.name && params.name.trim()) ||
+            (params.target && params.target.trim()) ||
+            "";
+          const pattern =
+            patternSource ||
+            (tasks.length === 1 ? tasks[0] : "");
+          return { index, pattern: pattern || undefined };
+        };
+
+        switch (action) {
+          case "create":
+          case "set":
+          case "replace": {
+            if (tasks.length === 0) {
+              return "TODO: Provide one or more tasks to create the list.";
+            }
+            this.setTodoListFromTasks(tasks);
+            this.displayTodoList();
+            return `Created TODO list with ${tasks.length} item(s).\n${listResponse()}`;
+          }
+          case "add":
+          case "append": {
+            if (tasks.length === 0) {
+              return "TODO: Provide one or more tasks to add.";
+            }
+            const added = this.addTodoItems(tasks);
+            if (added === 0) {
+              return "TODO: Provide one or more tasks to add.";
+            }
+            this.displayTodoList();
+            return `Added ${added} task(s).\n${listResponse()}`;
+          }
+          case "list":
+          case "show":
+          case "status": {
+            this.displayTodoList();
+            return listResponse();
+          }
+          case "start":
+          case "progress":
+          case "in_progress": {
+            const { index, pattern } = resolveReference();
+            const updated = this.updateTodoStatus(pattern, "in_progress", index);
+            if (!updated) {
+              return "TODO: Could not find a matching task to mark in progress.";
+            }
+            return `Marked "${updated.task}" as in progress.\n${listResponse()}`;
+          }
+          case "complete":
+          case "done":
+          case "finish": {
+            const { index, pattern } = resolveReference();
+            const updated = this.updateTodoStatus(pattern, "completed", index);
+            if (!updated) {
+              return "TODO: Could not find a matching task to mark complete.";
+            }
+            return `Marked "${updated.task}" as completed.\n${listResponse()}`;
+          }
+          case "update": {
+            const statusParam = (params.status || params.state || params.value || "").toLowerCase();
+            const { index, pattern } = resolveReference();
+            if (statusParam === "pending") {
+              const targetIndex = this.findTodoIndex(pattern, index);
+              if (targetIndex === -1) {
+                return "TODO: Could not find a matching task to update.";
+              }
+              this.todoList[targetIndex].status = "pending";
+              this.displayTodoList();
+              return `Marked "${this.todoList[targetIndex].task}" as pending.\n${listResponse()}`;
+            }
+            if (statusParam === "in_progress" || statusParam === "progress" || statusParam === "in-progress") {
+              const updated = this.updateTodoStatus(pattern, "in_progress", index);
+              if (!updated) {
+                return "TODO: Could not find a matching task to update.";
+              }
+              return `Marked "${updated.task}" as in progress.\n${listResponse()}`;
+            }
+            if (statusParam === "completed" || statusParam === "done" || statusParam === "complete") {
+              const updated = this.updateTodoStatus(pattern, "completed", index);
+              if (!updated) {
+                return "TODO: Could not find a matching task to update.";
+              }
+              return `Marked "${updated.task}" as completed.\n${listResponse()}`;
+            }
+            return "TODO: Provide a valid status (pending, in_progress, completed).";
+          }
+          case "remove":
+          case "delete": {
+            const { index, pattern } = resolveReference();
+            const targetIndex = this.findTodoIndex(pattern, index);
+            if (targetIndex === -1) {
+              return "TODO: Could not find a matching task to remove.";
+            }
+            const [removed] = this.todoList.splice(targetIndex, 1);
+            this.displayTodoList();
+            return `Removed task "${removed.task}".\n${listResponse()}`;
+          }
+          case "clear":
+          case "reset": {
+            const hadItems = this.todoList.length > 0;
+            this.todoList = [];
+            this.displayTodoList();
+            return `${hadItems ? "Cleared TODO list." : "TODO list is already empty."}\n${listResponse()}`;
+          }
+          default:
+            return `TODO: Unknown action "${action}". Supported actions: create, add, list, start, complete, update, remove, clear.`;
+        }
+      }
+
       default:
         // Check if it's an MCP tool (format: serverName.toolName)
         if (tool.includes('.')) {
@@ -1420,7 +1579,7 @@ export class AgentWorkflow {
       const textContent = result.content
         .filter(c => c.type === 'text')
         .map(c => c.text)
-        .join('\n');
+        .join("\n");
 
       console.log(chalk.green(`  ✓ MCP tool completed`));
       return textContent || 'Tool executed successfully';
@@ -1980,6 +2139,101 @@ Based on this analysis, suggest a solution.`;
     }
   }
 
+  private handleSimpleToolFailure(
+    toolCall: any,
+    result: string,
+    toolResults: string[]
+  ): boolean {
+    const missing = this.detectMissingPath(toolCall, result);
+    if (!missing) {
+      return false;
+    }
+
+    const target =
+      missing.path || (missing.type === "file" ? "requested file" : "requested directory");
+    console.log(
+      chalk.yellow(
+        `    ⚠️ ${missing.type === "file" ? "File" : "Directory"} "${target}" not found.`
+      )
+    );
+    const guidance =
+      missing.type === "file"
+        ? "      Use propose_edit to create it or verify the path before retrying."
+        : "      Create the directory or adjust the path, then rerun the command.";
+    console.log(chalk.gray(guidance));
+    console.log(
+      chalk.gray(
+        "      Skipping escalated recovery steps for this known, non-fatal condition."
+      )
+    );
+
+    this.markPlanStepPending("Execute tool");
+    toolResults.push(result);
+    return true;
+  }
+
+  private detectMissingPath(
+    toolCall: any,
+    message: string
+  ): { type: "file" | "directory"; path: string } | null {
+    const lower = message.toLowerCase();
+    if (!toolCall || !toolCall.tool) {
+      return null;
+    }
+
+    if (
+      toolCall.tool === "read_file" &&
+      (lower.includes("file not found") || lower.includes("note: this file does not exist yet"))
+    ) {
+      const pathParam =
+        toolCall.params?.path ||
+        toolCall.params?.file ||
+        toolCall.params?.filepath ||
+        "";
+      const detected =
+        pathParam ||
+        this.extractPathFromMessage(message, /file not found:\s*(.+)/i) ||
+        this.extractPathFromMessage(message, /note: this file does not exist yet\.\s*(.+)/i);
+      return { type: "file", path: detected };
+    }
+
+    if (toolCall.tool === "list_files" && lower.includes("directory not found")) {
+      const pathParam =
+        toolCall.params?.path ||
+        toolCall.params?.dir ||
+        toolCall.params?.directory ||
+        "";
+      const detected = pathParam || this.extractPathFromMessage(message, /directory not found:\s*(.+)/i);
+      return { type: "directory", path: detected };
+    }
+
+    return null;
+  }
+
+  private extractPathFromMessage(message: string, pattern: RegExp): string {
+    const match = message.match(pattern);
+    return match ? match[1].trim() : "";
+  }
+
+  private getSimpleAlternative(
+    toolCall: any,
+    error: string
+  ): { log: string; response: string } | null {
+    const missing = this.detectMissingPath(toolCall, error);
+    if (!missing) {
+      return null;
+    }
+
+    const target =
+      missing.path || (missing.type === "file" ? "requested file" : "requested directory");
+    const log = `${missing.type === "file" ? "File" : "Directory"} "${target}" is missing.`;
+    const response =
+      missing.type === "file"
+        ? `Handled missing file: ${target}. Create it with propose_edit or adjust the path before retrying.`
+        : `Handled missing directory: ${target}. Create it or adjust the path before retrying.`;
+    return { log, response };
+  }
+
   /**
    * Try alternative approach when a tool fails
    */
@@ -1987,6 +2241,12 @@ Based on this analysis, suggest a solution.`;
     toolCall: any,
     error: string
   ): Promise<string | null> {
+    const simpleAlternative = this.getSimpleAlternative(toolCall, error);
+    if (simpleAlternative) {
+      console.log(chalk.gray(`  ℹ️ ${simpleAlternative.log}`));
+      return simpleAlternative.response;
+    }
+
     console.log(chalk.yellow(`🔄 Analyzing failure and trying alternative...`));
     console.log(chalk.gray(`  🎯 Original tool: ${toolCall.tool}`));
     console.log(
@@ -2130,7 +2390,7 @@ Provide a practical alternative solution that addresses the root cause.`;
     section += `You have access to ${this.mcpTools.length} additional tools from connected MCP servers:\n\n`;
 
     this.mcpTools.forEach((tool, index) => {
-      section += `${index + 16}. **${tool.name}** - ${tool.description}\n`;
+      section += `${index + BUILT_IN_TOOL_COUNT + 1}. **${tool.name}** - ${tool.description}\n`;
       section += `   Format: <tool name="${tool.name}"`;
 
       // Add parameter hints from schema
@@ -2222,6 +2482,11 @@ Provide a practical alternative solution that addresses the root cause.`;
 
 15. **load_memory** - Load information from persistent memory
     Format: <tool name="load_memory" key="project-notes"></tool>
+
+16. **todo** - Manage the session TODO list (create/add/update tasks)
+    Format: <tool name="todo" action="add">- Implement unit tests
+      - Update docs</tool>
+    Actions: create, add, list, start, complete, update, remove, clear
 
 ${mcpSection}
 
@@ -2323,42 +2588,109 @@ The system will automatically display and update this list.
     return response.replace(/<tool[\s\S]*?<\/tool>/g, "").trim();
   }
 
+  private parseTasksFromInput(input: string): string[] {
+    if (!input) {
+      return [];
+    }
+
+    return input
+      .split(/\r?\n|;/)
+      .flatMap((line) =>
+        line.includes(',') && !line.includes('http')
+          ? line.split(',').map((part) => part.trim())
+          : [line]
+      )
+      .map((line) => line.replace(/^[-*]\s+/, '').trim())
+      .filter((line) => line.length > 0);
+  }
+
+  private setTodoListFromTasks(tasks: string[]): void {
+    this.todoList = tasks.map((task) => ({ task, status: 'pending' as const }));
+  }
+
+  private addTodoItems(tasks: string[]): number {
+    const additions = tasks
+      .map((task) => task.trim())
+      .filter((task) => task.length > 0);
+
+    additions.forEach((task) => {
+      this.todoList.push({ task, status: 'pending' });
+    });
+
+    return additions.length;
+  }
+
+  private findTodoIndex(taskPattern?: string, index?: number): number {
+    if (typeof index === 'number' && index >= 0 && index < this.todoList.length) {
+      return index;
+    }
+
+    if (taskPattern) {
+      const normalized = taskPattern.toLowerCase();
+      return this.todoList.findIndex((item) =>
+        item.task.toLowerCase().includes(normalized)
+      );
+    }
+
+    return -1;
+  }
+
+  private formatTodoList(): string {
+    if (this.todoList.length === 0) {
+      return 'TODO list is currently empty.';
+    }
+
+    return this.todoList
+      .map((item, index) => {
+        const checkbox =
+          item.status === 'completed'
+            ? '[x]'
+            : item.status === 'in_progress'
+            ? '[~]'
+            : '[ ]';
+        return `${index + 1}. ${checkbox} ${item.task}`;
+      })
+      .join("\n");
+  }
+
   /**
    * Parse and display TODO list from AI response
    */
   private parseTodoList(response: string): void {
-    // Look for TODO list in response (markdown format)
     const todoRegex = /(?:TODO|Tasks?|Steps?):\s*\n((?:[-*]\s+.+\n?)+)/gi;
     const match = todoRegex.exec(response);
 
-    if (match) {
-      const todoText = match[1];
-      const lines = todoText.split("\n").filter((l) => l.trim());
-
-      this.todoList = lines.map((line) => {
-        const task = line.replace(/^[-*]\s+/, "").trim();
-        return { task, status: "pending" as const };
-      });
-
-      if (this.todoList.length > 0) {
-        this.displayTodoList();
-      }
+    if (!match) {
+      return;
     }
+
+    const tasks = this.parseTasksFromInput(match[1]);
+    if (tasks.length === 0) {
+      return;
+    }
+
+    this.setTodoListFromTasks(tasks);
+    this.displayTodoList();
   }
 
   /**
    * Display the TODO list
    */
   private displayTodoList(): void {
-    console.log(chalk.bold.blue("\n📋 Task List:\n"));
+    console.log(chalk.bold.blue("\n[TODO] Task List\n"));
+
+    if (this.todoList.length === 0) {
+      console.log(chalk.gray("  (no tasks yet)\n"));
+      return;
+    }
 
     this.todoList.forEach((item, index) => {
       const icon =
         item.status === "completed"
-          ? chalk.green("✅")
+          ? chalk.green("[x]")
           : item.status === "in_progress"
-          ? chalk.yellow("⏳")
-          : chalk.gray("⬜");
+          ? chalk.yellow("[~]")
+          : chalk.gray("[ ]");
 
       const text =
         item.status === "completed"
@@ -2377,17 +2709,19 @@ The system will automatically display and update this list.
    * Update TODO item status
    */
   private updateTodoStatus(
-    taskPattern: string,
-    status: "in_progress" | "completed"
-  ): void {
-    const item = this.todoList.find((t) =>
-      t.task.toLowerCase().includes(taskPattern.toLowerCase())
-    );
-
-    if (item) {
-      item.status = status;
-      this.displayTodoList();
+    taskPattern: string | undefined,
+    status: "in_progress" | "completed",
+    index?: number
+  ): TodoItem | null {
+    const resolvedIndex = this.findTodoIndex(taskPattern, index);
+    if (resolvedIndex === -1) {
+      return null;
     }
+
+    const item = this.todoList[resolvedIndex];
+    item.status = status;
+    this.displayTodoList();
+    return item;
   }
 
   /**
@@ -2937,3 +3271,4 @@ The system will automatically display and update this list.
     }
   }
 }
+

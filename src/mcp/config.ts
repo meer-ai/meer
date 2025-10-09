@@ -11,6 +11,11 @@ import chalk from 'chalk';
 
 const DEFAULT_MCP_CONFIG_PATH = join(homedir(), '.meer', 'mcp-config.yaml');
 
+const DEFAULT_FILESYSTEM_ROOT = (() => {
+  const projectsPath = join(homedir(), 'projects');
+  return existsSync(projectsPath) ? projectsPath : homedir();
+})();
+
 /**
  * Default MCP configuration template
  */
@@ -18,7 +23,7 @@ const DEFAULT_MCP_CONFIG: MCPConfig = {
   mcpServers: {
     filesystem: {
       command: 'npx',
-      args: ['-y', '@modelcontextprotocol/server-filesystem', join(homedir(), 'projects')],
+      args: ['-y', '@modelcontextprotocol/server-filesystem', DEFAULT_FILESYSTEM_ROOT],
       enabled: false,
       description: 'Secure file operations with configurable access controls',
       timeout: 30000,
