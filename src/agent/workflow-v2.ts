@@ -1,7 +1,8 @@
 import chalk from "chalk";
 import ora from "ora";
+import inquirer from "inquirer";
 import type { Provider, ChatMessage } from "../providers/base.js";
-import { parseToolCalls } from "../tools/index.js";
+import { parseToolCalls, type FileEdit, applyEdit, generateDiff } from "../tools/index.js";
 import { memory } from "../memory/index.js";
 import { logVerbose } from "../logger.js";
 import { MCPManager } from "../mcp/manager.js";
@@ -39,6 +40,7 @@ export class AgentWorkflowV2 {
   private sessionTracker?: SessionTracker;
   private contextLimit?: number;
   private chatTimeout: number;
+  private proposedEdits: FileEdit[] = [];
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -105,6 +107,9 @@ export class AgentWorkflowV2 {
         content: userMessage,
       });
     }
+
+    // Reset proposed edits for this message
+    this.proposedEdits = [];
 
     let iteration = 0;
     let fullResponse = "";
@@ -243,6 +248,11 @@ export class AgentWorkflowV2 {
       console.log(chalk.yellow("\n⚠️ Reached maximum iterations"));
     }
 
+    // Review and apply any proposed edits
+    if (this.proposedEdits.length > 0) {
+      await this.reviewEdits();
+    }
+
     return fullResponse;
   }
 
@@ -272,7 +282,8 @@ export class AgentWorkflowV2 {
           params.description || "Edit file",
           this.cwd
         );
-        return `File edit proposed: ${edit.path}\n${edit.description}`;
+        this.proposedEdits.push(edit);
+        return `File edit proposed for review: ${edit.path}\n${edit.description}\n(Changes will be shown for approval after processing)`;
 
       case "run_command":
         const cmdResult = await tools.runCommand(params.command, this.cwd);
@@ -334,20 +345,22 @@ export class AgentWorkflowV2 {
   private getSystemPrompt(): string {
     const mcpSection = this.getMCPToolsSection();
 
-    return `You are an intelligent coding assistant. You have access to tools that you can use when needed.
+    return `You are Meer AI, an intelligent coding assistant with tool access for real-world development tasks.
 
 ## Your Approach
 
-**You are in control.** Decide for yourself:
-- Does this request need tools? Or can you just answer?
-- If it needs tools, which ones and when?
-- Should you read files? Run commands? Search the web?
+**You are autonomous.** For each request, decide:
+- Can I answer directly, or do I need tools?
+- Which tools are needed and in what order?
+- Should I explore the codebase, run commands, or search externally?
 
-**No rigid workflows.** Some requests need no tools at all (like "hello" or "explain what React is"). Others need extensive file operations. You decide based on the request.
+**Be conversational and adaptive.** Some requests need no tools (like "hello" or "explain React"). Others require extensive operations. Explain your reasoning briefly before acting.
 
-**Be conversational.** Explain what you're doing and why. If the request is unclear, ask for clarification instead of guessing.
+**Stay goal-oriented.** Understand the user's intent, deliver complete outcomes, and verify your work when making changes.
 
 ## Available Tools
+
+Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN tags (full file). Never use self-closing tags.
 
 1. **analyze_project** - Analyze project structure and detect framework
    \`<tool name="analyze_project"></tool>\`
@@ -392,15 +405,25 @@ export class AgentWorkflowV2 {
 
 ${mcpSection}
 
-## Rules
+## Safety & Best Practices
 
-- Use XML-style tool tags as shown above
-- For propose_edit, put content BETWEEN tags, not in attributes
-- Always use \`<tool>...</tool>\`, never self-closing \`<tool />\`
-- Explain your reasoning before using tools
-- Ask for clarification if the request is vague
-- You DON'T need to analyze the project for every request - only when it's relevant
-- For simple greetings or questions, just respond directly
+**Destructive operations require confirmation:**
+- Commands like \`rm -rf\`, \`docker volume prune\`, \`DROP TABLE\`, or anything that deletes/truncates data → ask for explicit confirmation first
+- Prefer additive changes over deletions when possible
+
+**Protect secrets:**
+- Never print values from .env files, credentials, tokens, or API keys
+- Redact sensitive data in outputs
+
+**File edits:**
+- Always return complete file content in \`propose_edit\`, not diffs
+- Keep changes minimal and document them in the description
+- After edits, explain what changed and how to test
+
+**Tool usage:**
+- Only analyze the project when it's relevant to the request
+- Prefer local context before searching externally
+- Use tools deliberately - each call should serve the goal
 
 ## Working Directory
 
@@ -417,14 +440,16 @@ You: "React is a JavaScript library for building user interfaces..." (no tools n
 **User: "show me the auth code"**
 You: "I'll find and read the authentication code for you."
 <tool name="search_text" term="auth" filePattern="*.ts"></tool>
-(Then read the relevant files)
 
 **User: "add a new user endpoint"**
-You: "I'll add a new user endpoint. Let me first check the existing API structure."
+You: "I'll add a new user endpoint. Let me first check the existing API structure to match your conventions."
 <tool name="find_files" pattern="*route*"></tool>
-(Then analyze and implement)
+(Then read relevant files, implement the endpoint with propose_edit, and explain how to test)
 
-You decide the approach based on what makes sense.`;
+**User: "delete all migration files"**
+You: "This will permanently delete migration files. Are you sure you want to proceed? Please confirm explicitly."
+
+Stay concise, professional, and helpful. Use markdown and code blocks for clarity.`;
   }
 
   private getMCPToolsSection(): string {
@@ -462,5 +487,151 @@ You decide the approach based on what makes sense.`;
         setTimeout(() => reject(new Error(`Timeout: ${operation} exceeded ${timeoutMs}ms`)), timeoutMs)
       ),
     ]);
+  }
+
+  /**
+   * Review and apply proposed edits with user approval
+   */
+  private async reviewEdits(): Promise<void> {
+    if (this.proposedEdits.length === 0) return;
+
+    console.log(chalk.blue(`\n📝 Reviewing ${this.proposedEdits.length} proposed change(s)...\n`));
+
+    // If multiple edits, allow bulk selection first
+    if (this.proposedEdits.length > 1) {
+      const { selected } = await inquirer.prompt([
+        {
+          type: "checkbox",
+          name: "selected",
+          message: "Select files to apply (space to toggle, enter to confirm):",
+          choices: this.proposedEdits.map((e, idx) => ({
+            name: `${idx + 1}. ${e.path} - ${e.description}`,
+            value: idx,
+            checked: true,
+          })),
+          pageSize: Math.min(10, this.proposedEdits.length),
+        },
+      ]);
+
+      // If nothing selected, bail out gracefully
+      if (!selected || (selected as number[]).length === 0) {
+        console.log(chalk.gray("No changes selected."));
+        return;
+      }
+
+      // Show detailed diffs and confirm per selection
+      for (const idx of selected as number[]) {
+        const edit = this.proposedEdits[idx];
+
+        console.log(chalk.bold.yellow(`\n${idx + 1}. ${edit.path}`));
+        console.log(chalk.gray(`   ${edit.description}\n`));
+
+        const diff = generateDiff(edit.oldContent, edit.newContent);
+        if (diff.length > 0) {
+          console.log(chalk.gray("┌─ Changes:"));
+          await this.showDiff(diff);
+        } else {
+          console.log(chalk.green("   No textual diff (new or identical file)\n"));
+        }
+
+        const { confirm } = await inquirer.prompt([
+          {
+            type: "confirm",
+            name: "confirm",
+            message: `Apply changes to ${edit.path}?`,
+            default: true,
+          },
+        ]);
+
+        if (!confirm) {
+          console.log(chalk.yellow(`⏭️  Skipped ${edit.path}`));
+          continue;
+        }
+
+        const result = applyEdit(edit, this.cwd);
+        if (result.error) {
+          console.log(chalk.red(`\n❌ ${result.error}\n`));
+        } else {
+          console.log(chalk.green(`\n✅ ${result.result}\n`));
+        }
+      }
+      return;
+    }
+
+    // Single edit flow
+    for (let i = 0; i < this.proposedEdits.length; i++) {
+      const edit = this.proposedEdits[i];
+
+      console.log(chalk.bold.yellow(`\n${i + 1}. ${edit.path}`));
+      console.log(chalk.gray(`   ${edit.description}\n`));
+
+      const diff = generateDiff(edit.oldContent, edit.newContent);
+      if (diff.length > 0) {
+        console.log(chalk.gray("┌─ Changes:"));
+        await this.showDiff(diff);
+      } else {
+        console.log(chalk.green("   No textual diff (new or identical file)\n"));
+      }
+
+      const { action } = await inquirer.prompt([
+        {
+          type: "list",
+          name: "action",
+          message: `Apply changes to ${edit.path}?`,
+          choices: [
+            { name: "Apply", value: "apply" },
+            { name: "Skip", value: "skip" },
+          ],
+          default: "apply",
+        },
+      ]);
+
+      if (action === "apply") {
+        const result = applyEdit(edit, this.cwd);
+        if (result.error) {
+          console.log(chalk.red(`\n❌ ${result.error}\n`));
+        } else {
+          console.log(chalk.green(`\n✅ ${result.result}\n`));
+        }
+      } else {
+        console.log(chalk.yellow(`⏭️  Skipped ${edit.path}`));
+      }
+    }
+  }
+
+  /**
+   * Display a diff with pagination support
+   */
+  private async showDiff(diffLines: string[]): Promise<void> {
+    if (diffLines.length === 0) {
+      console.log(chalk.green("   No textual diff (new or identical file)\n"));
+      return;
+    }
+
+    const maxLines = 50; // Show max 50 lines at once
+
+    if (diffLines.length <= maxLines) {
+      // Small diff, show it all
+      diffLines.forEach((line) => console.log(line));
+      console.log(chalk.gray("└─\n"));
+    } else {
+      // Large diff, paginate
+      diffLines.slice(0, maxLines).forEach((line) => console.log(line));
+      console.log(chalk.gray(`└─ ... and ${diffLines.length - maxLines} more lines\n`));
+
+      const { showMore } = await inquirer.prompt([
+        {
+          type: "confirm",
+          name: "showMore",
+          message: `Show remaining ${diffLines.length - maxLines} lines?`,
+          default: false,
+        },
+      ]);
+
+      if (showMore) {
+        diffLines.slice(maxLines).forEach((line) => console.log(line));
+        console.log(chalk.gray("└─\n"));
+      }
+    }
   }
 }
