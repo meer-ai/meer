@@ -8,6 +8,7 @@ import type {
 
 interface MeerProviderConfig {
   apiKey?: string;
+  apiUrl?: string;
   model?: string;
   temperature?: number;
 }
@@ -70,10 +71,11 @@ export class MeerProvider implements Provider {
   constructor(config: MeerProviderConfig = {}) {
     const model = config.model || "auto";
     this.config = {
-      apiUrl: (process.env.MEERAI_API_URL || "https://api.meerai.dev").replace(
-        /\/$/,
-        ""
-      ),
+      apiUrl: (
+        config.apiUrl ||
+        process.env.MEERAI_API_URL ||
+        "https://api.meerai.dev"
+      ).replace(/\/$/, ""),
       apiKey: config.apiKey || process.env.MEER_API_KEY || "",
       model,
       temperature: config.temperature ?? 0.7,

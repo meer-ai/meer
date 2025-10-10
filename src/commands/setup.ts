@@ -281,26 +281,78 @@ async function runSetupWizard(): Promise<void> {
     }
 
   } else if (provider === 'meer') {
-    console.log(chalk.gray('\nGenerate an API key from https://meerai.dev/dashboard/api-keys'));
+    console.log(chalk.cyan('\n🔑 Meer Provider Setup\n'));
+    console.log(chalk.gray('You can authenticate using either:'));
+    console.log(chalk.gray('  1. API Key (recommended for automation and scripts)'));
+    console.log(chalk.gray('  2. Login flow (interactive authentication)\n'));
 
-    const { apiKey } = await inquirer.prompt([
+    const { authMethod } = await inquirer.prompt([
       {
-        type: 'password',
-        name: 'apiKey',
-        message: 'Enter your Meer API key (or press Enter to set MEER_API_KEY env var):',
-        mask: '*'
+        type: 'list',
+        name: 'authMethod',
+        message: 'Choose authentication method:',
+        choices: [
+          {
+            name: chalk.cyan('🔑 API Key') + chalk.gray(' - Generate from https://meerai.dev/dashboard/api-keys'),
+            value: 'apikey'
+          },
+          {
+            name: chalk.cyan('👤 Login') + chalk.gray(' - Use device code flow (existing method)'),
+            value: 'login'
+          }
+        ]
       }
     ]);
 
-    config.model = 'auto';
-    config.meer.apiKey = apiKey || '';
+    if (authMethod === 'apikey') {
+      console.log(chalk.yellow('\n💡 To generate an API key:'));
+      console.log(chalk.gray('   1. Visit https://meerai.dev/dashboard/api-keys'));
+      console.log(chalk.gray('   2. Click "Create API Key"'));
+      console.log(chalk.gray('   3. Give it a name (e.g., "My CLI")'));
+      console.log(chalk.gray('   4. Copy the generated key (starts with "meer_")\n'));
 
-    if (!apiKey && !process.env.MEER_API_KEY) {
-      console.log(chalk.yellow('\n⚠️  No API key provided. Set MEER_API_KEY before using the Meer provider.'));
+      const { apiKey } = await inquirer.prompt([
+        {
+          type: 'password',
+          name: 'apiKey',
+          message: 'Enter your Meer API key (or press Enter to use MEER_API_KEY env var):',
+          mask: '*',
+          validate: (input) => {
+            if (!input) return true; // Allow empty for env var
+            if (!input.startsWith('meer_')) {
+              return 'API key should start with "meer_"';
+            }
+            if (input.length < 20) {
+              return 'API key seems too short. Please check and try again.';
+            }
+            return true;
+          }
+        }
+      ]);
+
+      config.model = 'auto';
+      config.meer.apiKey = apiKey || '';
+
+      if (!apiKey && !process.env.MEER_API_KEY) {
+        console.log(chalk.yellow('\n⚠️  No API key provided. Set MEER_API_KEY environment variable before using Meer.'));
+        console.log(chalk.gray('\n   export MEER_API_KEY=meer_your_key_here\n'));
+      } else {
+        console.log(chalk.green('\n✅ API key configured successfully!'));
+      }
+
+      console.log(chalk.gray('   Authentication: API Key'));
+      console.log(chalk.gray('   Requests will use your Meer subscription and quota.'));
+      console.log(chalk.blue('\n🔐 Your API key is stored securely in ~/.meer/config.yaml\n'));
+    } else {
+      // Login flow (existing behavior - user will use `meer login` command)
+      config.model = 'auto';
+      config.meer.apiKey = '';
+
+      console.log(chalk.green('\n✅ Meer provider configured for login flow!'));
+      console.log(chalk.yellow('\n⚡ Next step: Run the following command to authenticate:'));
+      console.log(chalk.cyan('   meer login\n'));
+      console.log(chalk.gray('   This will guide you through the device code authentication flow.\n'));
     }
-
-    console.log(chalk.green('\n✅ Meer managed provider configured!'));
-    console.log(chalk.gray('   Requests will use your Meer subscription and quota.\n'));
 
   } else if (provider === 'openai') {
     const { apiKey } = await inquirer.prompt([

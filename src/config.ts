@@ -45,7 +45,8 @@ const ConfigSchema = z.object({
   }).optional(),
   // Meer provider (managed)
   meer: z.object({
-    apiKey: z.string().optional()
+    apiKey: z.string().optional(),
+    apiUrl: z.string().optional()
   }).optional(),
   context: z.object({
     autoCollect: z.boolean().optional(),
@@ -125,7 +126,8 @@ export function loadConfig(): LoadedConfig {
         siteUrl: 'https://github.com/anthropics/meer'
       },
       meer: {
-        apiKey: '' // Set via MEER_API_KEY env var
+        apiKey: '', // Set via MEER_API_KEY env var
+        apiUrl: process.env.MEERAI_API_URL || 'https://api.meerai.dev'
       },
       context: {
         autoCollect: false,
@@ -208,6 +210,7 @@ export function loadConfig(): LoadedConfig {
       defaultModel = config.model || 'auto';
       provider = new MeerProvider({
         apiKey: config.meer?.apiKey || process.env.MEER_API_KEY || '',
+        apiUrl: config.meer?.apiUrl || process.env.MEERAI_API_URL || 'https://api.meerai.dev',
         model: defaultModel,
         temperature: config.temperature
       });
