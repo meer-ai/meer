@@ -1,10 +1,10 @@
 <div align="center">
 
-# 🌊 **MeerAI**
+#🌊 MeerAI
 ### _Dive deep into your code._
 
-**MeerAI** (from the German word _“Meer”_ — *sea*) is an **open-source, local-first AI CLI** for developers.  
-It connects to your **local Ollama models** or remote providers like **OpenAI, Anthropic, Gemini, and Hugging Face**,  
+**MeerAI** (from the German word _"Meer"_ — *sea*) is an **open-source, local-first AI CLI** for developers.
+It connects to your **local Ollama models** or remote providers like **OpenAI, Anthropic, Gemini, and Hugging Face**,
 letting you chat with your code, review changes, and craft commits — all from the terminal.
 
 [![License](https://img.shields.io/github/license/meerai/meer)](LICENSE)
@@ -16,20 +16,20 @@ letting you chat with your code, review changes, and craft commits — all from 
 
 ---
 
-## 🚀 Overview
+## Overview
 
 MeerAI brings intelligent developer assistance **to your command line** — no cloud lock-in, no tracking, no limits.
 
-- 🧠 **Local-first** — runs entirely offline with [Ollama](https://ollama.ai)
-- 🌍 **Model-agnostic** — plug in OpenAI, Anthropic, Gemini, Hugging Face, or BYOK (vLLM, TGI)
-- 💬 **Conversational CLI** — chat, ask, review, commit directly from your terminal
-- 🪶 **Lightweight** — zero dependencies beyond Node.js
-- 🔒 **Private by design** — nothing leaves your machine (unless you choose to sync)
-- 🧩 **Extensible** — add your own models, tools, or providers
+- **Local-first** — runs entirely offline with [Ollama](https://ollama.ai)
+- **Model-agnostic** — plug in OpenAI, Anthropic, Gemini, Hugging Face, or BYOK (vLLM, TGI)
+- **Conversational CLI** — chat, ask, review, commit directly from your terminal
+- **Lightweight** — zero dependencies beyond Node.js
+- **Private by design** — nothing leaves your machine (unless you choose to sync)
+- **Extensible** — add your own models, tools, or providers
 
 ---
 
-## 🧭 Commands
+## Commands
 
 | Command | Description |
 |----------|-------------|
@@ -42,13 +42,13 @@ MeerAI brings intelligent developer assistance **to your command line** — no c
 
 ---
 
-## ⚙️ Installation
+## Installation
 
-### 1️⃣ Prerequisites
+### Prerequisites
 - Node.js **20+**
 - [Ollama](https://ollama.ai) (for local models like Mistral, Llama, Phi, Qwen)
 
-### 2️⃣ Clone & setup
+### Clone & setup
 ```bash
 git clone https://github.com/meer-ai/meer.git
 cd meer
@@ -57,7 +57,7 @@ npm run build
 npm link        # or npm i -g
 ````
 
-### 3️⃣ Verify
+### Verify
 
 ```bash
 meer --help
@@ -65,7 +65,7 @@ meer --help
 
 ---
 
-## 🌊 Example Usage
+## Example Usage
 
 ### Ask about your code
 
@@ -88,7 +88,7 @@ meer review .
 
 ---
 
-## 🧠 Local Memory
+## Local Memory
 
 MeerAI remembers context between runs — stored privately on your device.
 
@@ -107,7 +107,7 @@ meer memory purge
 
 ---
 
-## 🗂️ Configuration
+## Configuration
 
 **`~/.meerai/config.yaml`**
 
@@ -126,7 +126,7 @@ profiles:
 
   llama3:
     provider: ollama
-    model: llama3.2:3b
+    model: llama3:3b
 
   qwen:
     provider: ollama
@@ -141,7 +141,7 @@ DEVAI_PROFILE=phi3 meer ask "Summarize this file"
 
 ---
 
-## 🧩 Extending MeerAI
+## Extending MeerAI
 
 MeerAI is modular — add new capabilities under:
 
@@ -168,32 +168,32 @@ src/providers/anthropic.ts
 
 ---
 
-## 🌐 Roadmap
+## Roadmap
 
 | Stage   | Goal                                           |
 | ------- | ---------------------------------------------- |
 | ✅ v0.1  | CLI foundation, Ollama adapter, local memory   |
-| 🧩 v0.2 | OpenAI-compatible + Hugging Face providers     |
-| 🌍 v0.3 | Sync backend (optional self-hosted API + DB)   |
-| 🪶 v0.4 | Plug-in system for custom commands             |
-| 🌅 v1.0 | Community templates, cloud-sync, GUI dashboard |
+| v0.2    | OpenAI-compatible + Hugging Face providers     |
+| v0.3    | Sync backend (optional self-hosted API + DB)   |
+| v0.4    | Plug-in system for custom commands             |
+| v1.0    | Community templates, cloud-sync, GUI dashboard |
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions, bug reports, and feature ideas are all welcome!
 
 1. Fork the repo
 2. Create your branch: `git checkout -b feature/your-feature`
 3. Commit your changes
-4. Open a PR 🎉
+4. Open a PR
 
 Please check out [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
 ---
 
-## 🛡️ License
+## License
 
 MeerAI is open-source under the [MIT License](LICENSE).
 
@@ -201,6 +201,6 @@ MeerAI is open-source under the [MIT License](LICENSE).
 
 <div align="center">
 
-### 🌊 *“A sea of models, one interface.”*
+### 🌊 *"A sea of models, one interface."*
 
 </div>
