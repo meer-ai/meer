@@ -152,6 +152,10 @@ async function runSetupWizard(): Promise<void> {
       message: 'Which AI provider would you like to use?',
       choices: [
         {
+          name: chalk.cyan('🌊 Meer Managed Provider') + chalk.gray(' - Use Meer subscription (requires Meer login)'),
+          value: 'meer'
+        },
+        {
           name: chalk.cyan('🦙 Ollama') + chalk.gray(' - Local, private, free (requires Ollama installed)'),
           value: 'ollama'
         },
@@ -200,6 +204,9 @@ async function runSetupWizard(): Promise<void> {
       baseURL: 'https://openrouter.ai/api',
       siteName: 'MeerAI CLI',
       siteUrl: 'https://github.com/anthropics/meer'
+    },
+    meer: {
+      apiUrl: process.env.MEERAI_API_URL || 'https://api.meerai.dev'
     },
     context: {
       embedding: {
@@ -272,6 +279,28 @@ async function runSetupWizard(): Promise<void> {
       console.log(chalk.yellow('\n💡 Tip: Make sure you\'ve pulled the model:'));
       console.log(chalk.cyan(`   ollama pull ${config.model}\n`));
     }
+
+  } else if (provider === 'meer') {
+    console.log(chalk.gray('\nGenerate an API key from https://meerai.dev/dashboard/api-keys'));
+
+    const { apiKey } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: 'Enter your Meer API key (or press Enter to set MEER_API_KEY env var):',
+        mask: '*'
+      }
+    ]);
+
+    config.model = 'auto';
+    config.meer.apiKey = apiKey || '';
+
+    if (!apiKey && !process.env.MEER_API_KEY) {
+      console.log(chalk.yellow('\n⚠️  No API key provided. Set MEER_API_KEY before using the Meer provider.'));
+    }
+
+    console.log(chalk.green('\n✅ Meer managed provider configured!'));
+    console.log(chalk.gray('   Requests will use your Meer subscription and quota.\n'));
 
   } else if (provider === 'openai') {
     const { apiKey } = await inquirer.prompt([

@@ -4,7 +4,7 @@
 ### _Dive deep into your code._
 
 **MeerAI** (from the German word _"Meer"_ — *sea*) is an **open-source, local-first AI CLI** for developers.
-It connects to your **local Ollama models** or remote providers like **OpenAI, Anthropic, Gemini, and Hugging Face**,
+It connects to your **local Ollama models**, the **Meer managed provider** (quota-aware, subscription-based), or remote providers like **OpenAI, Anthropic, Gemini, and Hugging Face**,
 letting you chat with your code, review changes, and craft commits — all from the terminal.
 
 [![License](https://img.shields.io/github/license/meerai/meer)](LICENSE)
@@ -21,7 +21,7 @@ letting you chat with your code, review changes, and craft commits — all from 
 MeerAI brings intelligent developer assistance **to your command line** — no cloud lock-in, no tracking, no limits.
 
 - **Local-first** — runs entirely offline with [Ollama](https://ollama.ai)
-- **Model-agnostic** — plug in OpenAI, Anthropic, Gemini, Hugging Face, or BYOK (vLLM, TGI)
+- **Model-agnostic** — plug in Meer managed provider, OpenAI, Anthropic, Gemini, Hugging Face, or BYOK (vLLM, TGI)
 - **Conversational CLI** — chat, ask, review, commit directly from your terminal
 - **Lightweight** — zero dependencies beyond Node.js
 - **Private by design** — nothing leaves your machine (unless you choose to sync)
@@ -85,6 +85,16 @@ meer commit-msg
 ```bash
 meer review .
 ```
+
+## Meer Managed Provider
+
+Prefer a turnkey experience without juggling API keys? Authenticate with the Meer managed provider:
+
+1. Run `meer login` and complete the browser flow to link your CLI with the Meer dashboard.
+2. Run `meer setup` and choose **Meer Managed Provider**. The CLI will auto-select models based on your subscription tier and quota.
+3. Start using commands like `meer` or `meer ask` — responses are routed through the managed backend with automatic quota tracking and tier-aware fallbacks.
+
+The managed provider enforces plan limits, records usage, and surfaces analytics inside the dashboard so you always know where your requests are going.
 
 ---
 

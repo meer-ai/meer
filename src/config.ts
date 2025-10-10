@@ -8,10 +8,11 @@ import { OpenAIProvider } from './providers/openai.js';
 import { GeminiProvider } from './providers/gemini.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { OpenRouterProvider } from './providers/openrouter.js';
+import { MeerProvider } from './providers/meer.js';
 import type { Provider } from './providers/base.js';
 
 const ConfigSchema = z.object({
-  provider: z.enum(['ollama', 'openai', 'gemini', 'anthropic', 'openrouter']),
+  provider: z.enum(['ollama', 'openai', 'gemini', 'anthropic', 'openrouter', 'meer']),
   model: z.string().optional(),
   temperature: z.number().optional(),
   // Ollama-specific
@@ -41,6 +42,10 @@ const ConfigSchema = z.object({
     baseURL: z.string().optional(),
     siteName: z.string().optional(),
     siteUrl: z.string().optional()
+  }).optional(),
+  // Meer provider (managed)
+  meer: z.object({
+    apiKey: z.string().optional()
   }).optional(),
   context: z.object({
     autoCollect: z.boolean().optional(),
@@ -119,6 +124,9 @@ export function loadConfig(): LoadedConfig {
         siteName: 'MeerAI CLI',
         siteUrl: 'https://github.com/anthropics/meer'
       },
+      meer: {
+        apiKey: '' // Set via MEER_API_KEY env var
+      },
       context: {
         autoCollect: false,
         embedding: {
@@ -193,6 +201,15 @@ export function loadConfig(): LoadedConfig {
         temperature: config.temperature,
         siteName: config.openrouter?.siteName,
         siteUrl: config.openrouter?.siteUrl
+      });
+      break;
+
+    case 'meer':
+      defaultModel = config.model || 'auto';
+      provider = new MeerProvider({
+        apiKey: config.meer?.apiKey || process.env.MEER_API_KEY || '',
+        model: defaultModel,
+        temperature: config.temperature
       });
       break;
 

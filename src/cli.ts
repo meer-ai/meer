@@ -123,6 +123,12 @@ async function showWelcomeScreen() {
         ? "🤖 OpenAI"
         : config.providerType === "gemini"
         ? "✨ Gemini"
+        : config.providerType === "anthropic"
+        ? "🧠 Anthropic"
+        : config.providerType === "openrouter"
+        ? "🌐 OpenRouter"
+        : config.providerType === "meer"
+        ? "🌊 Meer Managed"
         : config.providerType;
 
     console.log(chalk.bold.blue("📋 Configuration:"));
@@ -823,9 +829,12 @@ async function handleProviderCommand() {
     const currentProvider = config.provider || "ollama";
 
     const providers = [
+      { name: "meer", icon: "🌊", label: "Meer Managed Provider" },
       { name: "ollama", icon: "🦙", label: "Ollama (Local)" },
       { name: "openai", icon: "🤖", label: "OpenAI" },
       { name: "gemini", icon: "✨", label: "Google Gemini" },
+      { name: "anthropic", icon: "🧠", label: "Anthropic Claude" },
+      { name: "openrouter", icon: "🌐", label: "OpenRouter" },
     ];
 
     console.log(chalk.bold.blue("\n🔌 Available Providers:\n"));
@@ -866,6 +875,17 @@ async function handleProviderCommand() {
           config.model = "gemini-2.0-flash-exp";
         } else if (selectedProvider === "ollama") {
           config.model = "mistral:7b-instruct";
+        } else if (selectedProvider === "anthropic") {
+          config.model = "claude-3-5-sonnet-20241022";
+        } else if (selectedProvider === "openrouter") {
+          config.model = "anthropic/claude-3.5-sonnet";
+        } else if (selectedProvider === "meer") {
+          config.model = "auto";
+        }
+
+        if (selectedProvider === "meer") {
+          config.meer = config.meer || {};
+          config.meer.apiKey = config.meer.apiKey || "";
         }
       }
 
