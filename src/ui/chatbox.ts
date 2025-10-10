@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import inquirer from "inquirer";
-import { createInterface } from "readline";
+import { glob } from "glob";
+import { createInterface, Interface } from "readline";
 import { createWriteStream, existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -8,8 +9,19 @@ import { showSlashHelp } from "./slashHelp.js";
 import { slashCommands } from "./slashCommands.js";
 import { SessionStats, SessionTracker } from "../session/tracker.js";
 import { displayWave } from "./logo.js";
+import { DEFAULT_IGNORE_GLOBS } from "../tools/index.js";
 
 export class ChatBoxUI {
+  private static readonly MENTION_KEEP = "__MEER_MENTION_KEEP__";
+  private static readonly MENTION_CANCEL = "__MEER_MENTION_CANCEL__";
+  private static readonly MENTION_REFINE = "__MEER_MENTION_REFINE__";
+  private static readonly MENTION_MAX_RESULTS = 25;
+  private static fileCache: {
+    cwd: string;
+    files: string[];
+    loadedAt: number;
+  } | null = null;
+
   /**
    * Simple, clean input using readline - like successful CLI tools
    */
@@ -60,6 +72,7 @@ export class ChatBoxUI {
         return;
       }
 
+      const currentCwd = config.cwd || process.cwd();
       const historyPath = ChatBoxUI.getHistoryPath();
       const history = ChatBoxUI.loadHistory(historyPath);
 
@@ -74,13 +87,79 @@ export class ChatBoxUI {
 
       let slashHelpShown = false;
       let menuActive = false;
+      let mentionMenuActive = false;
       let inlineListenerAttached = false;
       const bufferedLines: string[] = [];
       let finalizeTimer: NodeJS.Timeout | null = null;
 
       const promptUser = (preserve: boolean = false) => rl.prompt(preserve);
+      const getCursorIndex = () => {
+        const cursor = (rl as unknown as { cursor?: number }).cursor;
+        return typeof cursor === "number" ? cursor : rl.line.length;
+      };
 
-      const handleInlineSlash = (chunk: Buffer | string) => {
+      const detachInlineListener = () => {
+        if (inlineListenerAttached) {
+          inputStream?.removeListener("data", handleInlineInput);
+          inlineListenerAttached = false;
+        }
+      };
+
+      const reattachInlineListener = () => {
+        if (inputStream && !inlineListenerAttached) {
+          inputStream.on("data", handleInlineInput);
+          inlineListenerAttached = true;
+        }
+      };
+
+      const triggerMentionMenu = async (
+        fragment: string,
+        mentionStart: number
+      ) => {
+        if (mentionMenuActive) {
+          return;
+        }
+
+        mentionMenuActive = true;
+        menuActive = true;
+        detachInlineListener();
+
+        const originalLine = rl.line;
+
+        try {
+          const selection = await ChatBoxUI.promptMentionSelection(
+            fragment,
+            currentCwd
+          );
+
+          if (selection === ChatBoxUI.MENTION_CANCEL) {
+            ChatBoxUI.rewriteLine(rl, originalLine);
+            return;
+          }
+
+          if (selection === ChatBoxUI.MENTION_KEEP) {
+            return;
+          }
+
+          const sanitized = ChatBoxUI.normalizePath(selection);
+          const mentionText = `\`${sanitized}\``;
+          const before = originalLine.slice(0, mentionStart);
+          const afterOriginal = originalLine.slice(
+            mentionStart + fragment.length + 1
+          );
+          const newLine = `${before}${mentionText}${
+            afterOriginal.length > 0 && !/^\s/.test(afterOriginal) ? " " : ""
+          }${afterOriginal}`;
+          ChatBoxUI.rewriteLine(rl, newLine);
+        } finally {
+          menuActive = false;
+          mentionMenuActive = false;
+          reattachInlineListener();
+          promptUser(true);
+        }
+      };
+
+      const handleInlineInput = (chunk: Buffer | string) => {
         if (menuActive) {
           return;
         }
@@ -101,6 +180,24 @@ export class ChatBoxUI {
           showSlashHelp();
           promptUser(true);
         }
+
+        if (!mentionMenuActive) {
+          const cursorIndex = getCursorIndex();
+          const beforeCursor = rl.line.slice(0, cursorIndex);
+
+          const lastAt = beforeCursor.lastIndexOf("@");
+          if (lastAt !== -1) {
+            const prevChar = lastAt > 0 ? beforeCursor[lastAt - 1] : "";
+            const fragment = beforeCursor.slice(lastAt + 1);
+            if (
+              (!prevChar || /\s/.test(prevChar)) &&
+              fragment.length > 0 &&
+              !/\s/.test(fragment[fragment.length - 1])
+            ) {
+              void triggerMentionMenu(fragment, lastAt);
+            }
+          }
+        }
       };
 
       const inputStream = (rl as unknown as {
@@ -108,7 +205,7 @@ export class ChatBoxUI {
       }).input;
 
       if (inputStream) {
-        inputStream.on("data", handleInlineSlash);
+        inputStream.on("data", handleInlineInput);
         inlineListenerAttached = true;
       }
 
@@ -131,10 +228,7 @@ export class ChatBoxUI {
         }
 
         if (trimmed === "/") {
-          if (inlineListenerAttached) {
-            inputStream?.removeListener("data", handleInlineSlash);
-            inlineListenerAttached = false;
-          }
+          detachInlineListener();
 
           menuActive = true;
 
@@ -143,10 +237,7 @@ export class ChatBoxUI {
               menuActive = false;
 
               if (!selection) {
-                if (inputStream && !inlineListenerAttached) {
-                  inputStream.on("data", handleInlineSlash);
-                  inlineListenerAttached = true;
-                }
+                reattachInlineListener();
                 promptUser();
                 return;
               }
@@ -156,18 +247,43 @@ export class ChatBoxUI {
             })
             .catch(() => {
               menuActive = false;
-              if (inputStream && !inlineListenerAttached) {
-                inputStream.on("data", handleInlineSlash);
-                inlineListenerAttached = true;
-              }
+              reattachInlineListener();
               promptUser();
             });
           return;
         }
 
-        ChatBoxUI.appendHistory(historyPath, trimmed);
-        rl.close();
-        resolve(trimmed);
+      const processMessage = async () => {
+        menuActive = true;
+
+        detachInlineListener();
+
+        try {
+          const resolved =
+            (await ChatBoxUI.resolveMentions(trimmed, currentCwd)) ?? null;
+
+          if (resolved === null) {
+            menuActive = false;
+            reattachInlineListener();
+            promptUser(true);
+            return;
+          }
+
+          menuActive = false;
+          ChatBoxUI.appendHistory(historyPath, resolved);
+          rl.close();
+          resolve(resolved);
+        } catch (error) {
+          menuActive = false;
+          const message =
+            error instanceof Error ? error.message : String(error);
+          console.log(chalk.red(`  ❌ ${message}`));
+          reattachInlineListener();
+          promptUser(true);
+        }
+      };
+
+        void processMessage();
       };
 
       const scheduleFinalize = () => {
@@ -188,10 +304,7 @@ export class ChatBoxUI {
       });
 
       rl.on("close", () => {
-        if (inlineListenerAttached) {
-          inputStream?.removeListener("data", handleInlineSlash);
-          inlineListenerAttached = false;
-        }
+        detachInlineListener();
         if (finalizeTimer) {
           clearTimeout(finalizeTimer);
         }
@@ -228,6 +341,241 @@ export class ChatBoxUI {
     ]);
 
     return selectedSlash;
+  }
+
+  private static async resolveMentions(
+    input: string,
+    cwd?: string
+  ): Promise<string | null> {
+    if (!cwd || !process.stdin.isTTY || !process.stdout.isTTY) {
+      return input;
+    }
+
+    const mentionPattern = /@([A-Za-z0-9._/-]+)/g;
+    let working = input;
+    let match: RegExpExecArray | null;
+    let hasMentions = false;
+
+    while ((match = mentionPattern.exec(working)) !== null) {
+      const atIndex = match.index;
+      const previousChar = atIndex > 0 ? working[atIndex - 1] : "";
+
+      if (previousChar && /[A-Za-z0-9._/-]/.test(previousChar)) {
+        // Likely part of an email or identifier - skip
+        continue;
+      }
+
+      const fragment = match[1];
+      if (!fragment) {
+        continue;
+      }
+
+      hasMentions = true;
+      const selection = await ChatBoxUI.promptMentionSelection(fragment, cwd);
+
+      if (selection === ChatBoxUI.MENTION_CANCEL) {
+        return null;
+      }
+
+      if (selection === ChatBoxUI.MENTION_KEEP) {
+        continue;
+      }
+
+      const sanitized = ChatBoxUI.normalizePath(selection);
+      const replacement = `\`${sanitized}\``;
+      working =
+        working.slice(0, atIndex) +
+        replacement +
+        working.slice(atIndex + match[0].length);
+
+      mentionPattern.lastIndex = atIndex + replacement.length;
+    }
+
+    return hasMentions ? working : input;
+  }
+
+  private static async promptMentionSelection(
+    fragment: string,
+    cwd: string
+  ): Promise<string> {
+    // Safeguard: if fragment is empty or just whitespace, return keep
+    if (!fragment || !fragment.trim()) {
+      return ChatBoxUI.MENTION_KEEP;
+    }
+
+    let query = fragment;
+    const original = fragment;
+
+    while (true) {
+      const matches = ChatBoxUI.getFileMatches(query, cwd);
+      const limited = matches.slice(0, ChatBoxUI.MENTION_MAX_RESULTS);
+
+      const displayQuery = query.replace(/\\/g, "/");
+      const choices: any[] = limited.map((file) => ({
+        name: ChatBoxUI.highlightMatch(file, displayQuery),
+        value: file,
+      }));
+
+      if (limited.length === 0) {
+        choices.push({
+          name: chalk.yellow("No matching files – refine your search"),
+          value: ChatBoxUI.MENTION_REFINE,
+        });
+      } else if (matches.length > limited.length) {
+        choices.push({
+          name: chalk.gray(
+            `Show more results (${matches.length - limited.length} hidden)`
+          ),
+          value: ChatBoxUI.MENTION_REFINE,
+        });
+      } else {
+        choices.push({
+          name: chalk.gray("Refine search"),
+          value: ChatBoxUI.MENTION_REFINE,
+        });
+      }
+
+      choices.push(new inquirer.Separator());
+      choices.push({
+        name: chalk.yellow(`Keep @${original} as typed`),
+        value: ChatBoxUI.MENTION_KEEP,
+      });
+      choices.push({
+        name: chalk.gray("Cancel message"),
+        value: ChatBoxUI.MENTION_CANCEL,
+      });
+
+      const { selection } = await inquirer.prompt<{
+        selection: string;
+      }>([
+        {
+          type: "list",
+          name: "selection",
+          message: `Select file for @${original}${
+            query !== original && query
+              ? chalk.gray(` (filtered: "${query}")`)
+              : ""
+          }`,
+          choices,
+          pageSize: Math.max(choices.length, 10),
+        },
+      ]);
+
+      if (selection === ChatBoxUI.MENTION_REFINE) {
+        const { nextQuery } = await inquirer.prompt<{ nextQuery: string }>([
+          {
+            type: "input",
+            name: "nextQuery",
+            message: "Refine file search:",
+            default: query,
+          },
+        ]);
+        query = nextQuery.trim();
+        continue;
+      }
+
+      if (
+        selection === ChatBoxUI.MENTION_KEEP ||
+        selection === ChatBoxUI.MENTION_CANCEL
+      ) {
+        return selection;
+      }
+
+      return selection;
+    }
+  }
+
+  private static getFileMatches(query: string, cwd: string): string[] {
+    const files = ChatBoxUI.loadProjectFiles(cwd);
+    const normalized = query.trim().toLowerCase().replace(/\\/g, "/");
+
+    return files
+      .map((file) => {
+        if (!normalized) {
+          return { file, score: 0 };
+        }
+        const index = file.toLowerCase().indexOf(normalized);
+        return {
+          file,
+          score: index === -1 ? Number.MAX_SAFE_INTEGER : index,
+        };
+      })
+      .filter((item) => item.score !== Number.MAX_SAFE_INTEGER)
+      .sort((a, b) => {
+        if (a.score !== b.score) {
+          return a.score - b.score;
+        }
+        if (a.file.length !== b.file.length) {
+          return a.file.length - b.file.length;
+        }
+        return a.file.localeCompare(b.file);
+      })
+      .map((item) => item.file);
+  }
+
+  private static loadProjectFiles(cwd: string): string[] {
+    const now = Date.now();
+    const cache = ChatBoxUI.fileCache;
+
+    if (cache && cache.cwd === cwd && now - cache.loadedAt < 5 * 60 * 1000) {
+      return cache.files;
+    }
+
+    const files = glob.sync("**/*", {
+      cwd,
+      nodir: true,
+      ignore: DEFAULT_IGNORE_GLOBS,
+      dot: false,
+    }).map((file) => ChatBoxUI.normalizePath(file));
+
+    const maxFiles = 10000;
+    const limited =
+      files.length > maxFiles ? files.slice(0, maxFiles) : files;
+
+    ChatBoxUI.fileCache = { cwd, files: limited, loadedAt: now };
+    return limited;
+  }
+
+  private static highlightMatch(text: string, query: string): string {
+    if (!query) {
+      return text;
+    }
+
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!escaped) {
+      return text;
+    }
+
+    const regex = new RegExp(escaped, "ig");
+    let lastIndex = 0;
+    let highlighted = "";
+    let match: RegExpExecArray | null;
+
+    while ((match = regex.exec(text)) !== null) {
+      highlighted += text.slice(lastIndex, match.index);
+      highlighted += chalk.cyan(match[0]);
+      lastIndex = match.index + match[0].length;
+    }
+
+    highlighted += text.slice(lastIndex);
+    return highlighted;
+  }
+
+  private static normalizePath(path: string): string {
+    return path.replace(/\\/g, "/").replace(/^\.\//, "");
+  }
+
+  private static rewriteLine(rl: Interface, text: string): void {
+    const anyRl = rl as unknown as {
+      write: (data: string | null, key?: { ctrl?: boolean; name?: string }) => void;
+      line: string;
+      cursor: number;
+    };
+
+    anyRl.write(null, { ctrl: true, name: "u" });
+    anyRl.write(text);
+    anyRl.line = text;
+    anyRl.cursor = text.length;
   }
 
   private static lastStatusSignature: string | null = null;

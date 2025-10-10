@@ -23,6 +23,8 @@ import {
   webFetch,
   saveMemory,
   loadMemory,
+  grep,
+  editLine,
   type FileEdit,
 } from "../tools/index.js";
 import { memory } from "../memory/index.js";
@@ -1044,13 +1046,19 @@ export class AgentWorkflow {
         console.log(chalk.gray(`  ✏️  Proposing edit: ${filepath}`));
         console.log(chalk.gray(`     ${description}`));
 
-        const edit = proposeEdit(filepath, content, description, this.cwd);
-        this.proposedEdits.push(edit);
+        try {
+          const edit = proposeEdit(filepath, content, description, this.cwd);
+          this.proposedEdits.push(edit);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          console.log(chalk.red(`  ❌ ${message}`));
+          return `Error proposing edit: ${message}`;
+        }
 
         console.log(chalk.green(`  ✓ Edit proposed for ${filepath}`));
         return `Edit proposed for ${filepath}: ${description}`;
       }
-
       case "analyze_project": {
         console.log(chalk.gray(`  🔍 Analyzing project structure`));
         const result = analyzeProject(this.cwd);
@@ -1406,6 +1414,52 @@ export class AgentWorkflow {
 
         console.log(chalk.green(`  ✓ Memory loaded`));
         return result.result;
+      }
+
+      case "grep": {
+        const filepath = params.path || params.file || params.filepath;
+        const pattern = params.pattern || params.search || params.term;
+
+        if (!filepath || !pattern) {
+          console.log(chalk.red("  ❌ Missing required parameters: path and pattern"));
+          return `Error: Missing path or pattern`;
+        }
+
+        console.log(chalk.gray(`  🔎 Searching in ${filepath} for: "${pattern}"`));
+        const result = grep(filepath, pattern, this.cwd, params);
+
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+
+        console.log(chalk.green(`  ✓ Found matches`));
+        return result.result;
+      }
+
+      case "edit_line": {
+        const filepath = params.path || params.file || params.filepath;
+        const lineNumber = parseInt(params.lineNumber || params.line || "0");
+        const oldText = params.oldText || params.old || "";
+        const newText = params.newText || params.new || "";
+
+        if (!filepath || !lineNumber || !oldText || !newText) {
+          console.log(chalk.red("  ❌ Missing required parameters: path, lineNumber, oldText, newText"));
+          return `Error: Missing required parameters`;
+        }
+
+        console.log(chalk.gray(`  ✏️  Editing line ${lineNumber} in ${filepath}`));
+
+        try {
+          const edit = editLine(filepath, lineNumber, oldText, newText, this.cwd);
+          this.proposedEdits.push(edit);
+          console.log(chalk.green(`  ✓ Line edit proposed for ${filepath}`));
+          return `Edit proposed for ${filepath} line ${lineNumber}: ${edit.description}`;
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.log(chalk.red(`  ❌ ${errorMsg}`));
+          return `Error: ${errorMsg}`;
+        }
       }
 
       case "todo": {
@@ -2488,6 +2542,14 @@ Provide a practical alternative solution that addresses the root cause.`;
       - Update docs</tool>
     Actions: create, add, list, start, complete, update, remove, clear
 
+17. **grep** - Search for pattern in a specific file with line numbers (PREFERRED for large files)
+    Format: <tool name="grep" path="src/cli.ts" pattern="\\.version\\(" maxResults="10"></tool>
+    Returns exact line numbers. Use this before editing for precise location.
+
+18. **edit_line** - Edit a specific line when you know the exact line number
+    Format: <tool name="edit_line" path="src/cli.ts" lineNumber="611" oldText='.version("1.0.0")' newText='.version("0.6.7")"></tool>
+    Requires exact line number from grep. More efficient than propose_edit for single-line changes.
+
 ${mcpSection}
 
 ## Critical Rules
@@ -2497,6 +2559,9 @@ ${mcpSection}
 3. **No Self-Closing**: Never use <tool ... /> for propose_edit - always use <tool>...</tool>
 4. **Complete Files**: Always provide the full file content in propose_edit, not just changes
 5. **Explain First**: Always explain what you're doing before using tools
+6. **For Large Files (>100 lines)**: Use grep to find line numbers, then edit_line for precise edits
+7. **For Small Files or New Files**: Use propose_edit with full content
+8. **Never Use Placeholders**: Never write "// ... rest of file" - always provide complete content
 
 ## Smart Project Analysis
 
@@ -3271,4 +3336,3 @@ The system will automatically display and update this list.
     }
   }
 }
-

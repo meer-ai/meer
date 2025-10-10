@@ -1,17 +1,4 @@
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  readdirSync,
-  statSync,
-} from "fs";
-import { join, relative, dirname } from "path";
-import chalk from "chalk";
-import { spawn, execSync } from "child_process";
-import { glob } from "glob";
-import { ProjectContextManager } from "../context/manager.js";
-
-const DEFAULT_IGNORE_GLOBS = [
+export const DEFAULT_IGNORE_GLOBS = [
   "node_modules/**",
   ".git/**",
   "dist/**",
@@ -29,6 +16,20 @@ const DEFAULT_IGNORE_GLOBS = [
   ".pytest_cache/**",
 ];
 
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  readdirSync,
+  statSync,
+} from "fs";
+import { join, relative, dirname } from "path";
+import chalk from "chalk";
+import { spawn, execSync } from "child_process";
+import { glob } from "glob";
+import { ProjectContextManager } from "../context/manager.js";
+import { diffLines } from "diff";
+
 export interface ToolResult {
   tool: string;
   result: string;
@@ -40,6 +41,25 @@ export interface FileEdit {
   oldContent: string;
   newContent: string;
   description: string;
+}
+
+const PLACEHOLDER_PATTERNS: Array<RegExp> = [
+  /rest of (the )?file/i,
+  /rest of (the )?code/i,
+  /rest will remain( the same)?/i,
+  /remaining (code|file|content)/i,
+  /\.\.\.\s*(rest|snip|omitted)/i,
+  /\bTODO:?[^.\n]*rest/i,
+];
+
+function detectPlaceholder(content: string): string | null {
+  for (const pattern of PLACEHOLDER_PATTERNS) {
+    const match = content.match(pattern);
+    if (match) {
+      return match[0];
+    }
+  }
+  return null;
 }
 
 /**
@@ -136,6 +156,19 @@ export function proposeEdit(
     ? readFileSync(fullPath, "utf-8")
     : "";
 
+  if (oldContent && newContent.trim().length === 0) {
+    throw new Error(
+      `Refusing to overwrite ${filepath} with empty content via propose_edit. Use remove_file if you intend to delete it.`
+    );
+  }
+
+  const placeholder = detectPlaceholder(newContent);
+  if (placeholder) {
+    throw new Error(
+      `Proposed edit for ${filepath} contains placeholder text ("${placeholder.trim()}"). Provide the full file content instead.`
+    );
+  }
+
   return {
     path: filepath,
     oldContent,
@@ -178,185 +211,135 @@ export function applyEdit(edit: FileEdit, cwd: string): ToolResult {
  * Generate a colored diff between old and new content
  */
 export function generateDiff(oldContent: string, newContent: string): string[] {
-  const oldLines = oldContent.split("\n");
-  const newLines = newContent.split("\n");
+  const normalizeContent = (content: string) =>
+    content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-  // Simple two-pointer diff with minimal lookahead to detect inserts/deletes.
-  // Produces unified diff-style hunks with a few context lines.
+  const normalizedOld = normalizeContent(oldContent);
+  const normalizedNew = normalizeContent(newContent);
+
+  if (normalizedOld === normalizedNew) {
+    return [];
+  }
+
+  type OpType = "equal" | "add" | "remove";
+  interface DiffOp {
+    type: OpType;
+    line: string;
+    oldLine: number;
+    newLine: number;
+  }
+
+  const parts = diffLines(normalizedOld, normalizedNew);
+  const ops: DiffOp[] = [];
+  let oldLine = 1;
+  let newLine = 1;
+
+  for (const part of parts) {
+    const lines = part.value.split("\n");
+    if (lines.length > 0 && lines[lines.length - 1] === "") {
+      lines.pop();
+    }
+
+    for (const line of lines) {
+      if (part.added) {
+        ops.push({ type: "add", line, oldLine, newLine });
+        newLine++;
+      } else if (part.removed) {
+        ops.push({ type: "remove", line, oldLine, newLine });
+        oldLine++;
+      } else {
+        ops.push({ type: "equal", line, oldLine, newLine });
+        oldLine++;
+        newLine++;
+      }
+    }
+  }
+
+  if (ops.length === 0) {
+    return [];
+  }
+
   const contextSize = 3;
   const output: string[] = [];
+  let index = 0;
 
-  let i = 0; // index in oldLines
-  let j = 0; // index in newLines
-
-  const hunks: Array<{
-    oldStart: number;
-    newStart: number;
-    oldCount: number;
-    newCount: number;
-    lines: string[]; // prefixed with ' ', '+', '-'
-  }> = [];
-
-  function startHunk(oldStart: number, newStart: number) {
-    hunks.push({ oldStart, newStart, oldCount: 0, newCount: 0, lines: [] });
-  }
-
-  function addContextLines(startOld: number, startNew: number, count: number) {
-    if (count <= 0) return;
-    const h = hunks[hunks.length - 1];
-    for (let k = 0; k < count; k++) {
-      const line = oldLines[startOld + k] ?? "";
-      h.lines.push(` ${line}`);
-      h.oldCount++;
-      h.newCount++;
+  while (index < ops.length) {
+    while (index < ops.length && ops[index].type === "equal") {
+      index++;
     }
-    i = startOld + count;
-    j = startNew + count;
-  }
 
-  // Helper to append a change line to the current hunk
-  function pushChange(prefix: "+" | "-" | " ", line: string) {
-    const h = hunks[hunks.length - 1];
-    h.lines.push(`${prefix} ${line}`);
-    if (prefix === "+") h.newCount++;
-    else if (prefix === "-") h.oldCount++;
-    else {
-      h.newCount++;
-      h.oldCount++;
+    if (index >= ops.length) {
+      break;
     }
-  }
 
-  // Pre-compute equal blocks to know when to close hunks with trailing context
-  const equalBlocks: Array<{
-    oldIndex: number;
-    newIndex: number;
-    length: number;
-  }> = [];
-  {
-    let a = 0,
-      b = 0;
-    while (a < oldLines.length && b < newLines.length) {
-      if (oldLines[a] === newLines[b]) {
-        const startA = a,
-          startB = b;
-        let len = 0;
-        while (
-          a < oldLines.length &&
-          b < newLines.length &&
-          oldLines[a] === newLines[b]
-        ) {
-          a++;
-          b++;
-          len++;
+    let start = index;
+    let leadingContext = 0;
+    while (start > 0) {
+      const prevOp = ops[start - 1];
+      if (prevOp.type === "equal") {
+        if (leadingContext >= contextSize) {
+          break;
         }
-        equalBlocks.push({ oldIndex: startA, newIndex: startB, length: len });
+        leadingContext++;
+      }
+      start--;
+    }
+
+    let end = index;
+    let trailingContext = 0;
+    while (end < ops.length) {
+      const op = ops[end];
+      if (op.type === "equal") {
+        if (trailingContext === contextSize) {
+          break;
+        }
+        trailingContext++;
+        end++;
       } else {
-        // Advance using simple lookahead
-        const nextDel = oldLines[a + 1] === newLines[b];
-        const nextIns = oldLines[a] === newLines[b + 1];
-        if (nextDel) a++;
-        else if (nextIns) b++;
-        else {
-          a++;
-          b++;
-        }
+        trailingContext = 0;
+        end++;
       }
     }
-  }
 
-  let equalIdx = 0;
-  while (i < oldLines.length || j < newLines.length) {
-    const equal = equalBlocks[equalIdx];
-    const atEqual = equal && i === equal.oldIndex && j === equal.newIndex;
+    const hunkOps = ops.slice(start, end);
+    const oldStart =
+      hunkOps.find((op) => op.type !== "add")?.oldLine ?? hunkOps[0].oldLine;
+    const newStart =
+      hunkOps.find((op) => op.type !== "remove")?.newLine ?? hunkOps[0].newLine;
 
-    if (atEqual) {
-      // Large equal block: emit as context, but split hunks when necessary
-      if (hunks.length > 0 && equal.length > contextSize * 2) {
-        // Trailing context for the previous hunk
-        const trailing = Math.min(contextSize, equal.length);
-        addContextLines(i, j, trailing);
-        // Skip middle of equal block
-        i += equal.length - trailing;
-        j += equal.length - trailing;
+    let oldCount = 0;
+    let newCount = 0;
+    const hunkLines: string[] = [];
+
+    for (const op of hunkOps) {
+      if (op.type === "equal") {
+        hunkLines.push(` ${op.line}`);
+        oldCount++;
+        newCount++;
+      } else if (op.type === "remove") {
+        hunkLines.push(`- ${op.line}`);
+        oldCount++;
       } else {
-        // Either no open hunk or small equal block: include all as context in hunk if exists
-        if (hunks.length === 0) {
-          // No hunk open, just advance (we only show context inside hunks)
-          i += equal.length;
-          j += equal.length;
-        } else {
-          addContextLines(i, j, equal.length);
-        }
-      }
-      equalIdx++;
-      continue;
-    }
-
-    // We are in a changed region; open a hunk if needed with leading context
-    if (
-      hunks.length === 0 ||
-      (hunks[hunks.length - 1].lines.length > 0 &&
-        hunks[hunks.length - 1].lines[
-          hunks[hunks.length - 1].lines.length - 1
-        ].startsWith(" "))
-    ) {
-      // Compute hunk header starts with some leading context
-      const oldStart = Math.max(0, i - contextSize) + 1; // 1-based
-      const newStart = Math.max(0, j - contextSize) + 1; // 1-based
-      startHunk(oldStart, newStart);
-      // Add leading context lines
-      const lead = Math.min(contextSize, Math.min(i, j));
-      if (lead > 0) {
-        const startOld = i - lead;
-        const startNew = j - lead;
-        addContextLines(startOld, startNew, lead);
+        hunkLines.push(`+ ${op.line}`);
+        newCount++;
       }
     }
 
-    // Decide the type of change using one-line lookahead
-    const delNext =
-      i < oldLines.length &&
-      j < newLines.length &&
-      oldLines[i + 1] === newLines[j];
-    const insNext =
-      i < oldLines.length &&
-      j < newLines.length &&
-      oldLines[i] === newLines[j + 1];
-
-    if (i < oldLines.length && (j >= newLines.length || delNext)) {
-      pushChange("-", oldLines[i] ?? "");
-      i++;
-      continue;
-    }
-    if (j < newLines.length && (i >= oldLines.length || insNext)) {
-      pushChange("+", newLines[j] ?? "");
-      j++;
-      continue;
-    }
-
-    // Treat as modification (replace)
-    if (i < oldLines.length) {
-      pushChange("-", oldLines[i] ?? "");
-    }
-    if (j < newLines.length) {
-      pushChange("+", newLines[j] ?? "");
-    }
-    i++;
-    j++;
-  }
-
-  // Format hunks
-  for (const h of hunks) {
     output.push(
-      chalk.gray(
-        `@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@`
-      )
+      chalk.gray(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`)
     );
-    for (const line of h.lines) {
-      if (line.startsWith("+")) output.push(chalk.green(line));
-      else if (line.startsWith("-")) output.push(chalk.red(line));
-      else output.push(chalk.gray(line));
+
+    for (const line of hunkLines) {
+      if (line.startsWith("+")) {
+        output.push(chalk.green(line));
+      } else if (line.startsWith("-")) {
+        output.push(chalk.red(line));
+      } else {
+        output.push(chalk.gray(line));
+      }
     }
+
+    index = end;
   }
 
   return output;
@@ -1261,6 +1244,141 @@ export function searchText(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Tool: Grep - Search for pattern in a specific file with line numbers
+ * Optimized for finding exact locations in large files
+ */
+export function grep(
+  filepath: string,
+  pattern: string,
+  cwd: string,
+  options: {
+    caseSensitive?: boolean;
+    maxResults?: number;
+    contextLines?: number;
+  } = {}
+): ToolResult {
+  try {
+    const fullPath = join(cwd, filepath);
+
+    if (!existsSync(fullPath)) {
+      return {
+        tool: "grep",
+        result: "",
+        error: `File not found: ${filepath}`,
+      };
+    }
+
+    console.log(chalk.gray(`  🔎 Searching in ${filepath} for: "${pattern}"`));
+
+    const content = readFileSync(fullPath, "utf-8");
+    const lines = content.split("\n");
+
+    const flags = options.caseSensitive ? "g" : "gi";
+    const regex = new RegExp(pattern, flags);
+
+    const matches: Array<{ lineNum: number; line: string }> = [];
+    const contextLines = options.contextLines || 0;
+
+    lines.forEach((line, index) => {
+      regex.lastIndex = 0; // Reset for global regex reuse across lines
+      if (regex.test(line)) {
+        matches.push({ lineNum: index + 1, line });
+      }
+    });
+
+    if (matches.length === 0) {
+      return {
+        tool: "grep",
+        result: `No matches found for pattern "${pattern}" in ${filepath}`,
+      };
+    }
+
+    // Limit results if specified
+    const maxResults = options.maxResults || 50;
+    const limitedMatches = matches.slice(0, maxResults);
+    const truncated = matches.length > maxResults;
+
+    let result = `Found ${matches.length} match${matches.length > 1 ? 'es' : ''} in ${filepath}:\n\n`;
+
+    limitedMatches.forEach(({ lineNum, line }) => {
+      result += `Line ${lineNum}: ${line.trim()}\n`;
+
+      // Add context lines if requested
+      if (contextLines > 0) {
+        for (let i = Math.max(0, lineNum - 1 - contextLines); i < Math.min(lines.length, lineNum + contextLines); i++) {
+          if (i !== lineNum - 1) {
+            result += `  ${i + 1}: ${lines[i].trim()}\n`;
+          }
+        }
+        result += '\n';
+      }
+    });
+
+    if (truncated) {
+      result += `\n(Showing first ${maxResults} of ${matches.length} matches)`;
+    }
+
+    return {
+      tool: "grep",
+      result,
+    };
+  } catch (error) {
+    return {
+      tool: "grep",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Edit a specific line in a file
+ * Useful for precise edits when you know the exact line number from grep
+ */
+export function editLine(
+  filepath: string,
+  lineNumber: number,
+  oldText: string,
+  newText: string,
+  cwd: string
+): FileEdit {
+  const fullPath = join(cwd, filepath);
+
+  if (!existsSync(fullPath)) {
+    throw new Error(`File not found: ${filepath}`);
+  }
+
+  const content = readFileSync(fullPath, "utf-8");
+  const lines = content.split("\n");
+
+  // Validate line number
+  if (lineNumber < 1 || lineNumber > lines.length) {
+    throw new Error(`Line number ${lineNumber} is out of range (file has ${lines.length} lines)`);
+  }
+
+  const lineIndex = lineNumber - 1;
+  const currentLine = lines[lineIndex];
+
+  // Verify old text matches
+  if (!currentLine.includes(oldText)) {
+    throw new Error(
+      `Line ${lineNumber} does not contain "${oldText}".\nActual line: ${currentLine}`
+    );
+  }
+
+  // Replace the line
+  lines[lineIndex] = currentLine.replace(oldText, newText);
+  const newContent = lines.join("\n");
+
+  return {
+    path: filepath,
+    oldContent: content,
+    newContent,
+    description: `Edit line ${lineNumber}: replace "${oldText}" with "${newText}"`,
+  };
 }
 
 /**

@@ -1403,7 +1403,7 @@ export function createCLI(): Command {
     .description(
       "MeerAI - Dive deep into your code. An open-source, local-first AI CLI for developers."
     )
-    .version("1.0.0")
+    .version(VERSION)
     .option("-p, --profile <name>", "Override the active profile")
     .option("-v, --verbose", "Enable verbose logging output")
     .hook("preAction", (thisCommand) => {

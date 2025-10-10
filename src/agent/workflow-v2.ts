@@ -330,6 +330,30 @@ export class AgentWorkflowV2 {
         const loadRes = tools.loadMemory(params.key || "", this.cwd);
         return loadRes.error ? loadRes.error : loadRes.result;
 
+      case "grep":
+        const grepRes = tools.grep(
+          params.path || "",
+          params.pattern || "",
+          this.cwd,
+          params
+        );
+        return grepRes.error ? grepRes.error : grepRes.result;
+
+      case "edit_line":
+        try {
+          const editLineResult = tools.editLine(
+            params.path || "",
+            parseInt(params.lineNumber || "0"),
+            params.oldText || "",
+            params.newText || "",
+            this.cwd
+          );
+          this.proposedEdits.push(editLineResult);
+          return `Line edit proposed for review: ${editLineResult.path}\n${editLineResult.description}\n(Changes will be shown for approval after processing)`;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+
       default:
         // Try MCP tools
         if (tool.includes(".")) {
@@ -403,6 +427,14 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
 13. **load_memory** - Load from persistent memory
     \`<tool name="load_memory" key="notes"></tool>\`
 
+14. **grep** - Search for pattern in a specific file with line numbers (PREFERRED for large files)
+    \`<tool name="grep" path="src/cli.ts" pattern="\\.version\\(" maxResults="10"></tool>\`
+    Returns exact line numbers. Use this before propose_edit for precise edits.
+
+15. **edit_line** - Edit a specific line when you know the exact line number
+    \`<tool name="edit_line" path="src/cli.ts" lineNumber="611" oldText='.version("1.0.0")' newText='.version("0.6.7")"></tool>\`
+    Requires exact line number from grep. More efficient than propose_edit for single-line changes.
+
 ${mcpSection}
 
 ## Safety & Best Practices
@@ -424,6 +456,9 @@ ${mcpSection}
 - Only analyze the project when it's relevant to the request
 - Prefer local context before searching externally
 - Use tools deliberately - each call should serve the goal
+- **For large files (>100 lines): Use grep to find line numbers, then edit_line for precise edits**
+- **For small files or new files: Use propose_edit with full content**
+- Never use placeholder comments like "// ... rest of file" - always provide complete content
 
 ## Working Directory
 
