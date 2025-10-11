@@ -2,7 +2,7 @@ import chalk from "chalk";
 import inquirer from "inquirer";
 import { glob } from "glob";
 import { createInterface, Interface } from "readline";
-import { createWriteStream, existsSync, mkdirSync, readFileSync } from "fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { showSlashHelp } from "./slashHelp.js";
@@ -10,17 +10,22 @@ import { slashCommands } from "./slashCommands.js";
 import { SessionStats, SessionTracker } from "../session/tracker.js";
 import { displayWave } from "./logo.js";
 import { DEFAULT_IGNORE_GLOBS } from "../tools/index.js";
+import { LineEditor } from "./lineEditor.js";
+import { MentionController } from "./mentionController.js";
 
 export class ChatBoxUI {
   private static readonly MENTION_KEEP = "__MEER_MENTION_KEEP__";
   private static readonly MENTION_CANCEL = "__MEER_MENTION_CANCEL__";
   private static readonly MENTION_REFINE = "__MEER_MENTION_REFINE__";
   private static readonly MENTION_MAX_RESULTS = 25;
+  private static readonly MENTION_RECENT_WINDOW_MS =
+    1000 * 60 * 60 * 24 * 14;
   private static fileCache: {
     cwd: string;
     files: string[];
     loadedAt: number;
   } | null = null;
+  private static fileMtimeCache = new Map<string, number>();
 
   /**
    * Simple, clean input using readline - like successful CLI tools
@@ -85,134 +90,141 @@ export class ChatBoxUI {
         historySize: 500,
       });
 
+      const editor = new LineEditor(rl);
+
       let slashHelpShown = false;
       let menuActive = false;
-      let mentionMenuActive = false;
-      let inlineListenerAttached = false;
       const bufferedLines: string[] = [];
       let finalizeTimer: NodeJS.Timeout | null = null;
 
       const promptUser = (preserve: boolean = false) => rl.prompt(preserve);
-      const getCursorIndex = () => {
-        const cursor = (rl as unknown as { cursor?: number }).cursor;
-        return typeof cursor === "number" ? cursor : rl.line.length;
-      };
 
-      const detachInlineListener = () => {
-        if (inlineListenerAttached) {
-          inputStream?.removeListener("data", handleInlineInput);
-          inlineListenerAttached = false;
-        }
-      };
+      let mentionController: MentionController;
 
-      const reattachInlineListener = () => {
-        if (inputStream && !inlineListenerAttached) {
-          inputStream.on("data", handleInlineInput);
-          inlineListenerAttached = true;
-        }
-      };
-
-      const triggerMentionMenu = async (
-        fragment: string,
-        mentionStart: number
-      ) => {
-        if (mentionMenuActive) {
-          return;
+      const setMenuActive = (active: boolean) => {
+        menuActive = active;
+        if (mentionController) {
+          mentionController.setEnabled(!active);
         }
 
-        mentionMenuActive = true;
-        menuActive = true;
-        detachInlineListener();
-
-        const originalLine = rl.line;
-
-        try {
-          const selection = await ChatBoxUI.promptMentionSelection(
-            fragment,
-            currentCwd
-          );
-
-          if (selection === ChatBoxUI.MENTION_CANCEL) {
-            ChatBoxUI.rewriteLine(rl, originalLine);
-            return;
+        if (active) {
+          if (finalizeTimer) {
+            clearTimeout(finalizeTimer);
+            finalizeTimer = null;
           }
-
-          if (selection === ChatBoxUI.MENTION_KEEP) {
-            return;
-          }
-
-          const sanitized = ChatBoxUI.normalizePath(selection);
-          const mentionText = `\`${sanitized}\``;
-          const before = originalLine.slice(0, mentionStart);
-          const afterOriginal = originalLine.slice(
-            mentionStart + fragment.length + 1
-          );
-          const newLine = `${before}${mentionText}${
-            afterOriginal.length > 0 && !/^\s/.test(afterOriginal) ? " " : ""
-          }${afterOriginal}`;
-          ChatBoxUI.rewriteLine(rl, newLine);
-        } finally {
-          menuActive = false;
-          mentionMenuActive = false;
-          reattachInlineListener();
-          promptUser(true);
+          bufferedLines.length = 0;
         }
       };
 
-      const handleInlineInput = (chunk: Buffer | string) => {
+      const exitMenu = (callback?: () => void) => {
+        setImmediate(() => {
+          setMenuActive(false);
+          callback?.();
+        });
+      };
+
+      const editorChangeUnsubscribe = editor.onChange((event) => {
         if (menuActive) {
           return;
         }
 
-        const inputChunk =
-          typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        const { state, source, data } = event;
+        const trimmed = state.buffer.trim();
 
-        const lineTrimmed = rl.line.trim();
-        if (slashHelpShown && lineTrimmed !== "/") {
+        if (slashHelpShown && trimmed !== "/") {
           slashHelpShown = false;
+        }
+
+        if (source !== "user") {
           return;
         }
 
-        const isPrintable = /[\w\s/]/.test(inputChunk) || inputChunk === "/";
-        if (!slashHelpShown && isPrintable && lineTrimmed === "/") {
+        const chunkText =
+          typeof data === "string"
+            ? data
+            : Buffer.isBuffer(data)
+            ? data.toString("utf8")
+            : "";
+
+        const isPrintable =
+          (chunkText.length > 0 && /[\w\s/]/.test(chunkText)) ||
+          chunkText === "/";
+
+        if (!slashHelpShown && isPrintable && trimmed === "/") {
           slashHelpShown = true;
           console.log("");
           showSlashHelp();
           promptUser(true);
         }
+      });
 
-        if (!mentionMenuActive) {
-          const cursorIndex = getCursorIndex();
-          const beforeCursor = rl.line.slice(0, cursorIndex);
-
-          const lastAt = beforeCursor.lastIndexOf("@");
-          if (lastAt !== -1) {
-            const prevChar = lastAt > 0 ? beforeCursor[lastAt - 1] : "";
-            const fragment = beforeCursor.slice(lastAt + 1);
-            if (
-              (!prevChar || /\s/.test(prevChar)) &&
-              fragment.length > 0 &&
-              !/\s/.test(fragment[fragment.length - 1])
-            ) {
-              void triggerMentionMenu(fragment, lastAt);
-            }
+      mentionController = new MentionController(editor, {
+        debounceMs: 300,
+        minChars: 2,
+        onTrigger: async ({ fragment, start, state }) => {
+          if (menuActive) {
+            return;
           }
-        }
-      };
 
-      const inputStream = (rl as unknown as {
-        input?: NodeJS.ReadableStream;
-      }).input;
+          setMenuActive(true);
+          const originalState = { ...state };
+          rl.pause();
 
-      if (inputStream) {
-        inputStream.on("data", handleInlineInput);
-        inlineListenerAttached = true;
-      }
+          try {
+          const selection = await ChatBoxUI.promptMentionSelection(
+            fragment,
+            currentCwd,
+            {
+              inputStream: (rl as Interface & {
+                input?: NodeJS.ReadableStream;
+              }).input,
+            }
+          );
+
+            if (selection === ChatBoxUI.MENTION_CANCEL) {
+              editor.setState(originalState.buffer, originalState.cursor);
+              return;
+            }
+
+            if (selection === ChatBoxUI.MENTION_KEEP) {
+              editor.setState(originalState.buffer, originalState.cursor);
+              return;
+            }
+
+            const sanitized = ChatBoxUI.normalizePath(selection);
+            const mentionText = `\`${sanitized}\``;
+            const before = originalState.buffer.slice(0, start);
+            const afterOriginal = originalState.buffer.slice(
+              start + fragment.length + 1
+            );
+            const needsSpace =
+              afterOriginal.length > 0 && !/^\s/.test(afterOriginal);
+            const newBuffer = `${before}${mentionText}${
+              needsSpace ? " " : ""
+            }${afterOriginal}`;
+            const cursorPos =
+              before.length + mentionText.length + (needsSpace ? 1 : 0);
+
+            editor.setState(newBuffer, cursorPos);
+          } finally {
+            rl.resume();
+            exitMenu(() => {
+              editor.refresh();
+              promptUser(true);
+            });
+          }
+        },
+      });
 
       const finalizeInput = () => {
         if (finalizeTimer) {
           clearTimeout(finalizeTimer);
           finalizeTimer = null;
+        }
+
+        if (menuActive) {
+          bufferedLines.length = 0;
+          return;
         }
 
         slashHelpShown = false;
@@ -228,57 +240,53 @@ export class ChatBoxUI {
         }
 
         if (trimmed === "/") {
-          detachInlineListener();
-
-          menuActive = true;
+          setMenuActive(true);
+          rl.pause();
 
           void ChatBoxUI.pickSlashCommand()
             .then((selection) => {
-              menuActive = false;
+              rl.resume();
+              exitMenu(() => {
+                if (!selection) {
+                  promptUser();
+                  return;
+                }
 
-              if (!selection) {
-                reattachInlineListener();
-                promptUser();
-                return;
-              }
-
-              rl.close();
-              resolve(selection);
+                rl.close();
+                resolve(selection);
+              });
             })
             .catch(() => {
-              menuActive = false;
-              reattachInlineListener();
-              promptUser();
+              rl.resume();
+              exitMenu(() => {
+                promptUser();
+              });
             });
           return;
         }
 
       const processMessage = async () => {
-        menuActive = true;
-
-        detachInlineListener();
+        setMenuActive(true);
 
         try {
           const resolved =
             (await ChatBoxUI.resolveMentions(trimmed, currentCwd)) ?? null;
 
           if (resolved === null) {
-            menuActive = false;
-            reattachInlineListener();
+            setMenuActive(false);
             promptUser(true);
             return;
           }
 
-          menuActive = false;
+          setMenuActive(false);
           ChatBoxUI.appendHistory(historyPath, resolved);
           rl.close();
           resolve(resolved);
         } catch (error) {
-          menuActive = false;
+          setMenuActive(false);
           const message =
             error instanceof Error ? error.message : String(error);
           console.log(chalk.red(`  ❌ ${message}`));
-          reattachInlineListener();
           promptUser(true);
         }
       };
@@ -294,6 +302,11 @@ export class ChatBoxUI {
       };
 
       rl.on("line", (input) => {
+        if (menuActive) {
+          bufferedLines.length = 0;
+          return;
+        }
+
         bufferedLines.push(input);
         scheduleFinalize();
       });
@@ -304,7 +317,9 @@ export class ChatBoxUI {
       });
 
       rl.on("close", () => {
-        detachInlineListener();
+        editorChangeUnsubscribe();
+        mentionController.dispose();
+        editor.dispose();
         if (finalizeTimer) {
           clearTimeout(finalizeTimer);
         }
@@ -396,7 +411,8 @@ export class ChatBoxUI {
 
   private static async promptMentionSelection(
     fragment: string,
-    cwd: string
+    cwd: string,
+    options?: { inputStream?: NodeJS.ReadableStream }
   ): Promise<string> {
     // Safeguard: if fragment is empty or just whitespace, return keep
     if (!fragment || !fragment.trim()) {
@@ -445,7 +461,8 @@ export class ChatBoxUI {
         value: ChatBoxUI.MENTION_CANCEL,
       });
 
-      const { selection } = await inquirer.prompt<{
+      const promptModule = inquirer.createPromptModule();
+      const prompt = promptModule<{
         selection: string;
       }>([
         {
@@ -460,6 +477,97 @@ export class ChatBoxUI {
           pageSize: Math.max(choices.length, 10),
         },
       ]);
+
+      const ui = (prompt as unknown as { ui?: { close?: () => void } }).ui;
+      const inputStream = options?.inputStream;
+      let cancelledByTyping = false;
+      const pendingReplay: Array<Buffer | string> = [];
+      let replayScheduled = false;
+
+      const scheduleReplay = () => {
+        if (!inputStream || replayScheduled || pendingReplay.length === 0) {
+          return;
+        }
+
+        replayScheduled = true;
+        setImmediate(() => {
+          replayScheduled = false;
+          if (!inputStream || typeof (inputStream as any).unshift !== "function") {
+            pendingReplay.length = 0;
+            return;
+          }
+          while (pendingReplay.length > 0) {
+            const chunk = pendingReplay.shift();
+            if (chunk !== undefined) {
+              (inputStream as any).unshift(chunk);
+            }
+          }
+        });
+      };
+
+      const shouldCancelForChunk = (chunk: Buffer | string): boolean => {
+        const value =
+          typeof chunk === "string" ? chunk : chunk.toString("utf8");
+        if (!value) {
+          return false;
+        }
+        if (value === "\r" || value === "\n") {
+          return false;
+        }
+        if (value === "\u0003") {
+          // Ctrl+C - let Inquirer handle it
+          return false;
+        }
+        if (value.startsWith("\u001b")) {
+          // Arrow keys / escape sequences - keep the menu active
+          return false;
+        }
+        return true;
+      };
+
+      const handleStreamData = (chunk: Buffer | string) => {
+        if (!shouldCancelForChunk(chunk)) {
+          return;
+        }
+
+        cancelledByTyping = true;
+        pendingReplay.push(chunk);
+
+        if (inputStream) {
+          inputStream.removeListener("data", handleStreamData);
+        }
+
+        if (ui && typeof ui.close === "function") {
+          ui.close();
+        }
+
+        scheduleReplay();
+      };
+
+      if (inputStream) {
+        inputStream.on("data", handleStreamData);
+      }
+
+      let selection: string;
+
+      try {
+        ({ selection } = await prompt);
+      } catch (error) {
+        if (cancelledByTyping) {
+          scheduleReplay();
+          return ChatBoxUI.MENTION_KEEP;
+        }
+        throw error;
+      } finally {
+        if (inputStream) {
+          inputStream.removeListener("data", handleStreamData);
+        }
+        scheduleReplay();
+      }
+
+      if (cancelledByTyping) {
+        return ChatBoxUI.MENTION_KEEP;
+      }
 
       if (selection === ChatBoxUI.MENTION_REFINE) {
         const { nextQuery } = await inquirer.prompt<{ nextQuery: string }>([
@@ -487,23 +595,98 @@ export class ChatBoxUI {
 
   private static getFileMatches(query: string, cwd: string): string[] {
     const files = ChatBoxUI.loadProjectFiles(cwd);
-    const normalized = query.trim().toLowerCase().replace(/\\/g, "/");
+    const normalized = (query || "").trim().toLowerCase().replace(/\\/g, "/");
+    const tokens = normalized.split(/[\\/\s]+/).filter(Boolean);
 
-    return files
+    const withScores = (tokens.length === 0 ? files : files)
       .map((file) => {
-        if (!normalized) {
-          return { file, score: 0 };
+        const lower = file.toLowerCase();
+
+        if (tokens.length > 0 && !tokens.every((token) => lower.includes(token))) {
+          return null;
         }
-        const index = file.toLowerCase().indexOf(normalized);
-        return {
-          file,
-          score: index === -1 ? Number.MAX_SAFE_INTEGER : index,
+
+        const segments = lower.split("/");
+        const filename = segments[segments.length - 1] ?? lower;
+
+        const scoreToken = (segment: string, token: string): number => {
+          if (!token) {
+            return 0;
+          }
+          const idx = segment.indexOf(token);
+          if (idx === -1) {
+            return 0;
+          }
+
+          let score = token.length * 5;
+
+          if (idx === 0) {
+            score += 25;
+          } else {
+            score += Math.max(0, 12 - idx);
+          }
+
+          if (segment.length === token.length) {
+            score += 10;
+          }
+
+          return score;
         };
+
+        let nameScore = 0;
+        let bestSegmentScore = 0;
+        let pathScore = 0;
+
+        if (tokens.length > 0) {
+          nameScore = tokens.reduce(
+            (acc, token) => acc + scoreToken(filename, token),
+            0
+          );
+
+          if (segments.length > 1) {
+            bestSegmentScore = segments
+              .slice(0, -1)
+              .reduce((best, segment) => {
+                const segmentScore = tokens.reduce(
+                  (acc, token) => acc + scoreToken(segment, token),
+                  0
+                );
+                return segmentScore > best ? segmentScore : best;
+              }, 0);
+          }
+
+          pathScore = tokens.reduce(
+            (acc, token) => acc + scoreToken(lower, token) * 0.5,
+            0
+          );
+
+          if (nameScore === 0 && bestSegmentScore === 0 && pathScore === 0) {
+            return null;
+          }
+        }
+
+        const recencyBoost = ChatBoxUI.getRecencyBoost(cwd, file);
+        const extensionBoost = ChatBoxUI.getExtensionBoost(file);
+
+        const score =
+          nameScore * 4 +
+          bestSegmentScore * 2 +
+          pathScore +
+          recencyBoost +
+          extensionBoost;
+
+        return { file, score };
       })
-      .filter((item) => item.score !== Number.MAX_SAFE_INTEGER)
+      .filter((item): item is { file: string; score: number } => item !== null);
+
+    if (withScores.length === 0) {
+      return [];
+    }
+
+    return withScores
       .sort((a, b) => {
-        if (a.score !== b.score) {
-          return a.score - b.score;
+        if (b.score !== a.score) {
+          return b.score - a.score;
         }
         if (a.file.length !== b.file.length) {
           return a.file.length - b.file.length;
@@ -513,12 +696,63 @@ export class ChatBoxUI {
       .map((item) => item.file);
   }
 
+  private static getExtensionBoost(file: string): number {
+    const lower = file.toLowerCase();
+    if (lower.endsWith(".tsx") || lower.endsWith(".ts")) {
+      return 15;
+    }
+    if (lower.endsWith(".jsx") || lower.endsWith(".js")) {
+      return 10;
+    }
+    if (lower.endsWith(".md") || lower.endsWith(".json")) {
+      return 6;
+    }
+    return 0;
+  }
+
+  private static getRecencyBoost(cwd: string, relative: string): number {
+    const cacheKey = `${cwd}::${relative}`;
+    const now = Date.now();
+    const cached = ChatBoxUI.fileMtimeCache.get(cacheKey);
+
+    let mtime = cached;
+    if (mtime === undefined) {
+      try {
+        mtime = statSync(join(cwd, relative)).mtimeMs;
+      } catch {
+        mtime = 0;
+      }
+      ChatBoxUI.fileMtimeCache.set(cacheKey, mtime);
+    }
+
+    if (!mtime) {
+      return 0;
+    }
+
+    const age = now - mtime;
+
+    if (age <= 0) {
+      return 20;
+    }
+
+    if (age >= ChatBoxUI.MENTION_RECENT_WINDOW_MS) {
+      return 0;
+    }
+
+    const freshness = 1 - age / ChatBoxUI.MENTION_RECENT_WINDOW_MS;
+    return Math.round(freshness * 20);
+  }
+
   private static loadProjectFiles(cwd: string): string[] {
     const now = Date.now();
     const cache = ChatBoxUI.fileCache;
 
     if (cache && cache.cwd === cwd && now - cache.loadedAt < 5 * 60 * 1000) {
       return cache.files;
+    }
+
+    if (!cache || cache.cwd !== cwd) {
+      ChatBoxUI.fileMtimeCache.clear();
     }
 
     const files = glob.sync("**/*", {
@@ -563,19 +797,6 @@ export class ChatBoxUI {
 
   private static normalizePath(path: string): string {
     return path.replace(/\\/g, "/").replace(/^\.\//, "");
-  }
-
-  private static rewriteLine(rl: Interface, text: string): void {
-    const anyRl = rl as unknown as {
-      write: (data: string | null, key?: { ctrl?: boolean; name?: string }) => void;
-      line: string;
-      cursor: number;
-    };
-
-    anyRl.write(null, { ctrl: true, name: "u" });
-    anyRl.write(text);
-    anyRl.line = text;
-    anyRl.cursor = text.length;
   }
 
   private static lastStatusSignature: string | null = null;
