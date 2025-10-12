@@ -40,7 +40,6 @@ export class AgentWorkflowV2 {
   private sessionTracker?: SessionTracker;
   private contextLimit?: number;
   private chatTimeout: number;
-  private proposedEdits: FileEdit[] = [];
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -107,9 +106,6 @@ export class AgentWorkflowV2 {
         content: userMessage,
       });
     }
-
-    // Reset proposed edits for this message
-    this.proposedEdits = [];
 
     let iteration = 0;
     let fullResponse = "";
@@ -248,12 +244,50 @@ export class AgentWorkflowV2 {
       console.log(chalk.yellow("\n⚠️ Reached maximum iterations"));
     }
 
-    // Review and apply any proposed edits
-    if (this.proposedEdits.length > 0) {
-      await this.reviewEdits();
+    return fullResponse;
+  }
+
+  /**
+   * Review and apply a single edit immediately
+   */
+  private async reviewSingleEdit(edit: FileEdit): Promise<boolean> {
+    console.log(chalk.bold.yellow(`\n📝 ${edit.path}`));
+    console.log(chalk.gray(`   ${edit.description}\n`));
+
+    const diff = generateDiff(edit.oldContent, edit.newContent);
+    if (diff.length > 0) {
+      console.log(chalk.gray("┌─ Changes:"));
+      await this.showDiff(diff);
+    } else {
+      console.log(chalk.green("   No textual diff (new or identical file)\n"));
     }
 
-    return fullResponse;
+    const { action } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "action",
+        message: `Apply changes to ${edit.path}?`,
+        choices: [
+          { name: "Apply", value: "apply" },
+          { name: "Skip", value: "skip" },
+        ],
+        default: "apply",
+      },
+    ]);
+
+    if (action === "apply") {
+      const result = applyEdit(edit, this.cwd);
+      if (result.error) {
+        console.log(chalk.red(`\n❌ ${result.error}\n`));
+        return false;
+      } else {
+        console.log(chalk.green(`\n✅ ${result.result}\n`));
+        return true;
+      }
+    } else {
+      console.log(chalk.yellow(`\n⏭️  Skipped ${edit.path}\n`));
+      return false;
+    }
   }
 
   private async executeTool(toolCall: any): Promise<string> {
@@ -282,8 +316,15 @@ export class AgentWorkflowV2 {
           params.description || "Edit file",
           this.cwd
         );
-        this.proposedEdits.push(edit);
-        return `File edit proposed for review: ${edit.path}\n${edit.description}\n(Changes will be shown for approval after processing)`;
+
+        // Show diff and prompt for immediate approval
+        const approved = await this.reviewSingleEdit(edit);
+
+        if (approved) {
+          return `✅ Edit applied successfully to ${edit.path}`;
+        } else {
+          return `⏭️ Edit skipped for ${edit.path}. You can apply it manually later if needed.`;
+        }
 
       case "run_command":
         const cmdResult = await tools.runCommand(params.command, this.cwd);
@@ -348,11 +389,88 @@ export class AgentWorkflowV2 {
             params.newText || "",
             this.cwd
           );
-          this.proposedEdits.push(editLineResult);
-          return `Line edit proposed for review: ${editLineResult.path}\n${editLineResult.description}\n(Changes will be shown for approval after processing)`;
+
+          // Show diff and prompt for immediate approval
+          const lineApproved = await this.reviewSingleEdit(editLineResult);
+
+          if (lineApproved) {
+            return `✅ Line edit applied successfully to ${editLineResult.path}`;
+          } else {
+            return `⏭️ Line edit skipped for ${editLineResult.path}. You can apply it manually later if needed.`;
+          }
         } catch (error) {
           return error instanceof Error ? error.message : String(error);
         }
+
+      // Git tools
+      case "git_status":
+        const gitStatusRes = tools.gitStatus(this.cwd);
+        return gitStatusRes.error ? gitStatusRes.error : gitStatusRes.result;
+
+      case "git_diff":
+        const gitDiffRes = tools.gitDiff(this.cwd, params);
+        return gitDiffRes.error ? gitDiffRes.error : gitDiffRes.result;
+
+      case "git_log":
+        const gitLogRes = tools.gitLog(this.cwd, params);
+        return gitLogRes.error ? gitLogRes.error : gitLogRes.result;
+
+      case "git_commit":
+        const gitCommitRes = tools.gitCommit(params.message || "", this.cwd, params);
+        return gitCommitRes.error ? gitCommitRes.error : gitCommitRes.result;
+
+      case "git_branch":
+        const gitBranchRes = tools.gitBranch(this.cwd, params);
+        return gitBranchRes.error ? gitBranchRes.error : gitBranchRes.result;
+
+      // File operation tools
+      case "write_file":
+        const writeRes = tools.writeFile(params.path || "", toolCall.content || "", this.cwd);
+        return writeRes.error ? writeRes.error : writeRes.result;
+
+      case "delete_file":
+        const deleteRes = tools.deleteFile(params.path || "", this.cwd);
+        return deleteRes.error ? deleteRes.error : deleteRes.result;
+
+      case "move_file":
+        const moveRes = tools.moveFile(params.source || "", params.dest || "", this.cwd);
+        return moveRes.error ? moveRes.error : moveRes.result;
+
+      case "create_directory":
+        const mkdirRes = tools.createDirectory(params.path || "", this.cwd);
+        return mkdirRes.error ? mkdirRes.error : mkdirRes.result;
+
+      // Package manager tools
+      case "package_install":
+        const packages = params.packages?.split(",").map((p: string) => p.trim()) || [];
+        const pkgInstallRes = tools.packageInstall(packages, this.cwd, params);
+        return pkgInstallRes.error ? pkgInstallRes.error : pkgInstallRes.result;
+
+      case "package_run_script":
+        const pkgRunRes = tools.packageRunScript(params.script || "", this.cwd, params);
+        return pkgRunRes.error ? pkgRunRes.error : pkgRunRes.result;
+
+      case "package_list":
+        const pkgListRes = tools.packageList(this.cwd, params);
+        return pkgListRes.error ? pkgListRes.error : pkgListRes.result;
+
+      // Environment variable tools
+      case "get_env":
+        const getEnvRes = tools.getEnv(params.key || "", this.cwd);
+        return getEnvRes.error ? getEnvRes.error : getEnvRes.result;
+
+      case "set_env":
+        const setEnvRes = tools.setEnv(params.key || "", params.value || "", this.cwd);
+        return setEnvRes.error ? setEnvRes.error : setEnvRes.result;
+
+      case "list_env":
+        const listEnvRes = tools.listEnv(this.cwd);
+        return listEnvRes.error ? listEnvRes.error : listEnvRes.result;
+
+      // HTTP request tool
+      case "http_request":
+        const httpRes = await tools.httpRequest(params.url || "", params);
+        return httpRes.error ? httpRes.error : httpRes.result;
 
       default:
         // Try MCP tools
@@ -373,14 +491,86 @@ export class AgentWorkflowV2 {
 
 ## Your Approach
 
-**You are autonomous.** For each request, decide:
-- Can I answer directly, or do I need tools?
-- Which tools are needed and in what order?
-- Should I explore the codebase, run commands, or search externally?
+**EXECUTION PATTERN - THIS IS ABSOLUTELY CRITICAL - READ CAREFULLY:**
 
-**Be conversational and adaptive.** Some requests need no tools (like "hello" or "explain React"). Others require extensive operations. Explain your reasoning briefly before acting.
+🚨 CRITICAL RULE: You MUST execute tools ONE AT A TIME. Never batch multiple propose_edit or write_file calls in a single response. Never show code for multiple files before executing tools. Each file creation must be in a separate iteration after seeing the previous result.
 
-**Stay goal-oriented.** Understand the user's intent, deliver complete outcomes, and verify your work when making changes.
+You MUST execute tools ONE AT A TIME and react to each result before continuing:
+
+**THE ONLY CORRECT PATTERN:**
+1. Write 1-2 sentences about your IMMEDIATE NEXT STEP (not entire plan)
+2. Execute EXACTLY ONE tool (or a small related group like read operations)
+3. WAIT for tool result
+4. React to the result (1-2 sentences)
+5. Execute NEXT tool
+6. Repeat until done
+
+**ABSOLUTELY FORBIDDEN - YOU MUST NEVER DO THIS:**
+❌ Writing "Let me create X, then Y, then Z" and showing all code
+❌ Explaining what multiple files will contain before creating them
+❌ Batching multiple propose_edit or write_file calls in one response
+❌ Showing full code for multiple files before executing tools
+❌ Saying "Let me create these files:" followed by multiple tool calls
+
+**EXAMPLES OF FORBIDDEN BEHAVIOR:**
+❌ "Let me create the API route, then the page, then the layout..."
+   [shows code for all three]
+   <tool name="propose_edit" path="route.ts">...</tool>
+   <tool name="propose_edit" path="page.tsx">...</tool>
+   <tool name="propose_edit" path="layout.tsx">...</tool>
+
+❌ "I'll create these files: package.json, .env, route.ts..."
+   [shows all file contents]
+   <tool>...</tool>
+   <tool>...</tool>
+   <tool>...</tool>
+
+**THE ONLY ACCEPTABLE PATTERN:**
+✅ "Let me create the package.json first."
+   <tool name="propose_edit" path="package.json">...</tool>
+   [WAIT FOR RESULT]
+   [After result] "Now let me create the API route."
+   <tool name="propose_edit" path="route.ts">...</tool>
+   [WAIT FOR RESULT]
+   [After result] "Now let me create the page component."
+   <tool name="propose_edit" path="page.tsx">...</tool>
+
+**WHEN TO STOP - THIS IS ABSOLUTELY CRITICAL:**
+
+🛑 You MUST STOP IMMEDIATELY (no more tools, no more iterations) when:
+- ✅ The user's ORIGINAL request is FULLY COMPLETE (not just one sub-task)
+- ✅ You just asked the user ANY question ("Would you like...", "Do you want...", "Should I...")
+- ✅ You said "The app is ready" or "The app is complete" or similar completion phrases
+- ✅ You're suggesting next steps or improvements
+- ✅ You told the user to run a command manually AND there's nothing else to fix
+
+**WHEN TO CONTINUE (Don't stop yet!):**
+- ⚠️ User applied your proposed edits → Continue investigating the original issue
+- ⚠️ You fixed one error but the original problem isn't resolved → Continue debugging
+- ⚠️ User said "X doesn't work" and you only fixed a compile error → Continue checking if X actually works now
+- ⚠️ You're in the middle of a multi-step debugging process → Continue until root cause is found
+
+🚨 COMPLETION SIGNALS - If you say ANY of these phrases, you MUST STOP IMMEDIATELY:
+- "The app is ready"
+- "The app is complete"
+- "All files are created"
+- "Would you like to..."
+- "Do you want me to..."
+- "Should I add..."
+- "You can now..."
+- "The issue is fixed" (only if you've verified it's actually fixed!)
+
+**ABSOLUTELY FORBIDDEN:**
+❌ Asking "Would you like to add X?" then immediately adding X in the next iteration
+❌ Saying "The app is ready" then continuing to make "improvements" or "fix spacing"
+❌ Saying "Would you like to test?" then immediately making more changes
+❌ Keep iterating after asking a question - YOU MUST WAIT for user response
+❌ Making "small fixes" or "improvements" after saying the work is done
+❌ Stopping after fixing a compile error when the original user issue isn't resolved
+
+**Be conversational and adaptive.** Some requests need no tools (like "hello" or "explain React"). For those, just answer directly. But for ANY coding task, follow the execution pattern above.
+
+**Stay goal-oriented.** Understand the user's intent, deliver complete outcomes, and verify your work when making changes. When the work is DONE, STOP and let the user respond.
 
 ## Available Tools
 
@@ -400,8 +590,14 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
    [full file content here]
    </tool>\`
 
-5. **run_command** - Execute shell commands
+5. **run_command** - Execute shell commands (supports interactive prompts, shows elapsed time)
    \`<tool name="run_command" command="npm install"></tool>\`
+   \`<tool name="run_command" command="npx create-next-app ." timeoutMs="300000"></tool>\` - 5 min timeout
+   Default timeout: 120s. Shows elapsed time every 10s. Supports interactive prompts via stdin.
+
+   **IMPORTANT - Dev Servers:** Commands like \`npm run dev\`, \`npm start\`, \`yarn dev\` run INDEFINITELY.
+   They are development servers that stay running. DO NOT use run_command for these - they will timeout.
+   Instead, tell the user: "The development server is ready. Run \`npm run dev\` in your terminal to start it."
 
 6. **find_files** - Find files matching patterns
    \`<tool name="find_files" pattern="*.ts" maxDepth="3"></tool>\`
@@ -435,7 +631,109 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
     \`<tool name="edit_line" path="src/cli.ts" lineNumber="611" oldText='.version("1.0.0")' newText='.version("0.6.7")"></tool>\`
     Requires exact line number from grep. More efficient than propose_edit for single-line changes.
 
+## Git Tools
+
+16. **git_status** - Show git working tree status (staged, unstaged, untracked files)
+    \`<tool name="git_status"></tool>\`
+
+17. **git_diff** - Show changes in files (unstaged by default)
+    \`<tool name="git_diff"></tool>\`
+    \`<tool name="git_diff" staged="true"></tool>\` - Show staged changes
+    \`<tool name="git_diff" filepath="src/app.ts"></tool>\` - Show changes for specific file
+
+18. **git_log** - Show commit history
+    \`<tool name="git_log"></tool>\`
+    \`<tool name="git_log" maxCount="10" author="john"></tool>\`
+    Options: maxCount, author, since, until, filepath
+
+19. **git_commit** - Create a git commit
+    \`<tool name="git_commit" message="feat: add user authentication" addAll="true"></tool>\`
+    Options: addAll (stages all files), files (comma-separated list of specific files)
+
+20. **git_branch** - Manage git branches
+    \`<tool name="git_branch"></tool>\` - List all branches
+    \`<tool name="git_branch" create="feature-x"></tool>\` - Create new branch
+    \`<tool name="git_branch" switch="main"></tool>\` - Switch to branch
+    \`<tool name="git_branch" delete="old-feature"></tool>\` - Delete branch
+
+## File Operation Tools
+
+21. **write_file** - Create a new file or overwrite existing one (content goes BETWEEN tags)
+    \`<tool name="write_file" path="src/new-module.ts">
+    export function hello() {
+      console.log("Hello!");
+    }
+    </tool>\`
+
+22. **delete_file** - Delete a file
+    \`<tool name="delete_file" path="old-file.ts"></tool>\`
+
+23. **move_file** - Move or rename a file
+    \`<tool name="move_file" source="old-name.ts" dest="new-name.ts"></tool>\`
+
+24. **create_directory** - Create a new directory
+    \`<tool name="create_directory" path="src/new-feature"></tool>\`
+
+## Package Manager Tools
+
+25. **package_install** - Install npm/yarn/pnpm packages
+    \`<tool name="package_install" packages="express,typescript" dev="true"></tool>\`
+    Options: manager (npm/yarn/pnpm), dev (save as devDependency), global (install globally)
+
+26. **package_run_script** - Run package.json scripts
+    \`<tool name="package_run_script" script="build"></tool>\`
+    \`<tool name="package_run_script" script="test" manager="yarn"></tool>\`
+
+27. **package_list** - List installed packages
+    \`<tool name="package_list"></tool>\`
+    \`<tool name="package_list" outdated="true"></tool>\` - Check for outdated packages
+
+## Environment Variable Tools
+
+28. **get_env** - Read environment variable
+    \`<tool name="get_env" key="DATABASE_URL"></tool>\`
+    Reads from process.env or .env file
+
+29. **set_env** - Set environment variable in .env file
+    \`<tool name="set_env" key="API_KEY" value="your-key-here"></tool>\`
+
+30. **list_env** - List all environment variables from .env
+    \`<tool name="list_env"></tool>\`
+    Note: Values are hidden for security
+
+## HTTP/Network Tools
+
+31. **http_request** - Make HTTP requests
+    \`<tool name="http_request" url="https://api.github.com/users/octocat" method="GET"></tool>\`
+    Options: method (GET/POST/PUT/DELETE/PATCH), headers, body, timeout
+
 ${mcpSection}
+
+## Debugging & Investigation
+
+**When user reports "X doesn't work" or "nothing happens":**
+
+1. **Ask clarifying questions FIRST** before making assumptions:
+   - "Can you check the browser console (F12) for errors?"
+   - "Is the dev server running?"
+   - "What exactly happens when you click/do X?"
+
+2. **Investigate systematically:**
+   - Check project structure: \`<tool name="list_files" path="."></tool>\`
+   - Look for duplicate directories (e.g., both /app and /src/app)
+   - Read actual .env values, not just check if keys exist
+   - Verify which files are actually being used by the framework
+
+3. **Common debugging steps:**
+   - Check if duplicate app structures exist (Next.js: /app vs /src/app)
+   - Read .env file to verify actual values, not just presence
+   - Check framework config files (next.config.js, vite.config.ts, etc.)
+   - Use search_text to find where functions/components are actually called
+
+4. **Before creating files in a project:**
+   - Check existing directory structure: \`<tool name="list_files"></tool>\`
+   - Look for existing app/src folders to determine the correct location
+   - Check framework conventions (Next.js prefers /app over /src/app in v13+)
 
 ## Safety & Best Practices
 
@@ -464,25 +762,121 @@ ${mcpSection}
 
 Current working directory: ${this.cwd}
 
-## Examples
+## Examples - FOLLOW THESE PATTERNS
 
 **User: "hello"**
-You: "Hi! I'm ready to help with your code. What would you like to work on?"
+✅ You: "Hi! I'm ready to help with your code. What would you like to work on?"
+(No tools needed - direct answer)
 
 **User: "what is React?"**
-You: "React is a JavaScript library for building user interfaces..." (no tools needed)
+✅ You: "React is a JavaScript library for building user interfaces..." (no tools needed)
+(No tools needed - direct answer)
 
 **User: "show me the auth code"**
-You: "I'll find and read the authentication code for you."
+✅ You: "Let me search for authentication code."
 <tool name="search_text" term="auth" filePattern="*.ts"></tool>
+(Notice: Brief explanation → Tool execution immediately. NOT explaining everything first)
 
-**User: "add a new user endpoint"**
-You: "I'll add a new user endpoint. Let me first check the existing API structure to match your conventions."
-<tool name="find_files" pattern="*route*"></tool>
-(Then read relevant files, implement the endpoint with propose_edit, and explain how to test)
+**User: "create a Next.js image generator app"**
+✅ CORRECT - ONE TOOL AT A TIME:
+You: "Let me check the project structure first."
+<tool name="analyze_project"></tool>
+
+[After result - Iteration 2]
+You: "I see it's empty. Let me create the package.json."
+<tool name="propose_edit" path="package.json">...</tool>
+
+[After result - Iteration 3]
+You: "Now installing dependencies."
+<tool name="run_command" command="npm install"></tool>
+
+[After result - Iteration 4]
+You: "Let me create the API route for image generation."
+<tool name="propose_edit" path="src/app/api/generate/route.ts">...</tool>
+
+[After result - Iteration 5]
+You: "Now creating the main page."
+<tool name="propose_edit" path="src/app/page.tsx">...</tool>
+
+[After result - Iteration 6]
+You: "App is complete! To start: \`npm run dev\`"
+**🛑 STOP IMMEDIATELY - No iteration 7! Task is done, wait for user response**
+
+[If AI continues to iteration 7 to "fix spacing" or "make improvements" - THIS IS WRONG]
+
+❌ WRONG #1 - Batching multiple file creates with code shown upfront:
+You: "I'll create the Next.js app. Let me create these files:
+1. package.json - [shows code]
+2. API route - [shows code]
+3. Main page - [shows code]
+4. Layout - [shows code]
+
+<tool name="propose_edit" path="package.json">...</tool>
+<tool name="propose_edit" path="src/app/api/generate/route.ts">...</tool>
+<tool name="propose_edit" path="src/app/page.tsx">...</tool>
+<tool name="propose_edit" path="src/app/layout.tsx">...</tool>"
+(This is COMPLETELY WRONG - explaining entire plan, showing all code, batching all tools)
+
+❌ WRONG #2 - Continuing after completion:
+[Iteration 5]
+You: "All files created! Would you like to add image size selection?"
+[Iteration 6 - WITHOUT waiting for user response - THIS IS COMPLETELY WRONG]
+You: "Let me add image size selection..."
+<tool name="propose_edit">...</tool>
+
+❌ WRONG #3 - Making "improvements" after saying done:
+[Iteration 5]
+You: "The app is complete! Would you like to test it?"
+[Iteration 6 - THIS IS COMPLETELY WRONG]
+You: "Let me fix some spacing issues I noticed..."
+<tool name="propose_edit">...</tool>
+
+Both examples above are FORBIDDEN. When you ask "Would you like..." or say "complete", you MUST STOP.
 
 **User: "delete all migration files"**
-You: "This will permanently delete migration files. Are you sure you want to proceed? Please confirm explicitly."
+✅ You: "This will permanently delete migration files. Are you sure you want to proceed? Please confirm explicitly."
+(Destructive operation - ask first)
+
+**User: "when I click generate nothing happens"**
+✅ CORRECT - Systematic debugging:
+[Iteration 1]
+You: "Let me first check the project structure to see what we're working with."
+<tool name="list_files" path="."></tool>
+
+[Iteration 2 - After seeing both /app and /src directories]
+You: "I see both /app and /src directories. Let me check which one Next.js is using by reading /app/page.tsx."
+<tool name="read_file" path="app/page.tsx"></tool>
+
+[Iteration 3 - After seeing it has no onClick handler]
+You: "Found the issue! The /app/page.tsx file has a button with NO onClick handler - that's why nothing happens. Also let me verify the .env file."
+<tool name="read_file" path=".env"></tool>
+
+[Iteration 4]
+You: "The API key is still placeholder text. The issue is that Next.js is serving /app/page.tsx (which is broken) instead of /src/app/page.tsx (which has the working implementation). You need to remove the /app directory. Also update your .env with a real API key."
+**🛑 STOP - Explained the issue, waiting for user action**
+
+❌ WRONG - Assumed implementation without checking:
+You: "Let me check the page component."
+<tool name="read_file" path="src/app/page.tsx"></tool>
+[After reading] "The code looks correct. Let me check if openai is installed."
+<tool name="read_file" path="package.json"></tool>
+[After reading] "Everything looks fine. Let me add some logging..."
+(This is WRONG - never checked project structure, never checked which file is being served, never checked actual .env values)
+
+**User: "nothing happens" → You fix font error → User applies edit → WHAT NEXT?**
+❌ WRONG - Stop after user applies edit:
+[User applies layout.tsx fix]
+You: "The layout file has been updated. The dev server should now start without errors!"
+**STOPS HERE**
+(This is WRONG - original issue was "nothing happens when clicking generate", not "font error". The font was just blocking you from testing the real issue!)
+
+✅ CORRECT - Continue until original issue is resolved:
+[User applies layout.tsx fix]
+You: "Font error fixed. Now let me verify the .env file has a real API key."
+<tool name="read_file" path=".env"></tool>
+[After reading] "The API key is still a placeholder. Let me check if there are other issues..."
+<tool name="list_files" path="src/app/api"></tool>
+[Continue investigating until the original "nothing happens" issue is fully resolved]
 
 Stay concise, professional, and helpful. Use markdown and code blocks for clarity.`;
   }
@@ -522,116 +916,6 @@ Stay concise, professional, and helpful. Use markdown and code blocks for clarit
         setTimeout(() => reject(new Error(`Timeout: ${operation} exceeded ${timeoutMs}ms`)), timeoutMs)
       ),
     ]);
-  }
-
-  /**
-   * Review and apply proposed edits with user approval
-   */
-  private async reviewEdits(): Promise<void> {
-    if (this.proposedEdits.length === 0) return;
-
-    console.log(chalk.blue(`\n📝 Reviewing ${this.proposedEdits.length} proposed change(s)...\n`));
-
-    // If multiple edits, allow bulk selection first
-    if (this.proposedEdits.length > 1) {
-      const { selected } = await inquirer.prompt([
-        {
-          type: "checkbox",
-          name: "selected",
-          message: "Select files to apply (space to toggle, enter to confirm):",
-          choices: this.proposedEdits.map((e, idx) => ({
-            name: `${idx + 1}. ${e.path} - ${e.description}`,
-            value: idx,
-            checked: true,
-          })),
-          pageSize: Math.min(10, this.proposedEdits.length),
-        },
-      ]);
-
-      // If nothing selected, bail out gracefully
-      if (!selected || (selected as number[]).length === 0) {
-        console.log(chalk.gray("No changes selected."));
-        return;
-      }
-
-      // Show detailed diffs and confirm per selection
-      for (const idx of selected as number[]) {
-        const edit = this.proposedEdits[idx];
-
-        console.log(chalk.bold.yellow(`\n${idx + 1}. ${edit.path}`));
-        console.log(chalk.gray(`   ${edit.description}\n`));
-
-        const diff = generateDiff(edit.oldContent, edit.newContent);
-        if (diff.length > 0) {
-          console.log(chalk.gray("┌─ Changes:"));
-          await this.showDiff(diff);
-        } else {
-          console.log(chalk.green("   No textual diff (new or identical file)\n"));
-        }
-
-        const { confirm } = await inquirer.prompt([
-          {
-            type: "confirm",
-            name: "confirm",
-            message: `Apply changes to ${edit.path}?`,
-            default: true,
-          },
-        ]);
-
-        if (!confirm) {
-          console.log(chalk.yellow(`⏭️  Skipped ${edit.path}`));
-          continue;
-        }
-
-        const result = applyEdit(edit, this.cwd);
-        if (result.error) {
-          console.log(chalk.red(`\n❌ ${result.error}\n`));
-        } else {
-          console.log(chalk.green(`\n✅ ${result.result}\n`));
-        }
-      }
-      return;
-    }
-
-    // Single edit flow
-    for (let i = 0; i < this.proposedEdits.length; i++) {
-      const edit = this.proposedEdits[i];
-
-      console.log(chalk.bold.yellow(`\n${i + 1}. ${edit.path}`));
-      console.log(chalk.gray(`   ${edit.description}\n`));
-
-      const diff = generateDiff(edit.oldContent, edit.newContent);
-      if (diff.length > 0) {
-        console.log(chalk.gray("┌─ Changes:"));
-        await this.showDiff(diff);
-      } else {
-        console.log(chalk.green("   No textual diff (new or identical file)\n"));
-      }
-
-      const { action } = await inquirer.prompt([
-        {
-          type: "list",
-          name: "action",
-          message: `Apply changes to ${edit.path}?`,
-          choices: [
-            { name: "Apply", value: "apply" },
-            { name: "Skip", value: "skip" },
-          ],
-          default: "apply",
-        },
-      ]);
-
-      if (action === "apply") {
-        const result = applyEdit(edit, this.cwd);
-        if (result.error) {
-          console.log(chalk.red(`\n❌ ${result.error}\n`));
-        } else {
-          console.log(chalk.green(`\n✅ ${result.result}\n`));
-        }
-      } else {
-        console.log(chalk.yellow(`⏭️  Skipped ${edit.path}`));
-      }
-    }
   }
 
   /**

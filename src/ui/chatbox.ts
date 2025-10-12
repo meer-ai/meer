@@ -117,10 +117,12 @@ export class ChatBoxUI {
       };
 
       const exitMenu = (callback?: () => void) => {
-        setImmediate(() => {
-          setMenuActive(false);
-          callback?.();
-        });
+        // Immediately set menu inactive to allow input processing
+        setMenuActive(false);
+        // Run callback on next tick to allow UI cleanup
+        if (callback) {
+          setImmediate(callback);
+        }
       };
 
       const editorChangeUnsubscribe = editor.onChange((event) => {
@@ -171,15 +173,15 @@ export class ChatBoxUI {
           rl.pause();
 
           try {
-          const selection = await ChatBoxUI.promptMentionSelection(
-            fragment,
-            currentCwd,
-            {
-              inputStream: (rl as Interface & {
-                input?: NodeJS.ReadableStream;
-              }).input,
-            }
-          );
+            const selection = await ChatBoxUI.promptMentionSelection(
+              fragment,
+              currentCwd,
+              {
+                inputStream: (rl as Interface & {
+                  input?: NodeJS.ReadableStream;
+                }).input,
+              }
+            );
 
             if (selection === ChatBoxUI.MENTION_CANCEL) {
               editor.setState(originalState.buffer, originalState.cursor);
@@ -206,6 +208,12 @@ export class ChatBoxUI {
               before.length + mentionText.length + (needsSpace ? 1 : 0);
 
             editor.setState(newBuffer, cursorPos);
+          } catch (error) {
+            // Handle errors gracefully - restore original state
+            const message =
+              error instanceof Error ? error.message : String(error);
+            console.log(chalk.yellow(`\n  ⚠️  Mention error: ${message}`));
+            editor.setState(originalState.buffer, originalState.cursor);
           } finally {
             rl.resume();
             exitMenu(() => {
@@ -490,14 +498,23 @@ export class ChatBoxUI {
         }
 
         replayScheduled = true;
+
+        // Use setImmediate to ensure inquirer has fully cleaned up
         setImmediate(() => {
           replayScheduled = false;
+
           if (!inputStream || typeof (inputStream as any).unshift !== "function") {
             pendingReplay.length = 0;
             return;
           }
-          while (pendingReplay.length > 0) {
-            const chunk = pendingReplay.shift();
+
+          // Replay all pending chunks in FIFO order
+          const chunks = [...pendingReplay];
+          pendingReplay.length = 0;
+
+          // Push chunks back to stream in reverse order since unshift adds to front
+          for (let i = chunks.length - 1; i >= 0; i--) {
+            const chunk = chunks[i];
             if (chunk !== undefined) {
               (inputStream as any).unshift(chunk);
             }
@@ -511,17 +528,27 @@ export class ChatBoxUI {
         if (!value) {
           return false;
         }
+        // Allow enter/return to be handled by inquirer
         if (value === "\r" || value === "\n") {
           return false;
         }
+        // Allow Ctrl+C to be handled by inquirer
         if (value === "\u0003") {
-          // Ctrl+C - let Inquirer handle it
           return false;
         }
+        // Allow all escape sequences (arrows, function keys, etc)
         if (value.startsWith("\u001b")) {
-          // Arrow keys / escape sequences - keep the menu active
           return false;
         }
+        // Allow tab for navigation
+        if (value === "\t") {
+          return false;
+        }
+        // Allow backspace/delete in some contexts
+        if (value === "\x7f" || value === "\b") {
+          return false;
+        }
+        // Cancel on any other printable character
         return true;
       };
 
@@ -530,17 +557,21 @@ export class ChatBoxUI {
           return;
         }
 
+        // User typed something - cancel the menu
         cancelledByTyping = true;
         pendingReplay.push(chunk);
 
+        // Immediately remove listener to prevent duplicate handling
         if (inputStream) {
           inputStream.removeListener("data", handleStreamData);
         }
 
+        // Close the inquirer UI
         if (ui && typeof ui.close === "function") {
           ui.close();
         }
 
+        // Schedule replay on next tick to ensure menu is fully closed
         scheduleReplay();
       };
 

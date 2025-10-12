@@ -78,16 +78,35 @@ export class MentionController {
   }
 
   private handleChange = (event: LineChangeEvent): void => {
-    if (this.disposed || !this.enabled || this.active) {
+    // Ignore changes when disposed or disabled
+    if (this.disposed || !this.enabled) {
       return;
     }
 
+    // Don't schedule new triggers when menu is already active
+    // But don't block the input processing itself
+    if (this.active) {
+      // Clear any pending triggers since user is already in a menu
+      this.clearPending();
+      return;
+    }
+
+    // Don't trigger mentions during rapid paste operations
+    if (this.editor.isPasting()) {
+      this.clearPending();
+      return;
+    }
+
+    // Extract potential mention candidate from current state
     const candidate = this.extractCandidate(event.state);
+
+    // Clear pending trigger if no candidate found
     if (!candidate) {
       this.clearPending();
       return;
     }
 
+    // Schedule a debounced trigger
     this.schedule(candidate);
   };
 
@@ -100,6 +119,7 @@ export class MentionController {
   }
 
   private async maybeTrigger(): Promise<void> {
+    // Safety checks
     if (!this.pending || this.disposed || !this.enabled) {
       return;
     }
@@ -107,20 +127,24 @@ export class MentionController {
     const candidate = this.pending;
     this.clearPending();
 
+    // Re-check current state to ensure candidate is still valid
     const currentState = this.editor.getState();
     const currentCandidate = this.extractCandidate(currentState);
 
+    // If candidate changed or disappeared, reschedule if there's a new one
     if (
       !currentCandidate ||
       currentCandidate.start !== candidate.start ||
       currentCandidate.fragment !== candidate.fragment
     ) {
+      // Reschedule with new candidate if still valid and not active
       if (currentCandidate && this.enabled && !this.active) {
         this.schedule(currentCandidate);
       }
       return;
     }
 
+    // Set active flag to prevent concurrent triggers
     this.active = true;
     try {
       await this.options.onTrigger({
@@ -128,7 +152,11 @@ export class MentionController {
         start: currentCandidate.start,
         state: currentState,
       });
+    } catch (error) {
+      // Silently handle errors to prevent crashes
+      console.error("Mention trigger error:", error);
     } finally {
+      // Always reset active flag
       this.active = false;
     }
   }

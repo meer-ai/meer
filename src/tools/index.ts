@@ -63,11 +63,33 @@ function detectPlaceholder(content: string): string | null {
 }
 
 /**
+ * Resolve a path that may be absolute, relative, or contain ~
+ * @param path - The path to resolve
+ * @param cwd - The current working directory (used for relative paths)
+ * @returns The resolved absolute path
+ */
+function resolvePath(path: string, cwd: string): string {
+  if (!path || path === ".") {
+    return cwd;
+  } else if (path.startsWith("~")) {
+    // Expand home directory
+    const { homedir } = require("os");
+    return path.replace(/^~/, homedir());
+  } else if (path.startsWith("/")) {
+    // Absolute path - use as is
+    return path;
+  } else {
+    // Relative path - join with cwd
+    return join(cwd, path);
+  }
+}
+
+/**
  * Tool: Read a file from the project
  */
 export function readFile(filepath: string, cwd: string): ToolResult {
   try {
-    const fullPath = join(cwd, filepath);
+    const fullPath = resolvePath(filepath, cwd);
 
     if (!existsSync(fullPath)) {
       return {
@@ -98,7 +120,7 @@ export function readFile(filepath: string, cwd: string): ToolResult {
  */
 export function listFiles(dirpath: string, cwd: string): ToolResult {
   try {
-    const fullPath = dirpath ? join(cwd, dirpath) : cwd;
+    const fullPath = resolvePath(dirpath, cwd);
 
     if (!existsSync(fullPath)) {
       return {
@@ -151,7 +173,7 @@ export function proposeEdit(
   description: string,
   cwd: string
 ): FileEdit {
-  const fullPath = join(cwd, filepath);
+  const fullPath = resolvePath(filepath, cwd);
   const oldContent = existsSync(fullPath)
     ? readFileSync(fullPath, "utf-8")
     : "";
@@ -182,7 +204,7 @@ export function proposeEdit(
  */
 export function applyEdit(edit: FileEdit, cwd: string): ToolResult {
   try {
-    const fullPath = join(cwd, edit.path);
+    const fullPath = resolvePath(edit.path, cwd);
     const dir = dirname(fullPath);
 
     // Ensure directory exists
@@ -668,43 +690,58 @@ export async function runCommand(
   cwd: string,
   options?: { timeoutMs?: number }
 ): Promise<ToolResult> {
+  const startTime = Date.now();
+  const timeoutMs = options?.timeoutMs ?? 120000; // Default 2 min timeout
+
   console.log(chalk.gray(`  🚀 Running: ${command}`));
+  console.log(chalk.gray(`  ⏱️  Timeout: ${timeoutMs / 1000}s`));
+  console.log("");
 
   return new Promise((resolve) => {
     const child = spawn(command, {
       cwd,
       shell: true,
       env: process.env,
+      stdio: ['inherit', 'pipe', 'pipe'], // Inherit stdin for interactive prompts
     });
 
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let didTimeout = false;
 
-    const timeoutMs = options?.timeoutMs ?? 0;
-    const timeoutHandle =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            didTimeout = true;
-            console.log(
-              chalk.yellow(
-                `  ⏰ Command timed out after ${timeoutMs / 1000}s, sending SIGTERM...`
-              )
-            );
-            child.kill("SIGTERM");
-            // Force kill if still running after grace period
-            setTimeout(() => {
-              if (!child.killed) {
-                console.log(
-                  chalk.red(
-                    "  ⛔ Command unresponsive, sending SIGKILL to terminate"
-                  )
-                );
-                child.kill("SIGKILL");
-              }
-            }, 5000);
-          }, timeoutMs)
-        : null;
+    // Display elapsed time every 10 seconds
+    const timerInterval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const remaining = Math.floor((timeoutMs - (Date.now() - startTime)) / 1000);
+
+      if (remaining > 0) {
+        console.log(chalk.gray(`  ⏱️  Elapsed: ${elapsed}s | Timeout in: ${remaining}s`));
+      }
+    }, 10000);
+
+    const timeoutHandle = setTimeout(() => {
+      didTimeout = true;
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      console.log(
+        chalk.yellow(
+          `\n  ⏰ Command timed out after ${elapsed}s, sending SIGTERM...`
+        )
+      );
+      console.log(chalk.yellow(`  💡 Tip: Use timeoutMs option to increase timeout`));
+      child.kill("SIGTERM");
+
+      // Force kill if still running after grace period
+      setTimeout(() => {
+        if (!child.killed) {
+          console.log(
+            chalk.red(
+              "  ⛔ Command unresponsive, sending SIGKILL to terminate"
+            )
+          );
+          child.kill("SIGKILL");
+        }
+      }, 5000);
+    }, timeoutMs);
 
     child.stdout?.on("data", (chunk) => {
       const text = chunk.toString();
@@ -715,13 +752,18 @@ export async function runCommand(
     child.stderr?.on("data", (chunk) => {
       const text = chunk.toString();
       stderrBuffer += text;
-      process.stderr.write(text);
+      process.stderr.write(chalk.gray(text)); // Gray for stderr
     });
 
     const finalize = (result: ToolResult) => {
+      clearInterval(timerInterval);
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      console.log(chalk.gray(`\n  ✓ Completed in ${elapsed}s\n`));
+
       resolve(result);
     };
 
@@ -736,15 +778,11 @@ export async function runCommand(
     });
 
     child.on("close", (code, signal) => {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-
       if (didTimeout) {
         finalize({
           tool: "run_command",
           result: stdoutBuffer,
-          error: `Command timed out after ${timeoutMs}ms`,
+          error: `Command timed out after ${timeoutMs / 1000}s. Increase timeout with timeoutMs option if needed.`,
         });
         return;
       }
@@ -1137,7 +1175,7 @@ export function readManyFiles(
     const results: string[] = [];
 
     for (const filePath of filePaths) {
-      const fullPath = join(cwd, filePath);
+      const fullPath = resolvePath(filePath, cwd);
 
       if (!existsSync(fullPath)) {
         results.push(`❌ ${filePath}: File not found`);
@@ -1205,7 +1243,7 @@ export function searchText(
 
     for (const file of files) {
       try {
-        const fullPath = join(cwd, file);
+        const fullPath = resolvePath(file, cwd);
         const content = readFileSync(fullPath, "utf-8");
         const lines = content.split("\n");
 
@@ -1261,7 +1299,7 @@ export function grep(
   } = {}
 ): ToolResult {
   try {
-    const fullPath = join(cwd, filepath);
+    const fullPath = resolvePath(filepath, cwd);
 
     if (!existsSync(fullPath)) {
       return {
@@ -1345,7 +1383,7 @@ export function editLine(
   newText: string,
   cwd: string
 ): FileEdit {
-  const fullPath = join(cwd, filepath);
+  const fullPath = resolvePath(filepath, cwd);
 
   if (!existsSync(fullPath)) {
     throw new Error(`File not found: ${filepath}`);
@@ -1396,7 +1434,7 @@ export function readFolder(
   try {
     console.log(chalk.gray(`  📁 Reading folder: ${folderPath}`));
 
-    const fullPath = join(cwd, folderPath);
+    const fullPath = resolvePath(folderPath, cwd);
     if (!existsSync(fullPath)) {
       return {
         tool: "read_folder",
@@ -1636,6 +1674,996 @@ export function loadMemory(key: string, cwd: string): ToolResult {
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * Tool: Git Status - Show working tree status
+ */
+export function gitStatus(cwd: string): ToolResult {
+  try {
+    console.log(chalk.gray(`  📊 Checking git status`));
+
+    // Check if we're in a git repository
+    try {
+      execSync("git rev-parse --git-dir", { cwd, stdio: "pipe" });
+    } catch {
+      return {
+        tool: "git_status",
+        result: "",
+        error: "Not a git repository. Run 'git init' to initialize one.",
+      };
+    }
+
+    const status = execSync("git status --porcelain", {
+      cwd,
+      encoding: "utf-8",
+    });
+
+    if (!status.trim()) {
+      return {
+        tool: "git_status",
+        result: "Working tree clean - no changes to commit.",
+      };
+    }
+
+    // Parse status output
+    const lines = status.split("\n").filter((line) => line.trim());
+    const staged: string[] = [];
+    const unstaged: string[] = [];
+    const untracked: string[] = [];
+
+    for (const line of lines) {
+      const statusCode = line.substring(0, 2);
+      const filepath = line.substring(3);
+
+      // First character is staged status, second is unstaged status
+      const stagedStatus = statusCode[0];
+      const unstagedStatus = statusCode[1];
+
+      if (stagedStatus === "?" && unstagedStatus === "?") {
+        untracked.push(filepath);
+      } else {
+        if (stagedStatus !== " " && stagedStatus !== "?") {
+          const type =
+            stagedStatus === "M"
+              ? "modified"
+              : stagedStatus === "A"
+                ? "new file"
+                : stagedStatus === "D"
+                  ? "deleted"
+                  : stagedStatus === "R"
+                    ? "renamed"
+                    : "modified";
+          staged.push(`${type}: ${filepath}`);
+        }
+        if (unstagedStatus !== " " && unstagedStatus !== "?") {
+          const type =
+            unstagedStatus === "M"
+              ? "modified"
+              : unstagedStatus === "D"
+                ? "deleted"
+                : "modified";
+          unstaged.push(`${type}: ${filepath}`);
+        }
+      }
+    }
+
+    let result = "Git Status:\n\n";
+
+    if (staged.length > 0) {
+      result += `Changes staged for commit (${staged.length}):\n`;
+      staged.forEach((item) => (result += `  ${chalk.green("+")} ${item}\n`));
+      result += "\n";
+    }
+
+    if (unstaged.length > 0) {
+      result += `Changes not staged for commit (${unstaged.length}):\n`;
+      unstaged.forEach((item) => (result += `  ${chalk.red("~")} ${item}\n`));
+      result += "\n";
+    }
+
+    if (untracked.length > 0) {
+      result += `Untracked files (${untracked.length}):\n`;
+      untracked.forEach((item) => (result += `  ${chalk.gray("?")} ${item}\n`));
+      result += "\n";
+    }
+
+    // Get current branch
+    try {
+      const branch = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd,
+        encoding: "utf-8",
+      }).trim();
+      result += `Current branch: ${branch}\n`;
+    } catch {
+      // Ignore branch errors
+    }
+
+    return {
+      tool: "git_status",
+      result,
+    };
+  } catch (error) {
+    return {
+      tool: "git_status",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Git Diff - Show changes in files
+ */
+export function gitDiff(
+  cwd: string,
+  options: {
+    staged?: boolean;
+    filepath?: string;
+    unified?: number;
+  } = {}
+): ToolResult {
+  try {
+    console.log(
+      chalk.gray(
+        `  📝 Showing ${options.staged ? "staged" : "unstaged"} changes`
+      )
+    );
+
+    // Check if we're in a git repository
+    try {
+      execSync("git rev-parse --git-dir", { cwd, stdio: "pipe" });
+    } catch {
+      return {
+        tool: "git_diff",
+        result: "",
+        error: "Not a git repository.",
+      };
+    }
+
+    const args = ["git", "diff"];
+
+    if (options.staged) {
+      args.push("--staged");
+    }
+
+    if (options.unified !== undefined) {
+      args.push(`--unified=${options.unified}`);
+    }
+
+    args.push("--color=never"); // We'll add our own coloring
+
+    if (options.filepath) {
+      args.push("--", resolvePath(options.filepath, cwd));
+    }
+
+    const diff = execSync(args.join(" "), {
+      cwd,
+      encoding: "utf-8",
+    });
+
+    if (!diff.trim()) {
+      return {
+        tool: "git_diff",
+        result: options.staged
+          ? "No staged changes to show."
+          : "No unstaged changes to show.",
+      };
+    }
+
+    // Parse and colorize diff
+    const lines = diff.split("\n");
+    const coloredLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith("diff --git")) {
+        coloredLines.push(chalk.bold(line));
+      } else if (line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")) {
+        coloredLines.push(chalk.gray(line));
+      } else if (line.startsWith("@@")) {
+        coloredLines.push(chalk.cyan(line));
+      } else if (line.startsWith("+")) {
+        coloredLines.push(chalk.green(line));
+      } else if (line.startsWith("-")) {
+        coloredLines.push(chalk.red(line));
+      } else {
+        coloredLines.push(line);
+      }
+    }
+
+    return {
+      tool: "git_diff",
+      result: coloredLines.join("\n"),
+    };
+  } catch (error) {
+    return {
+      tool: "git_diff",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Git Log - Show commit history
+ */
+export function gitLog(
+  cwd: string,
+  options: {
+    maxCount?: number;
+    author?: string;
+    since?: string;
+    until?: string;
+    filepath?: string;
+  } = {}
+): ToolResult {
+  try {
+    console.log(chalk.gray(`  📜 Fetching git commit history`));
+
+    // Check if we're in a git repository
+    try {
+      execSync("git rev-parse --git-dir", { cwd, stdio: "pipe" });
+    } catch {
+      return {
+        tool: "git_log",
+        result: "",
+        error: "Not a git repository.",
+      };
+    }
+
+    const args = [
+      "git",
+      "log",
+      `--max-count=${options.maxCount || 20}`,
+      '--pretty=format:%H|%h|%an|%ae|%ad|%s',
+      "--date=short",
+    ];
+
+    if (options.author) {
+      args.push(`--author=${options.author}`);
+    }
+
+    if (options.since) {
+      args.push(`--since=${options.since}`);
+    }
+
+    if (options.until) {
+      args.push(`--until=${options.until}`);
+    }
+
+    if (options.filepath) {
+      args.push("--", resolvePath(options.filepath, cwd));
+    }
+
+    const log = execSync(args.join(" "), {
+      cwd,
+      encoding: "utf-8",
+    });
+
+    if (!log.trim()) {
+      return {
+        tool: "git_log",
+        result: "No commits found.",
+      };
+    }
+
+    const lines = log.split("\n").filter((line) => line.trim());
+    let result = `Git Commit History (${lines.length} commits):\n\n`;
+
+    for (const line of lines) {
+      const [fullHash, shortHash, author, email, date, message] =
+        line.split("|");
+      result += `${chalk.yellow(shortHash)} - ${chalk.cyan(date)} - ${chalk.gray(author)}\n`;
+      result += `  ${message}\n\n`;
+    }
+
+    return {
+      tool: "git_log",
+      result,
+    };
+  } catch (error) {
+    return {
+      tool: "git_log",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Git Commit - Create a new commit
+ */
+export function gitCommit(
+  message: string,
+  cwd: string,
+  options: {
+    addAll?: boolean;
+    files?: string[];
+  } = {}
+): ToolResult {
+  try {
+    console.log(chalk.gray(`  💾 Creating git commit`));
+
+    // Check if we're in a git repository
+    try {
+      execSync("git rev-parse --git-dir", { cwd, stdio: "pipe" });
+    } catch {
+      return {
+        tool: "git_commit",
+        result: "",
+        error: "Not a git repository.",
+      };
+    }
+
+    // Validate commit message
+    if (!message || message.trim().length === 0) {
+      return {
+        tool: "git_commit",
+        result: "",
+        error: "Commit message cannot be empty.",
+      };
+    }
+
+    // Add files if specified
+    if (options.addAll) {
+      execSync("git add .", { cwd, stdio: "pipe" });
+    } else if (options.files && options.files.length > 0) {
+      for (const file of options.files) {
+        const fullPath = resolvePath(file, cwd);
+        const relativePath = relative(cwd, fullPath);
+        execSync(`git add "${relativePath}"`, { cwd, stdio: "pipe" });
+      }
+    }
+
+    // Check if there are changes to commit
+    const status = execSync("git diff --cached --quiet", {
+      cwd,
+      encoding: "utf-8",
+    }).trim();
+
+    // Create commit
+    const escapedMessage = message.replace(/"/g, '\\"').replace(/`/g, "\\`");
+    execSync(`git commit -m "${escapedMessage}"`, {
+      cwd,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+
+    // Get commit hash
+    const commitHash = execSync("git rev-parse --short HEAD", {
+      cwd,
+      encoding: "utf-8",
+    }).trim();
+
+    ProjectContextManager.getInstance().invalidate(cwd);
+
+    return {
+      tool: "git_commit",
+      result: `Successfully created commit ${chalk.yellow(commitHash)}:\n${message}`,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    // Check if it's the "nothing to commit" error
+    if (errorMessage.includes("nothing to commit")) {
+      return {
+        tool: "git_commit",
+        result: "",
+        error:
+          "Nothing to commit. Use git_status to see the current state, or add files first.",
+      };
+    }
+
+    return {
+      tool: "git_commit",
+      result: "",
+      error: errorMessage,
+    };
+  }
+}
+
+/**
+ * Tool: Git Branch - Manage branches
+ */
+export function gitBranch(
+  cwd: string,
+  options: {
+    list?: boolean;
+    create?: string;
+    switch?: string;
+    delete?: string;
+  } = {}
+): ToolResult {
+  try {
+    // Check if we're in a git repository
+    try {
+      execSync("git rev-parse --git-dir", { cwd, stdio: "pipe" });
+    } catch {
+      return {
+        tool: "git_branch",
+        result: "",
+        error: "Not a git repository.",
+      };
+    }
+
+    // Create new branch
+    if (options.create) {
+      console.log(chalk.gray(`  🌿 Creating branch: ${options.create}`));
+      execSync(`git branch "${options.create}"`, { cwd, stdio: "pipe" });
+      return {
+        tool: "git_branch",
+        result: `Created branch: ${options.create}`,
+      };
+    }
+
+    // Switch branch
+    if (options.switch) {
+      console.log(chalk.gray(`  🔀 Switching to branch: ${options.switch}`));
+      execSync(`git checkout "${options.switch}"`, { cwd, stdio: "pipe" });
+      ProjectContextManager.getInstance().invalidate(cwd);
+      return {
+        tool: "git_branch",
+        result: `Switched to branch: ${options.switch}`,
+      };
+    }
+
+    // Delete branch
+    if (options.delete) {
+      console.log(chalk.gray(`  🗑️  Deleting branch: ${options.delete}`));
+      execSync(`git branch -d "${options.delete}"`, { cwd, stdio: "pipe" });
+      return {
+        tool: "git_branch",
+        result: `Deleted branch: ${options.delete}`,
+      };
+    }
+
+    // List branches (default)
+    console.log(chalk.gray(`  🌿 Listing branches`));
+    const branches = execSync("git branch -a", {
+      cwd,
+      encoding: "utf-8",
+    });
+
+    const lines = branches.split("\n").filter((line) => line.trim());
+    let result = "Git Branches:\n\n";
+
+    for (const line of lines) {
+      const isCurrent = line.startsWith("*");
+      const branchName = line.replace("*", "").trim();
+
+      if (isCurrent) {
+        result += `${chalk.green("*")} ${chalk.green(branchName)} ${chalk.gray("(current)")}\n`;
+      } else if (branchName.startsWith("remotes/")) {
+        result += `  ${chalk.cyan(branchName)}\n`;
+      } else {
+        result += `  ${branchName}\n`;
+      }
+    }
+
+    return {
+      tool: "git_branch",
+      result,
+    };
+  } catch (error) {
+    return {
+      tool: "git_branch",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Write File - Create a new file or overwrite existing one
+ */
+export function writeFile(
+  filepath: string,
+  content: string,
+  cwd: string
+): ToolResult {
+  try {
+    console.log(chalk.gray(`  ✍️  Writing file: ${filepath}`));
+
+    const fullPath = resolvePath(filepath, cwd);
+    const dir = dirname(fullPath);
+
+    // Ensure directory exists
+    if (!existsSync(dir)) {
+      const { mkdirSync } = require("fs");
+      mkdirSync(dir, { recursive: true });
+    }
+
+    // Check if file already exists
+    const fileExists = existsSync(fullPath);
+
+    writeFileSync(fullPath, content, "utf-8");
+    ProjectContextManager.getInstance().invalidate(cwd);
+
+    return {
+      tool: "write_file",
+      result: fileExists
+        ? `Successfully updated ${filepath} (${content.length} bytes)`
+        : `Successfully created ${filepath} (${content.length} bytes)`,
+    };
+  } catch (error) {
+    return {
+      tool: "write_file",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Delete File - Remove a file
+ */
+export function deleteFile(filepath: string, cwd: string): ToolResult {
+  try {
+    console.log(chalk.gray(`  🗑️  Deleting file: ${filepath}`));
+
+    const fullPath = resolvePath(filepath, cwd);
+
+    if (!existsSync(fullPath)) {
+      return {
+        tool: "delete_file",
+        result: "",
+        error: `File not found: ${filepath}`,
+      };
+    }
+
+    const stats = statSync(fullPath);
+    if (stats.isDirectory()) {
+      return {
+        tool: "delete_file",
+        result: "",
+        error: `Cannot delete directory with delete_file. Use a shell command or implement delete_directory.`,
+      };
+    }
+
+    const { unlinkSync } = require("fs");
+    unlinkSync(fullPath);
+    ProjectContextManager.getInstance().invalidate(cwd);
+
+    return {
+      tool: "delete_file",
+      result: `Successfully deleted ${filepath}`,
+    };
+  } catch (error) {
+    return {
+      tool: "delete_file",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Move File - Move or rename a file
+ */
+export function moveFile(
+  sourcePath: string,
+  destPath: string,
+  cwd: string
+): ToolResult {
+  try {
+    console.log(chalk.gray(`  📦 Moving: ${sourcePath} → ${destPath}`));
+
+    const fullSourcePath = resolvePath(sourcePath, cwd);
+    const fullDestPath = resolvePath(destPath, cwd);
+
+    if (!existsSync(fullSourcePath)) {
+      return {
+        tool: "move_file",
+        result: "",
+        error: `Source file not found: ${sourcePath}`,
+      };
+    }
+
+    const destDir = dirname(fullDestPath);
+    if (!existsSync(destDir)) {
+      const { mkdirSync } = require("fs");
+      mkdirSync(destDir, { recursive: true });
+    }
+
+    const { renameSync } = require("fs");
+    renameSync(fullSourcePath, fullDestPath);
+    ProjectContextManager.getInstance().invalidate(cwd);
+
+    return {
+      tool: "move_file",
+      result: `Successfully moved ${sourcePath} to ${destPath}`,
+    };
+  } catch (error) {
+    return {
+      tool: "move_file",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Create Directory - Create a new directory
+ */
+export function createDirectory(dirpath: string, cwd: string): ToolResult {
+  try {
+    console.log(chalk.gray(`  📁 Creating directory: ${dirpath}`));
+
+    const fullPath = resolvePath(dirpath, cwd);
+
+    if (existsSync(fullPath)) {
+      return {
+        tool: "create_directory",
+        result: "",
+        error: `Directory already exists: ${dirpath}`,
+      };
+    }
+
+    const { mkdirSync } = require("fs");
+    mkdirSync(fullPath, { recursive: true });
+    ProjectContextManager.getInstance().invalidate(cwd);
+
+    return {
+      tool: "create_directory",
+      result: `Successfully created directory: ${dirpath}`,
+    };
+  } catch (error) {
+    return {
+      tool: "create_directory",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Package Manager Install - Install npm/yarn/pnpm packages
+ */
+export function packageInstall(
+  packages: string[],
+  cwd: string,
+  options: {
+    manager?: "npm" | "yarn" | "pnpm";
+    dev?: boolean;
+    global?: boolean;
+  } = {}
+): ToolResult {
+  try {
+    const manager = options.manager || detectPackageManager(cwd);
+    const pkgList = packages.join(" ");
+
+    console.log(chalk.gray(`  📦 Installing packages with ${manager}: ${pkgList}`));
+
+    let command = "";
+    switch (manager) {
+      case "yarn":
+        command = options.dev ? `yarn add -D ${pkgList}` : `yarn add ${pkgList}`;
+        break;
+      case "pnpm":
+        command = options.dev ? `pnpm add -D ${pkgList}` : `pnpm add ${pkgList}`;
+        break;
+      default:
+        if (options.global) {
+          command = `npm install -g ${pkgList}`;
+        } else {
+          command = options.dev ? `npm install --save-dev ${pkgList}` : `npm install ${pkgList}`;
+        }
+    }
+
+    const result = execSync(command, { cwd, encoding: "utf-8", stdio: "pipe" });
+    ProjectContextManager.getInstance().invalidate(cwd);
+
+    return {
+      tool: "package_install",
+      result: `Successfully installed: ${pkgList}\n${result}`,
+    };
+  } catch (error) {
+    return {
+      tool: "package_install",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Package Manager Run Script - Run npm/yarn/pnpm scripts
+ */
+export function packageRunScript(
+  script: string,
+  cwd: string,
+  options: {
+    manager?: "npm" | "yarn" | "pnpm";
+  } = {}
+): ToolResult {
+  try {
+    const manager = options.manager || detectPackageManager(cwd);
+    console.log(chalk.gray(`  🚀 Running script with ${manager}: ${script}`));
+
+    let command = "";
+    switch (manager) {
+      case "yarn":
+        command = `yarn ${script}`;
+        break;
+      case "pnpm":
+        command = `pnpm ${script}`;
+        break;
+      default:
+        command = `npm run ${script}`;
+    }
+
+    const result = execSync(command, { cwd, encoding: "utf-8", stdio: "pipe" });
+
+    return {
+      tool: "package_run_script",
+      result: `Script '${script}' executed:\n${result}`,
+    };
+  } catch (error) {
+    return {
+      tool: "package_run_script",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Package List - List installed packages
+ */
+export function packageList(
+  cwd: string,
+  options: {
+    outdated?: boolean;
+  } = {}
+): ToolResult {
+  try {
+    const packageJsonPath = join(cwd, "package.json");
+    if (!existsSync(packageJsonPath)) {
+      return {
+        tool: "package_list",
+        result: "",
+        error: "No package.json found in current directory",
+      };
+    }
+
+    if (options.outdated) {
+      console.log(chalk.gray(`  📋 Checking for outdated packages`));
+      const result = execSync("npm outdated", { cwd, encoding: "utf-8", stdio: "pipe" });
+      return {
+        tool: "package_list",
+        result: result || "All packages are up to date!",
+      };
+    }
+
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+    const deps = packageJson.dependencies || {};
+    const devDeps = packageJson.devDependencies || {};
+
+    let result = "Installed Packages:\n\n";
+
+    if (Object.keys(deps).length > 0) {
+      result += "Dependencies:\n";
+      Object.entries(deps).forEach(([name, version]) => {
+        result += `  ${name}: ${version}\n`;
+      });
+      result += "\n";
+    }
+
+    if (Object.keys(devDeps).length > 0) {
+      result += "Dev Dependencies:\n";
+      Object.entries(devDeps).forEach(([name, version]) => {
+        result += `  ${name}: ${version}\n`;
+      });
+    }
+
+    return {
+      tool: "package_list",
+      result,
+    };
+  } catch (error) {
+    return {
+      tool: "package_list",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Read Environment Variable
+ */
+export function getEnv(key: string, cwd: string): ToolResult {
+  try {
+    console.log(chalk.gray(`  🔑 Reading environment variable: ${key}`));
+
+    // Try to read from process.env first
+    const value = process.env[key];
+    if (value !== undefined) {
+      return {
+        tool: "get_env",
+        result: `${key}=${value}`,
+      };
+    }
+
+    // Try to read from .env file
+    const envPath = join(cwd, ".env");
+    if (existsSync(envPath)) {
+      const envContent = readFileSync(envPath, "utf-8");
+      const lines = envContent.split("\n");
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith(key + "=")) {
+          const envValue = trimmed.substring(key.length + 1);
+          return {
+            tool: "get_env",
+            result: `${key}=${envValue} (from .env file)`,
+          };
+        }
+      }
+    }
+
+    return {
+      tool: "get_env",
+      result: "",
+      error: `Environment variable '${key}' not found`,
+    };
+  } catch (error) {
+    return {
+      tool: "get_env",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Set Environment Variable in .env file
+ */
+export function setEnv(key: string, value: string, cwd: string): ToolResult {
+  try {
+    console.log(chalk.gray(`  🔑 Setting environment variable: ${key}`));
+
+    const envPath = join(cwd, ".env");
+    let envContent = "";
+
+    if (existsSync(envPath)) {
+      envContent = readFileSync(envPath, "utf-8");
+    }
+
+    const lines = envContent.split("\n");
+    let found = false;
+
+    // Update existing key or add new one
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith(key + "=")) {
+        lines[i] = `${key}=${value}`;
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      lines.push(`${key}=${value}`);
+    }
+
+    writeFileSync(envPath, lines.join("\n"), "utf-8");
+
+    return {
+      tool: "set_env",
+      result: `Successfully set ${key}=${value} in .env file`,
+    };
+  } catch (error) {
+    return {
+      tool: "set_env",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: List all Environment Variables from .env
+ */
+export function listEnv(cwd: string): ToolResult {
+  try {
+    console.log(chalk.gray(`  🔑 Listing environment variables`));
+
+    const envPath = join(cwd, ".env");
+    if (!existsSync(envPath)) {
+      return {
+        tool: "list_env",
+        result: "No .env file found in current directory",
+      };
+    }
+
+    const envContent = readFileSync(envPath, "utf-8");
+    const lines = envContent.split("\n").filter(line => {
+      const trimmed = line.trim();
+      return trimmed && !trimmed.startsWith("#");
+    });
+
+    if (lines.length === 0) {
+      return {
+        tool: "list_env",
+        result: ".env file is empty",
+      };
+    }
+
+    let result = "Environment Variables (.env file):\n\n";
+    lines.forEach(line => {
+      const [key] = line.split("=");
+      result += `  ${key}=****** (value hidden for security)\n`;
+    });
+
+    return {
+      tool: "list_env",
+      result,
+    };
+  } catch (error) {
+    return {
+      tool: "list_env",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: HTTP Request - Make HTTP requests (proper implementation)
+ */
+export async function httpRequest(
+  url: string,
+  options: {
+    method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+    headers?: Record<string, string>;
+    body?: string;
+    timeout?: number;
+  } = {}
+): Promise<ToolResult> {
+  try {
+    console.log(chalk.gray(`  🌐 Making ${options.method || "GET"} request to: ${url}`));
+
+    const { fetch } = await import("undici");
+
+    const response = await fetch(url, {
+      method: options.method || "GET",
+      headers: options.headers,
+      body: options.body,
+      signal: options.timeout ? AbortSignal.timeout(options.timeout) : undefined,
+    });
+
+    const contentType = response.headers.get("content-type") || "";
+    let result = "";
+
+    if (contentType.includes("application/json")) {
+      const json = await response.json();
+      result = JSON.stringify(json, null, 2);
+    } else {
+      result = await response.text();
+    }
+
+    return {
+      tool: "http_request",
+      result: `Status: ${response.status} ${response.statusText}\n\nResponse:\n${result}`,
+    };
+  } catch (error) {
+    return {
+      tool: "http_request",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Helper: Detect package manager in use
+ */
+function detectPackageManager(cwd: string): "npm" | "yarn" | "pnpm" {
+  if (existsSync(join(cwd, "pnpm-lock.yaml"))) return "pnpm";
+  if (existsSync(join(cwd, "yarn.lock"))) return "yarn";
+  return "npm";
 }
 
 function formatBytes(bytes: number): string {

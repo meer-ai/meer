@@ -25,6 +25,15 @@ import {
   loadMemory,
   grep,
   editLine,
+  gitStatus,
+  gitDiff,
+  gitLog,
+  gitCommit,
+  gitBranch,
+  writeFile,
+  deleteFile,
+  moveFile,
+  createDirectory,
   type FileEdit,
 } from "../tools/index.js";
 import { memory } from "../memory/index.js";
@@ -1602,6 +1611,152 @@ export class AgentWorkflow {
           default:
             return `TODO: Unknown action "${action}". Supported actions: create, add, list, start, complete, update, remove, clear.`;
         }
+      }
+
+      // Git tools
+      case "git_status": {
+        console.log(chalk.gray(`  📊 Checking git status`));
+        const result = gitStatus(this.currentDirectory);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ Git status retrieved`));
+        return result.result;
+      }
+
+      case "git_diff": {
+        const staged = params.staged === "true";
+        const filepath = params.filepath || params.path;
+        console.log(chalk.gray(`  📝 Getting git diff${staged ? " (staged)" : ""}${filepath ? ` for ${filepath}` : ""}`));
+        const result = gitDiff(this.currentDirectory, { staged, filepath });
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ Git diff retrieved`));
+        return result.result;
+      }
+
+      case "git_log": {
+        const options = {
+          maxCount: params.maxCount ? parseInt(params.maxCount) : undefined,
+          author: params.author,
+          since: params.since,
+          until: params.until,
+          filepath: params.filepath || params.path,
+        };
+        console.log(chalk.gray(`  📜 Fetching git log`));
+        const result = gitLog(this.currentDirectory, options);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ Git log retrieved`));
+        return result.result;
+      }
+
+      case "git_commit": {
+        const message = params.message || params.msg;
+        if (!message) {
+          console.log(chalk.red("  ❌ Missing required parameter: message"));
+          return `Error: Missing commit message`;
+        }
+        const options = {
+          addAll: params.addAll === "true",
+          files: params.files ? params.files.split(",").map((f: string) => f.trim()) : undefined,
+        };
+        console.log(chalk.gray(`  💾 Creating git commit`));
+        const result = gitCommit(message, this.currentDirectory, options);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ Commit created`));
+        return result.result;
+      }
+
+      case "git_branch": {
+        const options = {
+          list: params.list === "true" || !params.create && !params.switch && !params.delete,
+          create: params.create,
+          switch: params.switch,
+          delete: params.delete,
+        };
+        console.log(chalk.gray(`  🌿 Managing git branches`));
+        const result = gitBranch(this.currentDirectory, options);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ Branch operation completed`));
+        return result.result;
+      }
+
+      // File operation tools
+      case "write_file": {
+        const filepath = params.path || params.file || params.filepath;
+        if (!filepath || !content) {
+          console.log(chalk.red("  ❌ Missing required parameters: path and content"));
+          return `Error: Missing path or content`;
+        }
+        console.log(chalk.gray(`  ✍️  Writing file: ${filepath}`));
+        const result = writeFile(filepath, content, this.currentDirectory);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ File written`));
+        return result.result;
+      }
+
+      case "delete_file": {
+        const filepath = params.path || params.file || params.filepath;
+        if (!filepath) {
+          console.log(chalk.red("  ❌ Missing required parameter: path"));
+          return `Error: Missing path parameter`;
+        }
+        console.log(chalk.gray(`  🗑️  Deleting file: ${filepath}`));
+        const result = deleteFile(filepath, this.currentDirectory);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ File deleted`));
+        return result.result;
+      }
+
+      case "move_file": {
+        const source = params.source || params.from || params.src;
+        const dest = params.dest || params.to || params.destination;
+        if (!source || !dest) {
+          console.log(chalk.red("  ❌ Missing required parameters: source and dest"));
+          return `Error: Missing source or dest parameter`;
+        }
+        console.log(chalk.gray(`  📦 Moving file: ${source} → ${dest}`));
+        const result = moveFile(source, dest, this.currentDirectory);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ File moved`));
+        return result.result;
+      }
+
+      case "create_directory": {
+        const dirpath = params.path || params.dir || params.directory;
+        if (!dirpath) {
+          console.log(chalk.red("  ❌ Missing required parameter: path"));
+          return `Error: Missing path parameter`;
+        }
+        console.log(chalk.gray(`  📁 Creating directory: ${dirpath}`));
+        const result = createDirectory(dirpath, this.currentDirectory);
+        if (result.error) {
+          console.log(chalk.red(`  ❌ ${result.error}`));
+          return `Error: ${result.error}`;
+        }
+        console.log(chalk.green(`  ✓ Directory created`));
+        return result.result;
       }
 
       default:
