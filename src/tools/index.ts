@@ -2671,3 +2671,627 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
+
+/**
+ * ====================
+ * CODE INTELLIGENCE TOOLS
+ * ====================
+ */
+
+/**
+ * Tool: Get File Outline - Extract structure from a JavaScript/TypeScript file
+ * Shows functions, classes, exports, and imports
+ */
+export function getFileOutline(filepath: string, cwd: string): ToolResult {
+  try {
+    const fullPath = resolvePath(filepath, cwd);
+
+    if (!existsSync(fullPath)) {
+      return {
+        tool: "get_file_outline",
+        result: "",
+        error: `File not found: ${filepath}`,
+      };
+    }
+
+    console.log(chalk.gray(`  📋 Getting outline for: ${filepath}`));
+
+    const content = readFileSync(fullPath, "utf-8");
+    const ext = filepath.toLowerCase();
+
+    // Only support JS/TS files
+    if (!ext.endsWith(".js") && !ext.endsWith(".ts") && !ext.endsWith(".jsx") && !ext.endsWith(".tsx")) {
+      return {
+        tool: "get_file_outline",
+        result: "",
+        error: `Unsupported file type. Only .js, .ts, .jsx, .tsx files are supported.`,
+      };
+    }
+
+    try {
+      const parser = require("@babel/parser");
+      const traverse = require("@babel/traverse").default;
+
+      const ast = parser.parse(content, {
+        sourceType: "module",
+        plugins: ["typescript", "jsx", "decorators-legacy"],
+      });
+
+      const outline: {
+        imports: string[];
+        exports: string[];
+        functions: Array<{ name: string; line: number; params: string[] }>;
+        classes: Array<{ name: string; line: number; methods: string[] }>;
+        variables: Array<{ name: string; line: number; kind: string }>;
+      } = {
+        imports: [],
+        exports: [],
+        functions: [],
+        classes: [],
+        variables: [],
+      };
+
+      traverse(ast, {
+        ImportDeclaration(path: any) {
+          const source = path.node.source.value;
+          const specifiers = path.node.specifiers
+            .map((s: any) => s.local.name)
+            .join(", ");
+          outline.imports.push(`import { ${specifiers} } from '${source}'`);
+        },
+
+        ExportNamedDeclaration(path: any) {
+          if (path.node.declaration) {
+            const decl = path.node.declaration;
+            if (decl.type === "FunctionDeclaration" && decl.id) {
+              outline.exports.push(`export function ${decl.id.name}`);
+            } else if (decl.type === "ClassDeclaration" && decl.id) {
+              outline.exports.push(`export class ${decl.id.name}`);
+            } else if (decl.type === "VariableDeclaration") {
+              decl.declarations.forEach((d: any) => {
+                if (d.id.type === "Identifier") {
+                  outline.exports.push(`export ${decl.kind} ${d.id.name}`);
+                }
+              });
+            }
+          }
+        },
+
+        ExportDefaultDeclaration(path: any) {
+          outline.exports.push("export default");
+        },
+
+        FunctionDeclaration(path: any) {
+          if (path.node.id) {
+            const params = path.node.params.map((p: any) =>
+              p.type === "Identifier" ? p.name : "..."
+            );
+            outline.functions.push({
+              name: path.node.id.name,
+              line: path.node.loc?.start.line || 0,
+              params,
+            });
+          }
+        },
+
+        ClassDeclaration(path: any) {
+          if (path.node.id) {
+            const methods = path.node.body.body
+              .filter((m: any) => m.type === "ClassMethod" || m.type === "ClassProperty")
+              .map((m: any) => m.key?.name || "")
+              .filter(Boolean);
+
+            outline.classes.push({
+              name: path.node.id.name,
+              line: path.node.loc?.start.line || 0,
+              methods,
+            });
+          }
+        },
+
+        VariableDeclaration(path: any) {
+          // Only top-level variables
+          if (path.parent.type === "Program" || path.parent.type === "ExportNamedDeclaration") {
+            path.node.declarations.forEach((decl: any) => {
+              if (decl.id.type === "Identifier") {
+                outline.variables.push({
+                  name: decl.id.name,
+                  line: decl.loc?.start.line || 0,
+                  kind: path.node.kind,
+                });
+              }
+            });
+          }
+        },
+      });
+
+      let result = `File Outline: ${filepath}\n\n`;
+
+      if (outline.imports.length > 0) {
+        result += `Imports (${outline.imports.length}):\n`;
+        outline.imports.forEach((imp) => (result += `  ${imp}\n`));
+        result += "\n";
+      }
+
+      if (outline.functions.length > 0) {
+        result += `Functions (${outline.functions.length}):\n`;
+        outline.functions.forEach((fn) => {
+          result += `  Line ${fn.line}: ${fn.name}(${fn.params.join(", ")})\n`;
+        });
+        result += "\n";
+      }
+
+      if (outline.classes.length > 0) {
+        result += `Classes (${outline.classes.length}):\n`;
+        outline.classes.forEach((cls) => {
+          result += `  Line ${cls.line}: class ${cls.name}\n`;
+          if (cls.methods.length > 0) {
+            result += `    Methods: ${cls.methods.join(", ")}\n`;
+          }
+        });
+        result += "\n";
+      }
+
+      if (outline.variables.length > 0) {
+        result += `Variables (${outline.variables.length}):\n`;
+        outline.variables.slice(0, 10).forEach((v) => {
+          result += `  Line ${v.line}: ${v.kind} ${v.name}\n`;
+        });
+        if (outline.variables.length > 10) {
+          result += `  ... and ${outline.variables.length - 10} more\n`;
+        }
+        result += "\n";
+      }
+
+      if (outline.exports.length > 0) {
+        result += `Exports (${outline.exports.length}):\n`;
+        outline.exports.forEach((exp) => (result += `  ${exp}\n`));
+      }
+
+      return {
+        tool: "get_file_outline",
+        result,
+      };
+    } catch (parseError) {
+      return {
+        tool: "get_file_outline",
+        result: "",
+        error: `Failed to parse file: ${parseError instanceof Error ? parseError.message : String(parseError)}`,
+      };
+    }
+  } catch (error) {
+    return {
+      tool: "get_file_outline",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Find Symbol Definition - Find where a function/class/variable is defined
+ */
+export function findSymbolDefinition(
+  symbol: string,
+  cwd: string,
+  options: {
+    filePattern?: string;
+  } = {}
+): ToolResult {
+  try {
+    console.log(chalk.gray(`  🔍 Finding definition of: ${symbol}`));
+
+    const searchPattern =
+      options.filePattern || "**/*.{js,ts,jsx,tsx}";
+
+    const files = glob.sync(searchPattern, {
+      cwd,
+      ignore: DEFAULT_IGNORE_GLOBS,
+    });
+
+    const results: Array<{ file: string; line: number; context: string }> = [];
+
+    // Regex patterns to find definitions
+    const patterns = [
+      new RegExp(`^\\s*(export\\s+)?(function|class|const|let|var)\\s+${symbol}\\b`, "m"),
+      new RegExp(`^\\s*(export\\s+)?${symbol}\\s*[:=]`, "m"),
+      new RegExp(`^\\s*class\\s+\\w+\\s*{[\\s\\S]*?\\b${symbol}\\s*\\(`, "m"), // Method
+    ];
+
+    for (const file of files) {
+      try {
+        const fullPath = resolvePath(file, cwd);
+        const content = readFileSync(fullPath, "utf-8");
+        const lines = content.split("\n");
+
+        lines.forEach((line, index) => {
+          for (const pattern of patterns) {
+            if (pattern.test(line)) {
+              results.push({
+                file,
+                line: index + 1,
+                context: line.trim(),
+              });
+              break;
+            }
+          }
+        });
+      } catch {
+        // Skip files that can't be read
+      }
+    }
+
+    if (results.length === 0) {
+      return {
+        tool: "find_symbol_definition",
+        result: `No definition found for symbol "${symbol}"`,
+      };
+    }
+
+    let result = `Found ${results.length} definition(s) for "${symbol}":\n\n`;
+    results.forEach(({ file, line, context }) => {
+      result += `📄 ${file}:${line}\n`;
+      result += `   ${context}\n\n`;
+    });
+
+    return {
+      tool: "find_symbol_definition",
+      result,
+    };
+  } catch (error) {
+    return {
+      tool: "find_symbol_definition",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Tool: Check Syntax - Check for syntax errors in a file
+ */
+export function checkSyntax(filepath: string, cwd: string): ToolResult {
+  try {
+    const fullPath = resolvePath(filepath, cwd);
+
+    if (!existsSync(fullPath)) {
+      return {
+        tool: "check_syntax",
+        result: "",
+        error: `File not found: ${filepath}`,
+      };
+    }
+
+    console.log(chalk.gray(`  ✓ Checking syntax: ${filepath}`));
+
+    const content = readFileSync(fullPath, "utf-8");
+    const ext = filepath.toLowerCase();
+
+    // Only support JS/TS files
+    if (!ext.endsWith(".js") && !ext.endsWith(".ts") && !ext.endsWith(".jsx") && !ext.endsWith(".tsx")) {
+      return {
+        tool: "check_syntax",
+        result: "",
+        error: `Unsupported file type. Only .js, .ts, .jsx, .tsx files are supported.`,
+      };
+    }
+
+    try {
+      const parser = require("@babel/parser");
+
+      parser.parse(content, {
+        sourceType: "module",
+        plugins: ["typescript", "jsx", "decorators-legacy"],
+      });
+
+      return {
+        tool: "check_syntax",
+        result: `✓ No syntax errors found in ${filepath}`,
+      };
+    } catch (parseError: any) {
+      const loc = parseError.loc || {};
+      const line = loc.line || "?";
+      const column = loc.column || "?";
+
+      return {
+        tool: "check_syntax",
+        result: `❌ Syntax error in ${filepath}:\n\nLine ${line}:${column}\n${parseError.message}`,
+      };
+    }
+  } catch (error) {
+    return {
+      tool: "check_syntax",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+// ===========================
+// PROJECT VALIDATION TOOLS
+// ===========================
+
+/**
+ * Detect project type based on files in directory
+ */
+function detectProjectType(cwd: string): {
+  type: "nodejs" | "python" | "go" | "rust" | "unknown";
+  metadata?: any;
+} {
+  // Node.js
+  if (existsSync(join(cwd, "package.json"))) {
+    const packageJson = JSON.parse(readFileSync(join(cwd, "package.json"), "utf-8"));
+    const hasYarnLock = existsSync(join(cwd, "yarn.lock"));
+    const hasPnpmLock = existsSync(join(cwd, "pnpm-lock.yaml"));
+    const packageManager = hasYarnLock ? "yarn" : hasPnpmLock ? "pnpm" : "npm";
+    return {
+      type: "nodejs",
+      metadata: { packageManager, scripts: packageJson.scripts || {} },
+    };
+  }
+
+  // Python
+  if (
+    existsSync(join(cwd, "pyproject.toml")) ||
+    existsSync(join(cwd, "setup.py")) ||
+    existsSync(join(cwd, "requirements.txt")) ||
+    existsSync(join(cwd, "Pipfile"))
+  ) {
+    return { type: "python" };
+  }
+
+  // Go
+  if (existsSync(join(cwd, "go.mod"))) {
+    return { type: "go" };
+  }
+
+  // Rust
+  if (existsSync(join(cwd, "Cargo.toml"))) {
+    return { type: "rust" };
+  }
+
+  return { type: "unknown" };
+}
+
+/**
+ * Validate project by running build/test/lint commands
+ * Supports: Node.js, Python, Go, Rust
+ * Returns summarized output (errors only, not full logs)
+ */
+export function validateProject(
+  cwd: string,
+  options: {
+    build?: boolean;
+    test?: boolean;
+    lint?: boolean;
+    typeCheck?: boolean;
+  } = {}
+): ToolResult {
+  try {
+    console.log(chalk.gray("  🔍 Validating project..."));
+
+    // Default to build only if no options specified
+    const shouldBuild = options.build !== false;
+    const shouldTest = options.test === true;
+    const shouldLint = options.lint === true;
+    const shouldTypeCheck = options.typeCheck === true;
+
+    const results: string[] = [];
+    const errors: string[] = [];
+
+    // Detect project type
+    const projectInfo = detectProjectType(cwd);
+    console.log(chalk.gray(`    ↳ Detected: ${projectInfo.type} project`));
+
+    if (projectInfo.type === "unknown") {
+      return {
+        tool: "validate_project",
+        result: "",
+        error: "Unable to detect project type. Supported: Node.js, Python, Go, Rust",
+      };
+    }
+
+    // Helper to run command and capture output
+    const runValidation = (command: string, name: string): boolean => {
+      try {
+        console.log(chalk.gray(`    ↳ Running ${name}...`));
+        execSync(command, {
+          cwd,
+          encoding: "utf-8",
+          stdio: "pipe",
+          timeout: 180000, // 3 minutes timeout
+        });
+        results.push(`✓ ${name} passed`);
+        return true;
+      } catch (error: any) {
+        const stderr = error.stderr?.toString() || "";
+        const stdout = error.stdout?.toString() || "";
+
+        // Extract only error lines (not full output)
+        const errorLines = (stderr + stdout)
+          .split("\n")
+          .filter((line: string) =>
+            line.includes("error") ||
+            line.includes("Error") ||
+            line.includes("ERROR") ||
+            line.includes("FAILED") ||
+            line.includes("✗") ||
+            line.includes("×") ||
+            line.match(/^\s*\d+:\d+/)  // line:column format
+          )
+          .slice(0, 20); // Limit to first 20 error lines
+
+        const errorSummary = errorLines.length > 0
+          ? errorLines.join("\n")
+          : (stderr || stdout || "Unknown error").slice(0, 500);
+
+        errors.push(`✗ ${name} failed:\n${errorSummary}`);
+        return false;
+      }
+    };
+
+    // Run validations based on project type
+    switch (projectInfo.type) {
+      case "nodejs": {
+        const { packageManager, scripts } = projectInfo.metadata;
+
+        // Run build
+        if (shouldBuild && scripts.build) {
+          runValidation(`${packageManager} run build`, "Build");
+        } else if (shouldBuild && !scripts.build) {
+          results.push("⊘ No build script found (skipped)");
+        }
+
+        // Run type check
+        if (shouldTypeCheck && scripts.typecheck) {
+          runValidation(`${packageManager} run typecheck`, "Type check");
+        } else if (shouldTypeCheck && scripts["type-check"]) {
+          runValidation(`${packageManager} run type-check`, "Type check");
+        } else if (shouldTypeCheck && existsSync(join(cwd, "tsconfig.json"))) {
+          runValidation("npx tsc --noEmit", "Type check");
+        }
+
+        // Run tests
+        if (shouldTest && scripts.test) {
+          const testScript = scripts.test;
+          if (!testScript.includes("echo") && !testScript.includes("exit 0")) {
+            runValidation(`${packageManager} run test`, "Tests");
+          } else {
+            results.push("⊘ No real test script found (skipped)");
+          }
+        } else if (shouldTest && !scripts.test) {
+          results.push("⊘ No test script found (skipped)");
+        }
+
+        // Run lint
+        if (shouldLint && scripts.lint) {
+          runValidation(`${packageManager} run lint`, "Lint");
+        } else if (shouldLint && !scripts.lint) {
+          results.push("⊘ No lint script found (skipped)");
+        }
+        break;
+      }
+
+      case "python": {
+        // Run build (usually not applicable for Python, but check for setup)
+        if (shouldBuild) {
+          if (existsSync(join(cwd, "setup.py"))) {
+            runValidation("python setup.py check", "Setup validation");
+          } else if (existsSync(join(cwd, "pyproject.toml"))) {
+            results.push("⊘ Build check skipped (pyproject.toml projects don't need build)");
+          } else {
+            results.push("⊘ No setup.py found (skipped)");
+          }
+        }
+
+        // Run type check
+        if (shouldTypeCheck) {
+          if (existsSync(join(cwd, "mypy.ini")) || existsSync(join(cwd, ".mypy.ini"))) {
+            runValidation("mypy .", "Type check (mypy)");
+          } else {
+            runValidation("python -m mypy . --ignore-missing-imports", "Type check (mypy)");
+          }
+        }
+
+        // Run tests
+        if (shouldTest) {
+          if (existsSync(join(cwd, "pytest.ini")) || existsSync(join(cwd, "pyproject.toml"))) {
+            runValidation("pytest", "Tests (pytest)");
+          } else if (existsSync(join(cwd, "tests")) || existsSync(join(cwd, "test"))) {
+            runValidation("python -m unittest discover", "Tests (unittest)");
+          } else {
+            results.push("⊘ No test configuration found (skipped)");
+          }
+        }
+
+        // Run lint
+        if (shouldLint) {
+          if (existsSync(join(cwd, ".flake8")) || existsSync(join(cwd, "setup.cfg"))) {
+            runValidation("flake8 .", "Lint (flake8)");
+          } else if (existsSync(join(cwd, ".pylintrc"))) {
+            runValidation("pylint **/*.py", "Lint (pylint)");
+          } else {
+            runValidation("python -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics", "Lint (flake8)");
+          }
+        }
+        break;
+      }
+
+      case "go": {
+        // Run build
+        if (shouldBuild) {
+          runValidation("go build ./...", "Build");
+        }
+
+        // Run type check (go vet)
+        if (shouldTypeCheck) {
+          runValidation("go vet ./...", "Type check (go vet)");
+        }
+
+        // Run tests
+        if (shouldTest) {
+          runValidation("go test ./...", "Tests");
+        }
+
+        // Run lint
+        if (shouldLint) {
+          runValidation("golint ./...", "Lint (golint)");
+        }
+        break;
+      }
+
+      case "rust": {
+        // Run build
+        if (shouldBuild) {
+          runValidation("cargo build", "Build");
+        }
+
+        // Run type check (cargo check is faster than build)
+        if (shouldTypeCheck) {
+          runValidation("cargo check", "Type check");
+        }
+
+        // Run tests
+        if (shouldTest) {
+          runValidation("cargo test", "Tests");
+        }
+
+        // Run lint
+        if (shouldLint) {
+          runValidation("cargo clippy -- -D warnings", "Lint (clippy)");
+        }
+        break;
+      }
+    }
+
+    // Format final result
+    if (errors.length > 0) {
+      return {
+        tool: "validate_project",
+        result: [
+          "Validation completed with errors:",
+          "",
+          ...results,
+          "",
+          "ERRORS:",
+          ...errors,
+        ].join("\n"),
+      };
+    } else {
+      return {
+        tool: "validate_project",
+        result: [
+          "✓ Validation passed!",
+          "",
+          ...results,
+        ].join("\n"),
+      };
+    }
+  } catch (error) {
+    return {
+      tool: "validate_project",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}

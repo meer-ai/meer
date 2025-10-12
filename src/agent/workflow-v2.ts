@@ -472,6 +472,24 @@ export class AgentWorkflowV2 {
         const httpRes = await tools.httpRequest(params.url || "", params);
         return httpRes.error ? httpRes.error : httpRes.result;
 
+      // Code intelligence tools
+      case "get_file_outline":
+        const outlineRes = tools.getFileOutline(params.path || "", this.cwd);
+        return outlineRes.error ? outlineRes.error : outlineRes.result;
+
+      case "find_symbol_definition":
+        const symbolRes = tools.findSymbolDefinition(params.symbol || "", this.cwd, params);
+        return symbolRes.error ? symbolRes.error : symbolRes.result;
+
+      case "check_syntax":
+        const syntaxRes = tools.checkSyntax(params.path || "", this.cwd);
+        return syntaxRes.error ? syntaxRes.error : syntaxRes.result;
+
+      // Project validation tool
+      case "validate_project":
+        const validateRes = tools.validateProject(this.cwd, params);
+        return validateRes.error ? validateRes.error : validateRes.result;
+
       default:
         // Try MCP tools
         if (tool.includes(".")) {
@@ -494,6 +512,8 @@ export class AgentWorkflowV2 {
 **EXECUTION PATTERN - THIS IS ABSOLUTELY CRITICAL - READ CAREFULLY:**
 
 🚨 CRITICAL RULE: You MUST execute tools ONE AT A TIME. Never batch multiple propose_edit or write_file calls in a single response. Never show code for multiple files before executing tools. Each file creation must be in a separate iteration after seeing the previous result.
+
+🚨 NEVER PRINT CODE IN YOUR RESPONSE BEFORE propose_edit OR write_file TOOLS: The code should ONLY appear inside the tool tags, never printed in markdown blocks or explanations before the tool execution. The user will see the full code in the diff review prompt after tool execution.
 
 You MUST execute tools ONE AT A TIME and react to each result before continuing:
 
@@ -525,15 +545,26 @@ You MUST execute tools ONE AT A TIME and react to each result before continuing:
    <tool>...</tool>
    <tool>...</tool>
 
+❌ "Let me create the API route with this code:
+   \`\`\`typescript
+   export async function POST(request: Request) {
+     // ... shows full code here ...
+   }
+   \`\`\`
+   <tool name="propose_edit" path="route.ts">...</tool>"
+   (FORBIDDEN - Never show code in markdown blocks before the tool!)
+
 **THE ONLY ACCEPTABLE PATTERN:**
 ✅ "Let me create the package.json first."
-   <tool name="propose_edit" path="package.json">...</tool>
+   <tool name="propose_edit" path="package.json">[code goes here, NOT shown before]</tool>
    [WAIT FOR RESULT]
    [After result] "Now let me create the API route."
-   <tool name="propose_edit" path="route.ts">...</tool>
+   <tool name="propose_edit" path="route.ts">[code goes here, NOT shown before]</tool>
    [WAIT FOR RESULT]
    [After result] "Now let me create the page component."
-   <tool name="propose_edit" path="page.tsx">...</tool>
+   <tool name="propose_edit" path="page.tsx">[code goes here, NOT shown before]</tool>
+
+Note: Code is ONLY inside tool tags. NEVER displayed in response text before tool execution.
 
 **WHEN TO STOP - THIS IS ABSOLUTELY CRITICAL:**
 
@@ -589,6 +620,8 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
    \`<tool name="propose_edit" path="path/to/file" description="what changed">
    [full file content here]
    </tool>\`
+
+   ⚠️ CRITICAL: NEVER print or display the code before executing this tool. Just execute the tool immediately with the code inside the tags. The user will see the code in the diff review prompt.
 
 5. **run_command** - Execute shell commands (supports interactive prompts, shows elapsed time)
    \`<tool name="run_command" command="npm install"></tool>\`
@@ -665,6 +698,8 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
     }
     </tool>\`
 
+    ⚠️ CRITICAL: NEVER print or display the code before executing this tool. Just execute the tool immediately with the code inside the tags.
+
 22. **delete_file** - Delete a file
     \`<tool name="delete_file" path="old-file.ts"></tool>\`
 
@@ -706,6 +741,50 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
 31. **http_request** - Make HTTP requests
     \`<tool name="http_request" url="https://api.github.com/users/octocat" method="GET"></tool>\`
     Options: method (GET/POST/PUT/DELETE/PATCH), headers, body, timeout
+
+## Code Intelligence Tools
+
+32. **get_file_outline** - Get structure overview of a file (functions, classes, imports, exports)
+    \`<tool name="get_file_outline" path="src/app.ts"></tool>\`
+    Supports: .js, .ts, .jsx, .tsx files
+    Returns: Imports, exports, functions, classes, and variables with their locations
+
+33. **find_symbol_definition** - Find where a symbol (function, class, variable) is defined
+    \`<tool name="find_symbol_definition" symbol="MyComponent"></tool>\`
+    \`<tool name="find_symbol_definition" symbol="handleClick" filePattern="src/**/*.ts"></tool>\`
+    Options: filePattern (glob pattern to limit search scope)
+    Returns: File paths, line numbers, and context for all definitions found
+
+34. **check_syntax** - Check file for syntax errors
+    \`<tool name="check_syntax" path="src/app.ts"></tool>\`
+    Supports: .js, .ts, .jsx, .tsx files
+    Returns: Syntax errors with line/column numbers, or success message
+
+## Project Validation Tool
+
+35. **validate_project** - Validate project by running build/test/lint commands
+    \`<tool name="validate_project"></tool>\` - Run build only (default)
+    \`<tool name="validate_project" build="true" test="true"></tool>\` - Run build and tests
+    \`<tool name="validate_project" typeCheck="true" lint="true"></tool>\` - Run type check and lint
+
+    **Auto-detects project type:** Node.js, Python, Go, Rust
+
+    Options:
+    - build: Run build command (default: true)
+    - test: Run tests (default: false)
+    - lint: Run linter (default: false)
+    - typeCheck: Run type checker (default: false)
+
+    **Commands by project type:**
+    - **Node.js**: npm/yarn/pnpm run build, npm test, tsc --noEmit, eslint/lint script
+    - **Python**: setup.py check, pytest/unittest, mypy, flake8/pylint
+    - **Go**: go build, go test, go vet, golint
+    - **Rust**: cargo build, cargo test, cargo check, cargo clippy
+
+    Returns: Summarized validation results with only errors (not full build logs)
+    Timeout: 3 minutes per command
+
+    **Use this after making changes to verify the project still works!**
 
 ${mcpSection}
 
