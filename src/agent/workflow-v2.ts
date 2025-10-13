@@ -1437,27 +1437,27 @@ You: "Now implementing password hashing..."
    - Shows before/after preview
    - Works with both function declarations and arrow functions
 
-   Example transformation:
-   ```
-   function fetchData() {
-     return api.get('/data').then(response => {
-       return response.json();
-     }).catch(error => {
-       console.error(error);
-     });
-   }
-   ```
-   Becomes:
-   ```
-   async function fetchData() {
-     try {
-       const response = await api.get('/data');
-       return response.json();
-     } catch (error) {
-       console.error(error);
-     }
-   }
-   ```
+  Example transformation:
+  \`\`\`
+  function fetchData() {
+    return api.get('/data').then(response => {
+      return response.json();
+    }).catch(error => {
+      console.error(error);
+    });
+  }
+  \`\`\`
+  Becomes:
+  \`\`\`
+  async function fetchData() {
+    try {
+      const response = await api.get('/data');
+      return response.json();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  \`\`\`
 
    ⚠️ Note: This is pattern-based conversion. Complex promise chains may need manual review.
 
