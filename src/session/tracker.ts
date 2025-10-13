@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { fetch } from 'undici';
+import { calculateCost, formatCost } from '../pricing/config.js';
 
 export interface SessionStats {
   sessionId: string;
@@ -21,6 +22,9 @@ export interface SessionStats {
   currentPromptTokens: number;
   maxPromptTokens: number;
   contextLimit?: number;
+  totalCost: number;
+  inputCost: number;
+  outputCost: number;
 }
 
 export class SessionTracker {
@@ -49,7 +53,10 @@ export class SessionTracker {
       completionTokens: 0,
       currentPromptTokens: 0,
       maxPromptTokens: 0,
-      contextLimit: undefined
+      contextLimit: undefined,
+      totalCost: 0,
+      inputCost: 0,
+      outputCost: 0
     };
     this.isActive = true;
   }
@@ -74,11 +81,34 @@ export class SessionTracker {
   trackPromptTokens(count: number): void {
     if (!this.isActive) return;
     this.stats.promptTokens += count;
+    this.updateCosts();
   }
 
   trackCompletionTokens(count: number): void {
     if (!this.isActive) return;
     this.stats.completionTokens += count;
+    this.updateCosts();
+  }
+
+  /**
+   * Recalculate costs based on current token usage
+   */
+  private updateCosts(): void {
+    const cost = calculateCost(
+      this.stats.provider,
+      this.stats.model,
+      this.stats.promptTokens,
+      this.stats.completionTokens
+    );
+
+    if (cost !== null) {
+      this.stats.totalCost = cost;
+      // Calculate input and output costs separately
+      const inputCost = calculateCost(this.stats.provider, this.stats.model, this.stats.promptTokens, 0);
+      const outputCost = calculateCost(this.stats.provider, this.stats.model, 0, this.stats.completionTokens);
+      this.stats.inputCost = inputCost || 0;
+      this.stats.outputCost = outputCost || 0;
+    }
   }
 
   trackContextUsage(tokens: number): void {
@@ -166,7 +196,7 @@ export class SessionTracker {
           command: this.lastCommandName,
           model: this.stats.model,
           tokens_used: tokenUsage.total,
-          cost: 0, // Can be calculated based on model pricing
+          cost: this.stats.totalCost,
           success: this.stats.toolCalls.failed === 0,
           error_message: this.stats.toolCalls.failed > 0 ? `${this.stats.toolCalls.failed} tool calls failed` : null,
         }),
@@ -211,6 +241,28 @@ export class SessionTracker {
       prompt: this.stats.promptTokens,
       completion: this.stats.completionTokens,
       total: this.stats.promptTokens + this.stats.completionTokens
+    };
+  }
+
+  getCostUsage(): {
+    input: number;
+    output: number;
+    total: number;
+    formatted: {
+      input: string;
+      output: string;
+      total: string;
+    };
+  } {
+    return {
+      input: this.stats.inputCost,
+      output: this.stats.outputCost,
+      total: this.stats.totalCost,
+      formatted: {
+        input: formatCost(this.stats.inputCost),
+        output: formatCost(this.stats.outputCost),
+        total: formatCost(this.stats.totalCost),
+      },
     };
   }
 

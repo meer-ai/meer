@@ -236,17 +236,29 @@ async function isImageFileRequest(userInput: string): Promise<boolean> {
     "what is in this image",
   ];
 
-  // Check if input contains a file path with image extension
-  const hasImagePath = imageExtensions.some((ext) =>
-    userInput.toLowerCase().includes(ext.toLowerCase())
-  );
-
   // Check if input contains image-related keywords
   const hasImageKeywords = imageKeywords.some((keyword) =>
     userInput.toLowerCase().includes(keyword.toLowerCase())
   );
 
-  return hasImagePath || hasImageKeywords;
+  // If keywords are present, it's likely an image request
+  if (hasImageKeywords) {
+    return true;
+  }
+
+  // Otherwise, only consider it an image request if it's a clean path ending with an image extension
+  // Not just any occurrence of image extension in the text (to avoid false positives from error messages)
+  const cleanPathPattern = new RegExp(`\\b\\S+\\.(${imageExtensions.map(ext => ext.slice(1)).join('|')})\\b`, 'i');
+  const hasCleanImagePath = cleanPathPattern.test(userInput);
+
+  // Additional check: must not look like an error message or webpack path
+  const looksLikeError = userInput.includes('Error') ||
+                         userInput.includes('webpack') ||
+                         userInput.includes('loader') ||
+                         userInput.includes('!=!') ||
+                         userInput.includes('??');
+
+  return hasCleanImagePath && !looksLikeError;
 }
 
 /**
@@ -1474,7 +1486,7 @@ export function createCLI(): Command {
         const agent = new AgentWorkflowV2({
           provider: config.provider,
           cwd: process.cwd(),
-          maxIterations: 10,
+          maxIterations: config.maxIterations,
           providerType: config.providerType,
           model: config.model,
           sessionTracker,

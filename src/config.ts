@@ -15,6 +15,7 @@ const ConfigSchema = z.object({
   provider: z.enum(['ollama', 'openai', 'gemini', 'anthropic', 'openrouter', 'meer']),
   model: z.string().optional(),
   temperature: z.number().optional(),
+  maxIterations: z.number().optional(),
   // Ollama-specific
   ollama: z.object({
     host: z.string().optional(),
@@ -64,6 +65,7 @@ export interface LoadedConfig {
   provider: Provider;
   providerType: string;
   model: string;
+  maxIterations: number;
   retry?: {
     attempts: number;
     delayMs: number;
@@ -224,6 +226,7 @@ export function loadConfig(): LoadedConfig {
     provider,
     providerType: config.provider,
     model: defaultModel,
+    maxIterations: config.maxIterations ?? 25,
     retry: {
       attempts: 3,
       delayMs: 1000,

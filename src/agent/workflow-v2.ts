@@ -164,6 +164,18 @@ export class AgentWorkflowV2 {
         const completionTokens = countTokens(this.model, response);
         this.sessionTracker?.trackCompletionTokens(completionTokens);
 
+        // Display token and cost info for this response
+        if (this.sessionTracker) {
+          const tokenUsage = this.sessionTracker.getTokenUsage();
+          const costUsage = this.sessionTracker.getCostUsage();
+
+          if (costUsage.total > 0) {
+            console.log(chalk.dim(`\n💰 Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out | Cost: ${costUsage.formatted.total} (session total)`));
+          } else {
+            console.log(chalk.dim(`\n💰 Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out`));
+          }
+        }
+
       } catch (error) {
         if (!streamStarted) spinner.stop();
 
@@ -490,6 +502,31 @@ export class AgentWorkflowV2 {
         const validateRes = tools.validateProject(this.cwd, params);
         return validateRes.error ? validateRes.error : validateRes.result;
 
+      // Planning tools
+      case "set_plan":
+        const setPlanRes = tools.setPlan(
+          params.title || "Task Plan",
+          params.tasks || [],
+          this.cwd
+        );
+        return setPlanRes.error ? setPlanRes.error : setPlanRes.result;
+
+      case "update_plan_task":
+        const updateTaskRes = tools.updatePlanTask(
+          params.taskId || "",
+          params.status || "pending",
+          params.notes
+        );
+        return updateTaskRes.error ? updateTaskRes.error : updateTaskRes.result;
+
+      case "show_plan":
+        const showPlanRes = tools.showPlan();
+        return showPlanRes.error ? showPlanRes.error : showPlanRes.result;
+
+      case "clear_plan":
+        const clearPlanRes = tools.clearPlan();
+        return clearPlanRes.error ? clearPlanRes.error : clearPlanRes.result;
+
       default:
         // Try MCP tools
         if (tool.includes(".")) {
@@ -785,6 +822,64 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
     Timeout: 3 minutes per command
 
     **Use this after making changes to verify the project still works!**
+
+## Planning & Task Management Tools
+
+**IMPORTANT: Use these tools for complex, multi-step tasks to organize your workflow and track progress!**
+
+36. **set_plan** - Create an execution plan for complex tasks
+    \`<tool name="set_plan" title="Build Authentication System" tasks='[{"description": "Create user model"}, {"description": "Setup JWT auth"}, {"description": "Create login endpoint"}]'></tool>\`
+
+    Use this tool when:
+    - User requests a complex feature with multiple steps
+    - You need to organize a large refactoring
+    - The task requires more than 5 iterations
+
+    **Always create a plan at the start of complex tasks to stay organized!**
+
+37. **update_plan_task** - Update the status of a task in the current plan
+    \`<tool name="update_plan_task" taskId="task-1" status="in_progress"></tool>\`
+    \`<tool name="update_plan_task" taskId="task-2" status="completed" notes="Implemented successfully"></tool>\`
+
+    Status options: "pending", "in_progress", "completed", "skipped"
+
+    **Update task status as you progress through the plan!**
+
+38. **show_plan** - Display the current execution plan
+    \`<tool name="show_plan"></tool>\`
+
+    Use this to check your progress or remind yourself of remaining tasks.
+
+39. **clear_plan** - Clear the current plan (use when task is complete)
+    \`<tool name="clear_plan"></tool>\`
+
+**Example Workflow with Planning:**
+
+User: "Build a full authentication system"
+
+[Iteration 1] - Create plan:
+You: "This is a complex task. Let me create an execution plan."
+<tool name="set_plan" title="Authentication System" tasks='[
+  {"description": "Create user database schema"},
+  {"description": "Implement password hashing"},
+  {"description": "Setup JWT token generation"},
+  {"description": "Create login endpoint"},
+  {"description": "Create registration endpoint"},
+  {"description": "Add authentication middleware"}
+]'></tool>
+
+[Iteration 2] - Start first task:
+<tool name="update_plan_task" taskId="task-1" status="in_progress"></tool>
+You: "Starting with the user database schema..."
+<tool name="propose_edit" path="models/User.ts">...</tool>
+
+[Iteration 3] - Complete first, start second:
+<tool name="update_plan_task" taskId="task-1" status="completed"></tool>
+<tool name="update_plan_task" taskId="task-2" status="in_progress"></tool>
+You: "Now implementing password hashing..."
+<tool name="propose_edit" path="utils/password.ts">...</tool>
+
+[Continue until all tasks are completed]
 
 ${mcpSection}
 

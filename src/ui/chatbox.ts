@@ -12,6 +12,7 @@ import { displayWave } from "./logo.js";
 import { DEFAULT_IGNORE_GLOBS } from "../tools/index.js";
 import { LineEditor } from "./lineEditor.js";
 import { MentionController } from "./mentionController.js";
+import { formatCost } from "../pricing/config.js";
 
 export class ChatBoxUI {
   private static readonly MENTION_KEEP = "__MEER_MENTION_KEEP__";
@@ -382,9 +383,18 @@ export class ChatBoxUI {
     while ((match = mentionPattern.exec(working)) !== null) {
       const atIndex = match.index;
       const previousChar = atIndex > 0 ? working[atIndex - 1] : "";
+      const nextChars = working.slice(atIndex, atIndex + 20);
 
+      // Skip if part of an email or identifier
       if (previousChar && /[A-Za-z0-9._/-]/.test(previousChar)) {
-        // Likely part of an email or identifier - skip
+        continue;
+      }
+
+      // Skip if looks like error message context (webpack, decorators, etc.)
+      if (nextChars.includes('webpack[') ||
+          nextChars.includes('!=!') ||
+          nextChars.includes('??') ||
+          working.includes('Error') && working.includes('loader')) {
         continue;
       }
 
@@ -1123,6 +1133,27 @@ export class ChatBoxUI {
       );
     }
 
+    // Costs section
+    if (stats.totalCost > 0) {
+      console.log("");
+      console.log(chalk.bold.white("Costs"));
+      console.log(
+        chalk.gray("Input:") +
+          " ".repeat(24) +
+          chalk.white(formatCost(stats.inputCost))
+      );
+      console.log(
+        chalk.gray("Output:") +
+          " ".repeat(23) +
+          chalk.white(formatCost(stats.outputCost))
+      );
+      console.log(
+        chalk.gray("Total:") +
+          " ".repeat(24) +
+          chalk.green(formatCost(stats.totalCost))
+      );
+    }
+
     // Tool breakdown if there are tools used
     if (Object.keys(stats.toolCalls.byType).length > 0) {
       console.log("");
@@ -1265,6 +1296,14 @@ export class ChatBoxUI {
         chalk.white(stats.completionTokens.toLocaleString()).padEnd(width - 31) +
         chalk.gray("│")
     );
+    if (stats.totalCost > 0) {
+      console.log(
+        chalk.gray("│") +
+          chalk.blue("Total Cost:").padEnd(30) +
+          chalk.green(formatCost(stats.totalCost)).padEnd(width - 31) +
+          chalk.gray("│")
+      );
+    }
     if (typeof stats.contextLimit === "number") {
       const currentPercent = (
         (stats.currentPromptTokens / stats.contextLimit) * 100
