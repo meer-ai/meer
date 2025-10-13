@@ -527,6 +527,138 @@ export class AgentWorkflowV2 {
         const clearPlanRes = tools.clearPlan();
         return clearPlanRes.error ? clearPlanRes.error : clearPlanRes.result;
 
+      // Code explanation and documentation tools
+      case "explain_code":
+        const explainRes = tools.explainCode(params.path || "", this.cwd, params);
+        return explainRes.error ? explainRes.error : explainRes.result;
+
+      case "generate_docstring":
+        const docstringRes = tools.generateDocstring(params.path || "", this.cwd, params);
+        return docstringRes.error ? docstringRes.error : docstringRes.result;
+
+      // Code quality and testing tools
+      case "format_code":
+        const formatRes = tools.formatCode(params.path || "", this.cwd, params);
+        return formatRes.error ? formatRes.error : formatRes.result;
+
+      case "dependency_audit":
+        const auditRes = tools.dependencyAudit(this.cwd, params);
+        return auditRes.error ? auditRes.error : auditRes.result;
+
+      case "run_tests":
+        const testRes = tools.runTests(this.cwd, params);
+        return testRes.error ? testRes.error : testRes.result;
+
+      case "generate_tests":
+        const genTestsRes = tools.generateTests(params.path || "", this.cwd, params);
+        return genTestsRes.error ? genTestsRes.error : genTestsRes.result;
+
+      case "security_scan":
+        const securityRes = tools.securityScan(params.path || "", this.cwd, params);
+        return securityRes.error ? securityRes.error : securityRes.result;
+
+      case "code_review":
+        const reviewRes = tools.codeReview(params.path || "", this.cwd, params);
+        return reviewRes.error ? reviewRes.error : reviewRes.result;
+
+      case "generate_readme":
+        const readmeRes = tools.generateReadme(this.cwd, params);
+        return readmeRes.error ? readmeRes.error : readmeRes.result;
+
+      case "fix_lint":
+        const fixLintRes = tools.fixLint(params.path || "", this.cwd, params);
+        return fixLintRes.error ? fixLintRes.error : fixLintRes.result;
+
+      case "organize_imports":
+        const organizeRes = tools.organizeImports(params.path || "", this.cwd, params);
+        return organizeRes.error ? organizeRes.error : organizeRes.result;
+
+      case "check_complexity":
+        const complexityRes = tools.checkComplexity(params.path || "", this.cwd, params);
+        return complexityRes.error ? complexityRes.error : complexityRes.result;
+
+      case "detect_smells":
+        const smellsRes = tools.detectSmells(params.path || "", this.cwd, params);
+        return smellsRes.error ? smellsRes.error : smellsRes.result;
+
+      case "analyze_coverage":
+        const coverageRes = tools.analyzeCoverage(this.cwd, params);
+        return coverageRes.error ? coverageRes.error : coverageRes.result;
+
+      case "find_references":
+        const referencesRes = tools.findReferences(params.symbol || "", this.cwd, params);
+        return referencesRes.error ? referencesRes.error : referencesRes.result;
+
+      case "generate_test_suite":
+        const testSuiteRes = tools.generateTestSuite(params.path || "", this.cwd, params);
+        return testSuiteRes.error ? testSuiteRes.error : testSuiteRes.result;
+
+      case "generate_mocks":
+        const mocksRes = tools.generateMocks(params.path || "", this.cwd, params);
+        return mocksRes.error ? mocksRes.error : mocksRes.result;
+
+      case "generate_api_docs":
+        const apiDocsRes = tools.generateApiDocs(params.path || "", this.cwd, params);
+        return apiDocsRes.error ? apiDocsRes.error : apiDocsRes.result;
+
+      case "git_blame":
+        const blameRes = tools.gitBlame(params.path || "", this.cwd, params);
+        return blameRes.error ? blameRes.error : blameRes.result;
+
+      case "rename_symbol":
+        const renameRes = tools.renameSymbol(params.oldName || "", params.newName || "", this.cwd, params);
+        return renameRes.error ? renameRes.error : renameRes.result;
+
+      case "extract_function":
+        const extractFnRes = tools.extractFunction(
+          params.filePath || "",
+          parseInt(params.startLine || "0"),
+          parseInt(params.endLine || "0"),
+          params.functionName || "",
+          this.cwd,
+          params
+        );
+        return extractFnRes.error ? extractFnRes.error : extractFnRes.result;
+
+      case "extract_variable":
+        const extractVarRes = tools.extractVariable(
+          params.filePath || "",
+          parseInt(params.lineNumber || "0"),
+          params.expression || "",
+          params.variableName || "",
+          this.cwd,
+          params
+        );
+        return extractVarRes.error ? extractVarRes.error : extractVarRes.result;
+
+      case "inline_variable":
+        const inlineVarRes = tools.inlineVariable(
+          params.filePath || "",
+          params.variableName || "",
+          this.cwd,
+          params
+        );
+        return inlineVarRes.error ? inlineVarRes.error : inlineVarRes.result;
+
+      case "move_symbol":
+        const moveSymbolRes = tools.moveSymbol(
+          params.symbolName || "",
+          params.fromFile || "",
+          params.toFile || "",
+          this.cwd,
+          params
+        );
+        return moveSymbolRes.error ? moveSymbolRes.error : moveSymbolRes.result;
+
+      case "convert_to_async":
+        const convertAsyncRes = tools.convertToAsync(
+          params.filePath || "",
+          params.functionName || "",
+          this.cwd,
+          params
+        );
+        return convertAsyncRes.error ? convertAsyncRes.error : convertAsyncRes.result;
+
       default:
         // Try MCP tools
         if (tool.includes(".")) {
@@ -880,6 +1012,461 @@ You: "Now implementing password hashing..."
 <tool name="propose_edit" path="utils/password.ts">...</tool>
 
 [Continue until all tasks are completed]
+
+## Code Explanation & Documentation Tools
+
+40. **explain_code** - Get AI explanation of code section
+   \`<tool name="explain_code" path="src/auth.ts"></tool>\`
+   \`<tool name="explain_code" path="src/utils.ts" startLine="45" endLine="67"></tool>\`
+   \`<tool name="explain_code" path="src/api.ts" focusSymbol="handleRequest"></tool>\`
+
+   Options:
+   - startLine, endLine: Specific line range to explain
+   - focusSymbol: Function/class name to focus on
+
+   Returns formatted code with context for the LLM to explain. Great for understanding complex code sections.
+
+41. **generate_docstring** - Generate documentation for code
+   \`<tool name="generate_docstring" path="src/utils.ts" symbolName="parseData"></tool>\`
+   \`<tool name="generate_docstring" path="src/api.py" style="google"></tool>\`
+
+   Options:
+   - symbolName: Function/class to document
+   - style: 'jsdoc', 'tsdoc', 'sphinx', 'google' (auto-detected from file extension)
+   - startLine, endLine: Specific lines to document
+
+   Generates comprehensive documentation including parameters, return values, examples, and notes.
+
+## Code Quality & Testing Tools
+
+42. **format_code** - Format code with standard formatters
+   \`<tool name="format_code" path="src/app.ts"></tool>\`
+   \`<tool name="format_code" path="main.py" formatter="black"></tool>\`
+   \`<tool name="format_code" path="src" check="true"></tool>\` - Check only, don't modify
+
+   Formatters:
+   - 'prettier' (JS/TS/JSON/CSS/HTML)
+   - 'black' (Python)
+   - 'gofmt' (Go)
+   - 'rustfmt' (Rust)
+   - 'auto' (auto-detect, default)
+
+   Options:
+   - formatter: Which formatter to use
+   - check: Only check formatting, don't modify files
+
+43. **dependency_audit** - Check dependencies for vulnerabilities
+   \`<tool name="dependency_audit"></tool>\`
+   \`<tool name="dependency_audit" fix="true"></tool>\` - Auto-fix vulnerabilities
+   \`<tool name="dependency_audit" production="true"></tool>\` - Only production deps
+
+   Supports:
+   - Node.js (npm audit)
+   - Python (pip list --outdated)
+   - Rust (cargo audit)
+   - Go (go list -m -u all)
+
+   Shows security vulnerabilities and outdated packages across all package managers in the project.
+
+44. **run_tests** - Run project tests
+   \`<tool name="run_tests"></tool>\`
+   \`<tool name="run_tests" coverage="true"></tool>\` - With coverage report
+   \`<tool name="run_tests" specific="tests/auth.test.ts"></tool>\` - Specific test file
+   \`<tool name="run_tests" pattern="auth"></tool>\` - Test pattern
+
+   Auto-detects:
+   - Jest, Vitest, Mocha (Node.js)
+   - pytest (Python)
+   - go test (Go)
+   - cargo test (Rust)
+
+   Options:
+   - coverage: Generate coverage report
+   - specific: Run specific test file
+   - pattern: Filter tests by pattern
+
+45. **generate_tests** - AI-powered test generation with framework auto-detection
+   \`<tool name="generate_tests" path="src/utils.ts"></tool>\`
+   \`<tool name="generate_tests" path="src/auth.ts" framework="jest" coverage="unit"></tool>\`
+   \`<tool name="generate_tests" path="src/api.ts" focusFunction="handleRequest" coverage="all"></tool>\`
+
+   Auto-detects framework from project:
+   - Jest, Vitest, Mocha (Node.js)
+   - pytest (Python)
+   - go test (Go)
+   - cargo test (Rust)
+
+   Options:
+   - framework: Force specific framework ('jest'|'vitest'|'mocha'|'pytest'|'go'|'auto')
+   - coverage: Test type ('unit'|'integration'|'e2e'|'all', default: 'all')
+   - focusFunction: Generate tests only for specific function
+
+   Returns AI prompt with code context to generate comprehensive tests with edge cases, mocking, and setup/teardown.
+
+46. **security_scan** - Multi-scanner security analysis for vulnerabilities
+   \`<tool name="security_scan" path="src"></tool>\`
+   \`<tool name="security_scan" path="src/api.ts" scanners="npm-audit,eslint-security"></tool>\`
+   \`<tool name="security_scan" path="." severity="high" autoFix="true"></tool>\`
+
+   Supported scanners:
+   - npm-audit: Node.js dependency vulnerabilities
+   - eslint-security: ESLint security rules (eslint-plugin-security)
+   - bandit: Python security scanner
+   - all: Run all applicable scanners
+
+   Options:
+   - scanners: Array of scanners or 'all' (default: 'all')
+   - severity: Filter by severity ('low'|'medium'|'high'|'critical')
+   - autoFix: Attempt automatic fixes for npm vulnerabilities
+
+   Returns aggregated security findings from multiple scanners with severity levels and recommendations.
+
+47. **code_review** - AI-powered code review focusing on quality and best practices
+   \`<tool name="code_review" path="src/auth.ts"></tool>\`
+   \`<tool name="code_review" path="src/api" focus="security,performance"></tool>\`
+   \`<tool name="code_review" path="src/utils.ts" focus="bugs" severity="error"></tool>\`
+
+   Options:
+   - focus: Areas to focus on (array of: 'security'|'performance'|'style'|'bugs'|'best-practices'|'all', default: 'all')
+   - severity: Minimum severity ('suggestion'|'warning'|'error', default: 'suggestion')
+
+   Reviews up to 10 files if path is a directory. Returns structured AI prompt with code context for review covering:
+   - Security vulnerabilities and potential exploits
+   - Performance bottlenecks and optimization opportunities
+   - Code style and maintainability issues
+   - Potential bugs and edge cases
+   - Best practices and design patterns
+
+48. **generate_readme** - Auto-generate comprehensive README.md for your project
+   \`<tool name="generate_readme"></tool>\`
+   \`<tool name="generate_readme" includeInstall="true" includeUsage="true" includeApi="true"></tool>\`
+
+   Auto-detects project type from:
+   - package.json (Node.js)
+   - Cargo.toml (Rust)
+   - go.mod (Go)
+   - requirements.txt/setup.py (Python)
+
+   Options:
+   - includeInstall: Installation instructions (default: true)
+   - includeUsage: Usage examples (default: true)
+   - includeApi: API documentation (default: false)
+   - includeContributing: Contributing guidelines (default: false)
+
+   Returns AI prompt with project structure, dependencies, and context to generate a professional README.
+
+49. **fix_lint** - Auto-fix linting errors with language-specific linters
+   \`<tool name="fix_lint" path="src/app.ts"></tool>\`
+   \`<tool name="fix_lint" path="main.py" linter="pylint"></tool>\`
+   \`<tool name="fix_lint" path="src"></tool>\` - Fix entire directory
+
+   Auto-detects linter from file extension:
+   - ESLint (JS/TS) - with --fix flag
+   - autopep8 (Python) - auto-formats to PEP 8
+   - gofmt (Go) - standard Go formatter
+   - clippy (Rust) - with --fix flag
+
+   Options:
+   - linter: Force specific linter ('eslint'|'pylint'|'golint'|'clippy'|'auto', default: 'auto')
+
+   Automatically fixes common linting errors and returns the results.
+
+50. **organize_imports** - Sort and organize imports in code files
+   \`<tool name="organize_imports" path="src/app.ts"></tool>\`
+   \`<tool name="organize_imports" path="main.py"></tool>\`
+   \`<tool name="organize_imports" path="main.go"></tool>\`
+
+   Supports:
+   - JavaScript/TypeScript: ESLint import sorting or fallback to simple sorting
+   - Python: isort
+   - Go: goimports
+
+   Options:
+   - organizer: Force specific organizer ('eslint'|'prettier'|'auto', default: 'auto')
+
+   Organizes imports by type: built-ins first, then external packages, then local imports. Removes duplicates and sorts alphabetically within each group.
+
+51. **check_complexity** - Analyze code complexity (cyclomatic complexity)
+   \`<tool name="check_complexity" path="src/api.ts"></tool>\`
+   \`<tool name="check_complexity" path="main.py" threshold="15"></tool>\`
+   \`<tool name="check_complexity" path="src/utils.ts" threshold="10" includeDetails="true"></tool>\`
+
+   Supports:
+   - JavaScript/TypeScript: ESLint complexity rule or simplified estimation
+   - Python: radon complexity analyzer
+
+   Options:
+   - threshold: Complexity threshold for warnings (default: 10)
+   - includeDetails: Show detailed breakdown per function (default: true)
+
+   Returns functions exceeding complexity threshold with line numbers and suggestions for refactoring.
+
+52. **detect_smells** - Detect code smells and anti-patterns
+   \`<tool name="detect_smells" path="src/auth.ts"></tool>\`
+   \`<tool name="detect_smells" path="src/api.ts" types="long-functions,deep-nesting"></tool>\`
+   \`<tool name="detect_smells" path="main.py" severity="high"></tool>\`
+
+   Detects:
+   - Long functions (> 50 lines)
+   - Long parameter lists (> 5 parameters)
+   - Deep nesting (> 4 levels)
+   - Duplicate code
+   - Magic numbers
+
+   Options:
+   - types: Array of smell types to check ('long-functions'|'long-parameters'|'deep-nesting'|'duplicates'|'magic-numbers'|'all', default: 'all')
+   - severity: Minimum severity to report ('low'|'medium'|'high')
+
+   Returns code smells grouped by severity with line numbers and actionable recommendations.
+
+53. **analyze_coverage** - Analyze test coverage and identify gaps
+   \`<tool name="analyze_coverage"></tool>\`
+   \`<tool name="analyze_coverage" threshold="80" format="detailed"></tool>\`
+   \`<tool name="analyze_coverage" threshold="90" includeUncovered="true"></tool>\`
+
+   Supports:
+   - Node.js: Jest/Vitest coverage (reads coverage/coverage-summary.json)
+   - Python: pytest-cov (reads coverage.json)
+   - Go: go test coverage (reads coverage.out)
+
+   Options:
+   - threshold: Coverage threshold percentage (default: 80)
+   - format: Output format ('summary'|'detailed', default: 'summary')
+   - includeUncovered: Show files below threshold (default: true)
+
+   Returns overall coverage metrics, file-by-file breakdown, and identifies uncovered areas that need testing.
+
+54. **find_references** - Find all references to a symbol in the codebase
+   \`<tool name="find_references" symbol="handleAuth"></tool>\`
+   \`<tool name="find_references" symbol="UserModel" filePattern="src/**/*.ts"></tool>\`
+   \`<tool name="find_references" symbol="calculateTotal" maxResults="20" contextLines="3"></tool>\`
+
+   Options:
+   - symbol: Symbol name to search for (function, class, variable)
+   - filePattern: Glob pattern to limit search (default: all code files)
+   - includeDefinition: Include definition in results (default: true)
+   - maxResults: Maximum number of results (default: 50)
+   - contextLines: Lines of context around each match (default: 2)
+
+   Uses ripgrep (if available) or grep to find all usages. Distinguishes between definitions and usages. Returns results grouped by file with line numbers.
+
+55. **generate_test_suite** - Generate comprehensive test suite for a module or directory
+   \`<tool name="generate_test_suite" path="src"></tool>\`
+   \`<tool name="generate_test_suite" path="src/auth.ts" framework="jest"></tool>\`
+   \`<tool name="generate_test_suite" path="src/api" includeUnit="true" includeIntegration="true" includeE2E="false"></tool>\`
+
+   Auto-detects framework and analyzes all functions/classes in the specified path.
+
+   Options:
+   - framework: Test framework ('jest'|'vitest'|'mocha'|'pytest'|'go'|'auto', default: 'auto')
+   - includeUnit: Include unit tests (default: true)
+   - includeIntegration: Include integration tests (default: true)
+   - includeE2E: Include E2E tests (default: false)
+
+   Returns comprehensive test suite plan with all functions/classes to test, recommended test structure, and organization strategy.
+
+56. **generate_mocks** - Generate mock objects and data for testing
+   \`<tool name="generate_mocks" path="src/api.ts"></tool>\`
+   \`<tool name="generate_mocks" path="src/service.ts" mockType="functions" framework="jest"></tool>\`
+   \`<tool name="generate_mocks" path="src/client.ts" mockType="api"></tool>\`
+
+   Analyzes code to identify what needs mocking (functions, classes, API calls).
+
+   Options:
+   - mockType: Type of mocks ('data'|'functions'|'api'|'all', default: 'all')
+   - framework: Testing framework ('jest'|'vitest'|'sinon'|'auto', default: 'auto')
+
+   Returns mock generation recommendations with code examples for:
+   - Mock data objects matching schemas
+   - Mock function implementations
+   - API/HTTP call mocks
+   - External dependency mocks
+
+57. **generate_api_docs** - Generate API documentation from code
+   \`<tool name="generate_api_docs" path="src/api"></tool>\`
+   \`<tool name="generate_api_docs" path="src/routes" format="markdown"></tool>\`
+   \`<tool name="generate_api_docs" path="src/controllers" includeExamples="true" includeTypes="true"></tool>\`
+
+   Auto-detects API endpoints from Express, Next.js, Flask, FastAPI style routes.
+
+   Options:
+   - format: Output format ('markdown'|'html'|'json', default: 'markdown')
+   - includeExamples: Include curl examples (default: true)
+   - includeTypes: Include request/response type schemas (default: true)
+
+   Returns comprehensive API documentation with:
+   - All endpoints grouped by HTTP method
+   - Request/response schemas
+   - Example curl commands
+   - Source file locations
+
+58. **git_blame** - Show git blame information for a file
+   \`<tool name="git_blame" path="src/app.ts"></tool>\`
+   \`<tool name="git_blame" path="src/utils.ts" startLine="45" endLine="67"></tool>\`
+
+   Shows who last modified each line of code with commit info.
+
+   Options:
+   - startLine: Start line number (optional)
+   - endLine: End line number (optional)
+
+   Returns:
+   - Contributors summary with line counts and percentages
+   - Detailed blame showing commit hash, author, date per line
+   - Useful for debugging and understanding code history
+
+59. **rename_symbol** - Rename a symbol across the codebase (FIRST REFACTORING TOOL!)
+   \`<tool name="rename_symbol" oldName="oldFunction" newName="newFunction"></tool>\`
+   \`<tool name="rename_symbol" oldName="UserModel" newName="UserEntity" filePattern="src/**/*.ts"></tool>\`
+   \`<tool name="rename_symbol" oldName="calculate" newName="computeTotal" dryRun="false"></tool>\`
+
+   Performs text-based symbol renaming across files. **IMPORTANT: Always run with dryRun=true first!**
+
+   Options:
+   - oldName: Symbol name to rename (REQUIRED)
+   - newName: New symbol name (REQUIRED)
+   - filePattern: Glob pattern to limit search (default: all code files)
+   - dryRun: Preview changes without modifying (default: true for safety)
+
+   Returns:
+   - Files affected with line numbers
+   - Total occurrences count
+   - Preview of changes (if dryRun=true)
+
+   ⚠️ **Safety Notes:**
+   - Uses word boundary regex to avoid partial matches
+   - Default is dry run mode - requires explicit dryRun=false to apply
+   - Recommend committing changes before running
+   - This is basic text replacement, not AST-based
+
+## Refactoring Tools (Advanced)
+
+**⚠️ IMPORTANT: All refactoring tools default to dry-run mode for safety. Always review changes before applying!**
+
+60. **extract_function** - Extract code into a new function
+   \`<tool name="extract_function" filePath="src/utils.ts" startLine="45" endLine="67" functionName="calculateDiscount"></tool>\`
+   \`<tool name="extract_function" filePath="src/api.ts" startLine="120" endLine="135" functionName="validateInput" dryRun="false"></tool>\`
+   \`<tool name="extract_function" filePath="main.py" startLine="88" endLine="95" functionName="process_data" insertLocation="top"></tool>\`
+
+   Extracts selected code lines into a new function with auto-detected parameters.
+
+   Options:
+   - filePath: File containing the code (REQUIRED)
+   - startLine: Start line number (REQUIRED)
+   - endLine: End line number (REQUIRED)
+   - functionName: Name for the new function (REQUIRED)
+   - insertLocation: Where to place function ('before'|'after'|'top', default: 'before')
+   - dryRun: Preview only (default: true for safety)
+
+   Features:
+   - Auto-detects variables needed as parameters
+   - Preserves indentation
+   - Supports TypeScript, JavaScript, Python
+   - Replaces extracted code with function call
+
+61. **extract_variable** - Extract expression into a variable
+   \`<tool name="extract_variable" filePath="src/app.ts" lineNumber="42" expression="user.profile.settings.theme" variableName="userTheme"></tool>\`
+   \`<tool name="extract_variable" filePath="main.py" lineNumber="67" expression="data['results'][0]['value']" variableName="firstValue" replaceAll="true"></tool>\`
+   \`<tool name="extract_variable" filePath="src/calc.ts" lineNumber="88" expression="Math.sqrt(x * x + y * y)" variableName="distance" dryRun="false"></tool>\`
+
+   Extracts an expression into a named variable to improve readability.
+
+   Options:
+   - filePath: File containing the expression (REQUIRED)
+   - lineNumber: Line number with the expression (REQUIRED)
+   - expression: Expression to extract (REQUIRED)
+   - variableName: Name for the new variable (REQUIRED)
+   - replaceAll: Replace all occurrences in file (default: false)
+   - dryRun: Preview only (default: true for safety)
+
+   Returns preview showing before/after for affected lines.
+
+62. **inline_variable** - Inline a variable into its usages
+   \`<tool name="inline_variable" filePath="src/app.ts" variableName="tempResult"></tool>\`
+   \`<tool name="inline_variable" filePath="main.py" variableName="cached_value" dryRun="false"></tool>\`
+
+   Replaces all usages of a variable with its value and removes the declaration. Useful for simplifying code.
+
+   Options:
+   - filePath: File containing the variable (REQUIRED)
+   - variableName: Variable name to inline (REQUIRED)
+   - dryRun: Preview only (default: true for safety)
+
+   Features:
+   - Finds variable declaration automatically
+   - Shows all usages that will be replaced
+   - Removes declaration after inlining
+   - Preview shows sample replacements
+
+63. **move_symbol** - Move function/class to another file
+   \`<tool name="move_symbol" symbolName="calculateTax" fromFile="src/utils.ts" toFile="src/tax.ts"></tool>\`
+   \`<tool name="move_symbol" symbolName="UserValidator" fromFile="src/models.ts" toFile="src/validators.ts" addImport="true" dryRun="false"></tool>\`
+
+   Moves a function or class from one file to another, with automatic import handling.
+
+   Options:
+   - symbolName: Function/class name to move (REQUIRED)
+   - fromFile: Source file path (REQUIRED)
+   - toFile: Destination file path (REQUIRED)
+   - addImport: Add import statement to source file (default: true)
+   - dryRun: Preview only (default: true for safety)
+
+   Features:
+   - Detects functions, arrow functions, and classes
+   - Automatically adds import to source file
+   - Shows symbol preview before moving
+   - Handles exports and async functions
+
+   ⚠️ Note: Destination file must exist. This is basic code movement, not full dependency analysis.
+
+64. **convert_to_async** - Convert Promise/callback code to async/await
+   \`<tool name="convert_to_async" filePath="src/api.ts" functionName="fetchUserData"></tool>\`
+   \`<tool name="convert_to_async" filePath="src/db.ts" functionName="queryDatabase" dryRun="false"></tool>\`
+
+   Converts promise-based (.then/.catch) code to modern async/await syntax.
+
+   Options:
+   - filePath: File containing the function (REQUIRED)
+   - functionName: Function name to convert (REQUIRED)
+   - dryRun: Preview only (default: true for safety)
+
+   Features:
+   - Adds 'async' keyword to function
+   - Converts .then() chains to await
+   - Wraps in try-catch if .catch() was present
+   - Shows before/after preview
+   - Works with both function declarations and arrow functions
+
+   Example transformation:
+   ```
+   function fetchData() {
+     return api.get('/data').then(response => {
+       return response.json();
+     }).catch(error => {
+       console.error(error);
+     });
+   }
+   ```
+   Becomes:
+   ```
+   async function fetchData() {
+     try {
+       const response = await api.get('/data');
+       return response.json();
+     } catch (error) {
+       console.error(error);
+     }
+   }
+   ```
+
+   ⚠️ Note: This is pattern-based conversion. Complex promise chains may need manual review.
+
+**Refactoring Workflow Best Practices:**
+1. Always run with dryRun=true first to preview changes
+2. Commit your code before applying refactoring tools
+3. Run tests after refactoring to ensure no regressions
+4. For complex refactorings, break into smaller steps
+5. Review generated code for edge cases
 
 ${mcpSection}
 
