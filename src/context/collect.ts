@@ -149,25 +149,41 @@ export async function topK(
   query: string,
   provider: Provider,
   chunks: CodeChunk[],
-  k: number = 3
+  k: number = 3,
+  useEmbeddings: boolean = true
 ): Promise<CodeChunk[]> {
+  if (!useEmbeddings) {
+    return chunks.slice(0, k);
+  }
+
   if (!provider.embed || chunks.length === 0) {
     return [];
   }
 
   try {
-    // Prepare texts for embedding
-    const texts = [query, ...chunks.map(chunk => chunk.content)];
-    
-    // Get embeddings
-    const embeddings = await provider.embed(texts);
-    
-    if (embeddings.length < 2) {
+    // Batch size limit for Z.ai and other providers
+    const BATCH_SIZE = 50; // Conservative limit (Z.ai max is 64)
+
+    // Get query embedding first
+    const queryEmbeddings = await provider.embed([query]);
+    if (queryEmbeddings.length === 0) {
       return [];
     }
+    const queryEmbedding = queryEmbeddings[0];
 
-    const queryEmbedding = embeddings[0];
-    const chunkEmbeddings = embeddings.slice(1);
+    // Batch embed all chunks
+    const chunkTexts = chunks.map(chunk => chunk.content);
+    const chunkEmbeddings: number[][] = [];
+
+    for (let i = 0; i < chunkTexts.length; i += BATCH_SIZE) {
+      const batch = chunkTexts.slice(i, i + BATCH_SIZE);
+      const batchEmbeddings = await provider.embed(batch);
+      chunkEmbeddings.push(...batchEmbeddings);
+    }
+
+    if (chunkEmbeddings.length === 0) {
+      return [];
+    }
 
     // Calculate cosine similarities
     const similarities = chunkEmbeddings.map((embedding, index) => ({

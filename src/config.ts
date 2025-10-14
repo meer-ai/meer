@@ -9,10 +9,11 @@ import { GeminiProvider } from './providers/gemini.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { OpenRouterProvider } from './providers/openrouter.js';
 import { MeerProvider } from './providers/meer.js';
+import { ZaiProvider, DEFAULT_ZAI_MODEL } from './providers/zai.js';
 import type { Provider } from './providers/base.js';
 
 const ConfigSchema = z.object({
-  provider: z.enum(['ollama', 'openai', 'gemini', 'anthropic', 'openrouter', 'meer']),
+  provider: z.enum(['ollama', 'openai', 'gemini', 'anthropic', 'openrouter', 'meer', 'zai']),
   model: z.string().optional(),
   temperature: z.number().optional(),
   maxIterations: z.number().optional(),
@@ -48,6 +49,11 @@ const ConfigSchema = z.object({
   meer: z.object({
     apiKey: z.string().optional(),
     apiUrl: z.string().optional()
+  }).optional(),
+  // Z.ai-specific
+  zai: z.object({
+    apiKey: z.string().optional(),
+    baseURL: z.string().optional()
   }).optional(),
   context: z.object({
     autoCollect: z.boolean().optional(),
@@ -131,6 +137,10 @@ export function loadConfig(): LoadedConfig {
         apiKey: '', // Set via MEER_API_KEY env var
         apiUrl: process.env.MEERAI_API_URL || 'https://api.meerai.dev'
       },
+      zai: {
+        apiKey: '', // Set via ZAI_API_KEY env var
+        baseURL: 'https://api.z.ai/api/coding/paas/v4' // Coding Plan API (for Cline/Claude Code compatibility)
+      },
       context: {
         autoCollect: false,
         embedding: {
@@ -213,6 +223,18 @@ export function loadConfig(): LoadedConfig {
       provider = new MeerProvider({
         apiKey: config.meer?.apiKey || process.env.MEER_API_KEY || '',
         apiUrl: config.meer?.apiUrl || process.env.MEERAI_API_URL || 'https://api.meerai.dev',
+        model: defaultModel,
+        temperature: config.temperature
+      });
+      break;
+
+    case 'zai':
+      defaultModel = config.model
+        ? ZaiProvider.normalizeModel(config.model)
+        : DEFAULT_ZAI_MODEL;
+      provider = new ZaiProvider({
+        apiKey: config.zai?.apiKey || process.env.ZAI_API_KEY || '',
+        baseURL: config.zai?.baseURL,
         model: defaultModel,
         temperature: config.temperature
       });

@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import ora from "ora";
+import ora, { type Ora } from "ora";
 import inquirer from "inquirer";
 import type { Provider, ChatMessage } from "../providers/base.js";
 import { parseToolCalls, type FileEdit, applyEdit, generateDiff } from "../tools/index.js";
@@ -9,6 +9,7 @@ import { MCPManager } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";
 import type { SessionTracker } from "../session/tracker.js";
 import { countTokens, countMessageTokens, getContextLimit } from "../token/utils.js";
+import type { Timeline } from "../ui/workflowTimeline.js";
 
 export interface AgentConfig {
   provider: Provider;
@@ -94,7 +95,21 @@ export class AgentWorkflowV2 {
   /**
    * Simple agentic loop - no hardcoded workflows
    */
-  async processMessage(userMessage: string): Promise<string> {
+  async processMessage(
+    userMessage: string,
+    options?: {
+      timeline?: Timeline;
+      onAssistantStart?: () => void;
+      onAssistantChunk?: (chunk: string) => void;
+      onAssistantEnd?: () => void;
+    }
+  ): Promise<string> {
+    const timeline = options?.timeline;
+    const onAssistantStart = options?.onAssistantStart;
+    const onAssistantChunk = options?.onAssistantChunk;
+    const onAssistantEnd = options?.onAssistantEnd;
+    const useUI = Boolean(onAssistantChunk);
+
     // Add user message
     this.messages.push({ role: "user", content: userMessage });
 
@@ -114,7 +129,12 @@ export class AgentWorkflowV2 {
       iteration++;
 
       if (iteration > 1) {
-        console.log(chalk.gray(`\n🔄 Iteration ${iteration}/${this.maxIterations}`));
+        const iterationLabel = `Iteration ${iteration}/${this.maxIterations}`;
+        if (timeline) {
+          timeline.note(iterationLabel);
+        } else {
+          console.log(chalk.gray(`\n🔄 ${iterationLabel}`));
+        }
       }
 
       // Get LLM response
@@ -123,40 +143,80 @@ export class AgentWorkflowV2 {
       this.sessionTracker?.trackContextUsage(promptTokens);
       this.warnIfContextHigh(promptTokens);
 
-      const spinner = ora({
-        text: chalk.blue("Thinking..."),
-        spinner: "dots",
-      }).start();
+      let spinner: Ora | null = null;
+      let thinkingTaskId: string | undefined;
+
+      if (timeline) {
+        thinkingTaskId = timeline.startTask("Thinking", {
+          detail: `${this.providerType}:${this.model}`,
+        });
+      } else {
+        spinner = ora({
+          text: chalk.blue("Thinking..."),
+          spinner: "dots",
+        }).start();
+      }
 
       let response = "";
       let streamStarted = false;
+      let headerPrinted = false;
+
+      const ensureConsoleHeader = () => {
+        if (!headerPrinted) {
+          console.log(chalk.green("\n🤖 MeerAI:\n"));
+          headerPrinted = true;
+        }
+      };
 
       try {
-        // Stream response
         for await (const chunk of this.provider.stream(this.messages)) {
           if (!streamStarted) {
-            spinner.stop();
-            console.log(chalk.green("\n🤖 MeerAI:\n"));
             streamStarted = true;
+            if (timeline && thinkingTaskId) {
+              timeline.succeed(thinkingTaskId, "Streaming response");
+            } else if (spinner) {
+              spinner.stop();
+            }
+            if (useUI) {
+              onAssistantStart?.();
+            } else {
+              ensureConsoleHeader();
+            }
           }
 
           if (chunk?.trim()) {
-            process.stdout.write(chunk);
             response += chunk;
-            await new Promise(resolve => setTimeout(resolve, 5)); // Smooth typing
+            if (useUI) {
+              onAssistantChunk?.(chunk);
+            } else {
+              process.stdout.write(chunk);
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
           }
         }
 
         if (!streamStarted) {
-          spinner.stop();
-          // Fallback to non-streaming
           response = await this.withTimeout(
             this.provider.chat(this.messages),
             this.chatTimeout,
             "LLM response"
           );
-          console.log(chalk.green("\n🤖 MeerAI:\n"));
-          console.log(response);
+          if (timeline && thinkingTaskId) {
+            timeline.succeed(thinkingTaskId, "Response ready");
+          } else if (spinner) {
+            spinner.stop();
+          }
+
+          if (useUI) {
+            onAssistantStart?.();
+            onAssistantChunk?.(response);
+            onAssistantEnd?.();
+          } else {
+            ensureConsoleHeader();
+            console.log(response);
+          }
+        } else if (useUI) {
+          onAssistantEnd?.();
         } else {
           console.log("\n");
         }
@@ -170,21 +230,50 @@ export class AgentWorkflowV2 {
           const costUsage = this.sessionTracker.getCostUsage();
 
           if (costUsage.total > 0) {
-            console.log(chalk.dim(`\n💰 Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out | Cost: ${costUsage.formatted.total} (session total)`));
+            const summary = `Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out | Cost: ${costUsage.formatted.total} (session total)`;
+            if (timeline) {
+              timeline.note(`💰 ${summary}`);
+            } else {
+              console.log(chalk.dim(`\n💰 ${summary}`));
+            }
           } else {
-            console.log(chalk.dim(`\n💰 Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out`));
+            const summary = `Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out`;
+            if (timeline) {
+              timeline.note(`💰 ${summary}`);
+            } else {
+              console.log(chalk.dim(`\n💰 ${summary}`));
+            }
           }
         }
 
       } catch (error) {
-        if (!streamStarted) spinner.stop();
+        if (spinner) {
+          spinner.stop();
+        }
+        if (useUI && streamStarted) {
+          onAssistantEnd?.();
+        }
 
         const errorMsg = error instanceof Error ? error.message : String(error);
-        console.log(chalk.red(`\n❌ Error: ${errorMsg}`));
+
+        if (timeline && thinkingTaskId) {
+          timeline.fail(thinkingTaskId, errorMsg);
+          timeline.error(`Error: ${errorMsg}`);
+        } else {
+          console.log(chalk.red(`\n❌ Error: ${errorMsg}`));
+        }
 
         // Fail fast - no excessive retries
         if (errorMsg.includes("timeout") || errorMsg.includes("rate limit")) {
-          console.log(chalk.yellow("💡 Try again in a moment or check your API limits"));
+          if (timeline) {
+            timeline.warn("Try again in a moment or check your API limits");
+          } else {
+            console.log(
+              chalk.yellow(
+                "💡 Try again in a moment or check your API limits"
+              )
+            );
+          }
           break;
         }
 
@@ -201,7 +290,11 @@ export class AgentWorkflowV2 {
       }
 
       if (!response.trim()) {
-        console.log(chalk.yellow("⚠️ Received empty response"));
+        if (timeline) {
+          timeline.warn("Received empty response");
+        } else {
+          console.log(chalk.yellow("⚠️ Received empty response"));
+        }
         break;
       }
 
@@ -227,20 +320,41 @@ export class AgentWorkflowV2 {
       }
 
       // Execute tools
-      console.log(chalk.blue(`\n🔧 Executing ${toolCalls.length} tool(s)...`));
+      if (timeline) {
+        timeline.info(`Executing ${toolCalls.length} tool(s)`, {
+          icon: "🔧",
+        });
+      } else {
+        console.log(chalk.blue(`\n🔧 Executing ${toolCalls.length} tool(s)...`));
+      }
 
       const toolResults: string[] = [];
       for (const toolCall of toolCalls) {
-        console.log(chalk.cyan(`\n  → ${toolCall.tool}`));
+        let toolTaskId: string | undefined;
+        if (timeline) {
+          toolTaskId = timeline.startTask(toolCall.tool, {
+            detail: "running",
+          });
+        } else {
+          console.log(chalk.cyan(`\n  → ${toolCall.tool}`));
+        }
 
         try {
           const result = await this.executeTool(toolCall);
           toolResults.push(`Tool: ${toolCall.tool}\nResult: ${result}`);
-          console.log(chalk.green(`  ✓ Done`));
+          if (timeline && toolTaskId) {
+            timeline.succeed(toolTaskId, "Done");
+          } else {
+            console.log(chalk.green(`  ✓ Done`));
+          }
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
           toolResults.push(`Tool: ${toolCall.tool}\nError: ${errorMsg}`);
-          console.log(chalk.red(`  ✗ Failed: ${errorMsg}`));
+          if (timeline && toolTaskId) {
+            timeline.fail(toolTaskId, errorMsg);
+          } else {
+            console.log(chalk.red(`  ✗ Failed: ${errorMsg}`));
+          }
         }
       }
 
@@ -253,7 +367,11 @@ export class AgentWorkflowV2 {
     }
 
     if (iteration >= this.maxIterations) {
-      console.log(chalk.yellow("\n⚠️ Reached maximum iterations"));
+      if (timeline) {
+        timeline.warn("Reached maximum iterations");
+      } else {
+        console.log(chalk.yellow("\n⚠️ Reached maximum iterations"));
+      }
     }
 
     return fullResponse;

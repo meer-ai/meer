@@ -10,6 +10,7 @@ import { AnthropicProvider } from '../providers/anthropic.js';
 import { OpenRouterProvider } from '../providers/openrouter.js';
 import { OpenAIProvider } from '../providers/openai.js';
 import { GeminiProvider } from '../providers/gemini.js';
+import { ZaiProvider } from '../providers/zai.js';
 
 export function createSetupCommand(): Command {
   return new Command('setup')
@@ -112,6 +113,28 @@ async function fetchOpenRouterModels(apiKey: string): Promise<string[]> {
   }
 }
 
+async function fetchZaiModels(apiKey: string): Promise<string[]> {
+  const fallbackModels = [
+    'glm-4',
+    'glm-4-plus',
+    'glm-4-air',
+    'glm-4-airx',
+    'glm-4-flash',
+    'glm-4v'
+  ];
+
+  try {
+    if (!apiKey) throw new Error('No API key');
+    const provider = new ZaiProvider({ apiKey, model: 'temp' });
+    const models = await provider.listModels();
+    return models.length > 0
+      ? Array.from(new Set(models.map(m => ZaiProvider.normalizeModel(m.id))))
+      : fallbackModels;
+  } catch {
+    return fallbackModels;
+  }
+}
+
 async function runSetupWizard(): Promise<void> {
   console.clear();
 
@@ -174,6 +197,10 @@ async function runSetupWizard(): Promise<void> {
         {
           name: chalk.cyan('🌐 OpenRouter') + chalk.gray(' - Access to many models via one API (requires API key)'),
           value: 'openrouter'
+        },
+        {
+          name: chalk.cyan('⚡ Z.ai') + chalk.gray(' - GLM models (GLM-4, GLM-4-Air) - Chinese AI leader (requires API key)'),
+          value: 'zai'
         }
       ]
     }
@@ -207,6 +234,10 @@ async function runSetupWizard(): Promise<void> {
     },
     meer: {
       apiUrl: process.env.MEERAI_API_URL || 'https://api.meerai.dev'
+    },
+    zai: {
+      apiKey: '',
+      baseURL: 'https://api.z.ai/api/coding/paas/v4'
     },
     context: {
       embedding: {
@@ -559,6 +590,73 @@ async function runSetupWizard(): Promise<void> {
       console.log(chalk.cyan('   export OPENROUTER_API_KEY=sk-or-...\n'));
     }
     console.log(chalk.blue('\n🌐 OpenRouter gives you access to many AI models through one API!'));
+
+  } else if (provider === 'zai') {
+    const { apiKey } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: 'Enter your Z.ai API key (or press Enter to set via ZAI_API_KEY env var):',
+        mask: '*'
+      }
+    ]);
+
+    config.zai.apiKey = apiKey || '';
+
+    // Fetch available models dynamically if API key is provided
+    let availableModels: string[] = [];
+    if (apiKey) {
+      console.log(chalk.gray('🔍 Fetching available models from Z.ai...'));
+      availableModels = await fetchZaiModels(apiKey);
+    } else {
+      availableModels = await fetchZaiModels('');
+    }
+
+    // Add annotations to popular models
+    const normalizedModels = Array.from(new Set(availableModels.map(model => ZaiProvider.normalizeModel(model))));
+    const modelChoices = normalizedModels.map(model => {
+      const lower = model.toLowerCase();
+      let name = model;
+      if (lower === 'glm-4') name += ' (flagship, 200K context, recommended)';
+      else if (lower === 'glm-4-plus') name += ' (enhanced capability tier)';
+      else if (lower.includes('glm-4-airx')) name += ' (high performance AirX tier)';
+      else if (lower.includes('glm-4-air')) name += ' (cost-effective Air tier)';
+      else if (lower.includes('glm-4-flash')) name += ' (free tier, fast)';
+      else if (lower.includes('glm-4v')) name += ' (vision model)';
+      return { name, value: model };
+    });
+    modelChoices.push({ name: 'Custom model...', value: 'custom' });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices
+      }
+    ]);
+
+    if (model === 'custom') {
+      const { customModel } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'customModel',
+          message: 'Enter model name (e.g., glm-4, glm-4-air):'
+        }
+      ]);
+      config.model = customModel;
+    } else {
+      config.model = model;
+    }
+
+    console.log(chalk.green('\n✅ Z.ai configured!'));
+    console.log(chalk.gray(`   Model: ${config.model}`));
+    if (!apiKey) {
+      console.log(chalk.yellow('\n💡 Remember to set your API key:'));
+      console.log(chalk.cyan('   export ZAI_API_KEY=...\n'));
+    }
+    console.log(chalk.blue('\n⚡ Z.ai GLM models: Advanced reasoning, coding, and agentic capabilities!'));
+    console.log(chalk.gray('   Context: 128K-200K tokens | Pricing: ~$0.2/$1.1 per 1M tokens'));
   }
 
   // Step 3: Additional preferences

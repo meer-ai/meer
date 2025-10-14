@@ -182,10 +182,17 @@ export class ProjectContextManager {
     }
 
     const scored = entries
-      .map(({ path: filePath, record }) => ({
-        path: filePath,
-        score: this.cosineSimilarity(queryVector, record.vector),
-      }))
+      .map(({ path: filePath, record }) => {
+        // Handle both single record and array of records
+        const singleRecord = Array.isArray(record) ? record[0] : record;
+        if (!singleRecord || !singleRecord.vector) {
+          return { path: filePath, score: 0 };
+        }
+        return {
+          path: filePath,
+          score: this.cosineSimilarity(queryVector, singleRecord.vector),
+        };
+      })
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
@@ -227,7 +234,9 @@ export class ProjectContextManager {
     }
 
     const existing = this.embeddingStore.getEntry(normalizedRoot, relativePath);
-    if (existing && existing.mtimeMs === stats.mtimeMs && existing.size === stats.size) {
+    // Handle both single record and array of records
+    const singleExisting = existing && Array.isArray(existing) ? existing[0] : existing;
+    if (singleExisting && singleExisting.mtimeMs === stats.mtimeMs && singleExisting.size === stats.size) {
       return;
     }
 

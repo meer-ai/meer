@@ -14,8 +14,11 @@ import { createMCPCommand } from "./commands/mcp.js";
 import { createLoginCommand } from "./commands/login.js";
 import { createLogoutCommand } from "./commands/logout.js";
 import { createWhoamiCommand } from "./commands/whoami.js";
+import { createIndexCommand } from "./commands/indexCmd.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
+import { WorkflowTimeline, type Timeline } from "./ui/workflowTimeline.js";
+import { OceanChatUI } from "./ui/oceanChat.js";
 import { logVerbose, setVerboseLogging } from "./logger.js";
 import { showSlashHelp } from "./ui/slashHelp.js";
 import { ProjectContextManager } from "./context/manager.js";
@@ -129,6 +132,8 @@ async function showWelcomeScreen() {
         ? "🌐 OpenRouter"
         : config.providerType === "meer"
         ? "🌊 Meer Managed"
+        : config.providerType === "zai"
+        ? "⚡ Z.ai"
         : config.providerType;
 
     console.log(chalk.bold.blue("📋 Configuration:"));
@@ -847,6 +852,7 @@ async function handleProviderCommand() {
       { name: "gemini", icon: "✨", label: "Google Gemini" },
       { name: "anthropic", icon: "🧠", label: "Anthropic Claude" },
       { name: "openrouter", icon: "🌐", label: "OpenRouter" },
+      { name: "zai", icon: "⚡", label: "Z.ai" },
     ];
 
     console.log(chalk.bold.blue("\n🔌 Available Providers:\n"));
@@ -893,11 +899,16 @@ async function handleProviderCommand() {
           config.model = "anthropic/claude-3.5-sonnet";
         } else if (selectedProvider === "meer") {
           config.model = "auto";
+        } else if (selectedProvider === "zai") {
+          config.model = "glm-4";
         }
 
         if (selectedProvider === "meer") {
           config.meer = config.meer || {};
           config.meer.apiKey = config.meer.apiKey || "";
+        } else if (selectedProvider === "zai") {
+          config.zai = config.zai || {};
+          config.zai.apiKey = config.zai.apiKey || "";
         }
       }
 
@@ -1456,6 +1467,7 @@ export function createCLI(): Command {
   program.addCommand(createReviewCommand());
   program.addCommand(createMemoryCommand());
   program.addCommand(createMCPCommand());
+  program.addCommand(createIndexCommand());
 
   // Show welcome screen and start chat when no command is provided
   program.action(async () => {
@@ -1495,9 +1507,28 @@ export function createCLI(): Command {
         // Simple initialization - no forced context loading
         await agent.initialize();
 
+        const useTui =
+          Boolean(process.stdout.isTTY && process.stdin.isTTY) &&
+          process.env.MEER_NO_TUI !== "1";
+        const oceanUI = useTui
+          ? new OceanChatUI({
+              provider: config.providerType,
+              model: config.model,
+              cwd: process.cwd(),
+              showWorkflowPanel: false,
+            })
+          : null;
+
+        oceanUI?.captureConsole();
+
         const handleExit = async () => {
           const finalStats = await sessionTracker.endSession();
-          console.log("\n");
+          if (oceanUI) {
+            oceanUI.appendSystemMessage("Session ended. Goodbye! 🌊");
+            oceanUI.destroy();
+          } else {
+            console.log("\n");
+          }
           ChatBoxUI.displayGoodbye(finalStats);
           process.exit(0);
         };
@@ -1506,6 +1537,9 @@ export function createCLI(): Command {
         process.on("SIGTERM", handleExit);
 
         const askQuestion = async (): Promise<string> => {
+          if (oceanUI) {
+            return oceanUI.prompt();
+          }
           return ChatBoxUI.handleInput({
             provider: config.providerType,
             model: config.model,
@@ -1516,33 +1550,46 @@ export function createCLI(): Command {
         let exitRequested = false;
 
         while (!exitRequested && !restarting) {
-          ChatBoxUI.renderStatusBar({
-            provider: config.providerType,
-            model: config.model,
-            cwd: process.cwd(),
-          });
-
-          const userInput = await askQuestion();
-
-          if (
-            userInput.toLowerCase() === "exit" ||
-            userInput.toLowerCase() === "quit"
-          ) {
-            exitRequested = true;
-            break;
+          if (!oceanUI) {
+            ChatBoxUI.renderStatusBar({
+              provider: config.providerType,
+              model: config.model,
+              cwd: process.cwd(),
+            });
           }
+
+          const rawInput = await askQuestion();
+          const userInput = rawInput.trim();
 
           if (!userInput) {
             continue;
           }
 
-          if (await isImageFileRequest(userInput)) {
-            await handleImageFileRequest(userInput, config);
-            console.log("");
+          const lowered = userInput.toLowerCase();
+          if (lowered === "exit" || lowered === "quit") {
+            if (oceanUI) {
+              oceanUI.appendSystemMessage("Exiting chat session...");
+            }
+            exitRequested = true;
+            break;
+          }
+
+          if (await isImageFileRequest(rawInput)) {
+            if (oceanUI) {
+              oceanUI.appendSystemMessage("Processing image command...");
+            }
+            await handleImageFileRequest(rawInput, config);
+            if (!oceanUI) {
+              console.log("");
+            }
             continue;
           }
 
           if (userInput.startsWith("/")) {
+            if (oceanUI) {
+              oceanUI.appendSystemMessage(userInput);
+            }
+
             const result = await handleSlashCommand(
               userInput,
               config,
@@ -1556,37 +1603,72 @@ export function createCLI(): Command {
 
             if (result === "restart") {
               restarting = true;
-              console.log(chalk.yellow("\n🔄 Reloading configuration...\n"));
+              if (oceanUI) {
+                oceanUI.appendSystemMessage("Reloading configuration...");
+              } else {
+                console.log(chalk.yellow("\n🔄 Reloading configuration...\n"));
+              }
               break;
             }
 
-            console.log("");
+            if (!oceanUI) {
+              console.log("");
+            }
             continue;
+          }
+
+          if (oceanUI) {
+            oceanUI.appendUserMessage(userInput);
           }
 
           sessionTracker.trackMessage();
 
+          const timeline: Timeline = oceanUI
+            ? oceanUI.getTimelineAdapter()
+            : new WorkflowTimeline();
+
           try {
             const messageStartTime = Date.now();
 
-            // Simple: just pass to the agent - it decides everything
-            await agent.processMessage(userInput);
+            await agent.processMessage(userInput, {
+              timeline,
+              onAssistantStart: oceanUI
+                ? () => oceanUI.startAssistantMessage()
+                : undefined,
+              onAssistantChunk: oceanUI
+                ? (chunk) => oceanUI.appendAssistantChunk(chunk)
+                : undefined,
+              onAssistantEnd: oceanUI
+                ? () => oceanUI.finishAssistantMessage()
+                : undefined,
+            });
 
             sessionTracker.trackApiCall(Date.now() - messageStartTime);
           } catch (error) {
-            console.log(
-              chalk.red("\n❌ Error:"),
-              error instanceof Error ? error.message : String(error)
-            );
+            const message =
+              error instanceof Error ? error.message : String(error);
+            if (oceanUI) {
+              oceanUI.appendSystemMessage(`❌ ${message}`);
+            } else {
+              console.log(chalk.red("\n❌ Error:"), message);
+            }
+          } finally {
+            timeline.close();
           }
 
-          console.log("\n");
+          if (!oceanUI) {
+            console.log("\n");
+          }
         }
 
         process.off("SIGINT", handleExit);
         process.off("SIGTERM", handleExit);
 
         const finalStats = await sessionTracker.endSession();
+
+        if (oceanUI) {
+          oceanUI.destroy();
+        }
 
         if (!restarting) {
           ChatBoxUI.displayGoodbye(finalStats);

@@ -6,11 +6,21 @@ export interface EmbeddingRecord {
   vector: number[];
   mtimeMs: number;
   size: number;
+  chunkId?: string; // Unique chunk identifier
+  startLine?: number; // Line number where chunk starts
+  endLine?: number; // Line number where chunk ends
+  symbolName?: string; // Function/class name
+  symbolType?: string; // 'function' | 'class' | 'interface' | 'type'
+  language?: string; // Programming language
+  model?: string; // Which embedding model was used
+  content?: string; // Optional: store chunk content for quick access
 }
 
 interface EmbeddingCollection {
-  entries: Record<string, EmbeddingRecord>;
+  entries: Record<string, EmbeddingRecord | EmbeddingRecord[]>; // Support both single and array
   updatedAt: number;
+  model?: string; // Default embedding model for this collection
+  dimensions?: number; // Vector dimensions
 }
 
 interface EmbeddingDatabase {
@@ -27,18 +37,27 @@ export class EmbeddingStore {
     this.load();
   }
 
-  getEntry(root: string, relativePath: string): EmbeddingRecord | undefined {
+  getEntry(
+    root: string,
+    relativePath: string
+  ): EmbeddingRecord | EmbeddingRecord[] | undefined {
     const collection = this.db[root];
     return collection?.entries?.[relativePath];
   }
 
-  getEntries(root: string): Array<{ path: string; record: EmbeddingRecord }> {
+  getEntries(
+    root: string
+  ): Array<{ path: string; record: EmbeddingRecord | EmbeddingRecord[] }> {
     const collection = this.db[root];
     if (!collection) return [];
     return Object.entries(collection.entries).map(([path, record]) => ({ path, record }));
   }
 
-  upsertEntry(root: string, relativePath: string, record: EmbeddingRecord): void {
+  upsertEntry(
+    root: string,
+    relativePath: string,
+    record: EmbeddingRecord | EmbeddingRecord[]
+  ): void {
     if (!this.db[root]) {
       this.db[root] = { entries: {}, updatedAt: Date.now() };
     }

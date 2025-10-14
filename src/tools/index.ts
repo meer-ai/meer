@@ -7112,3 +7112,98 @@ export function convertToAsync(
     };
   }
 }
+
+/**
+ * Semantic Search - Search codebase using natural language queries
+ */
+export async function semanticSearch(
+  query: string,
+  cwd: string,
+  provider?: any, // Provider instance
+  options?: {
+    limit?: number;
+    minScore?: number;
+    filePattern?: string;
+    language?: string;
+    includeTests?: boolean;
+    embeddingModel?: string;
+  }
+): Promise<ToolResult> {
+  try {
+    if (!query || query.trim().length < 3) {
+      return {
+        tool: "semantic_search",
+        result: "",
+        error: "Query must be at least 3 characters",
+      };
+    }
+
+    // Check if semantic search is available
+    if (!provider || !provider.embed) {
+      return {
+        tool: "semantic_search",
+        result: "",
+        error:
+          "Semantic search is not available. Provider does not support embeddings. Please use Ollama or OpenRouter provider.",
+      };
+    }
+
+    // Dynamic import to avoid circular dependencies
+    const { SemanticSearchEngine } = await import("../search/semanticEngine.js");
+
+    const embeddingModel = options?.embeddingModel || "nomic-embed-text";
+    const engine = new SemanticSearchEngine(cwd, provider, embeddingModel);
+
+    // Execute search
+    const results = await engine.search(query, {
+      limit: options?.limit || 10,
+      minScore: options?.minScore || 0.5,
+      filePattern: options?.filePattern,
+      language: options?.language,
+      includeTests: options?.includeTests || false,
+    });
+
+    if (results.length === 0) {
+      return {
+        tool: "semantic_search",
+        result:
+          "No results found. The codebase may not be indexed yet. You might need to index files first or try a different query.",
+      };
+    }
+
+    // Format results
+    let output = `Found ${results.length} result(s) for: "${query}"\n\n`;
+
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      const score = (result.score * 100).toFixed(1);
+      const location = `${result.filepath}:${result.startLine}-${result.endLine}`;
+      const symbol = result.symbolName
+        ? ` (${result.symbolType}: ${result.symbolName})`
+        : "";
+
+      output += `${i + 1}. ${location}${symbol} [${score}% match]\n`;
+
+      // Show preview (first 150 chars)
+      const preview = result.content
+        .split("\n")
+        .slice(0, 3)
+        .join("\n")
+        .substring(0, 150);
+      output += `   ${preview}${result.content.length > 150 ? "..." : ""}\n\n`;
+    }
+
+    output += `\n💡 Tip: Use read_file to view full content of relevant files.\n`;
+
+    return {
+      tool: "semantic_search",
+      result: output,
+    };
+  } catch (error) {
+    return {
+      tool: "semantic_search",
+      result: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}

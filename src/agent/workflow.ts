@@ -34,6 +34,7 @@ import {
   deleteFile,
   moveFile,
   createDirectory,
+  semanticSearch,
   type FileEdit,
 } from "../tools/index.js";
 import { memory } from "../memory/index.js";
@@ -1471,6 +1472,46 @@ export class AgentWorkflow {
         }
       }
 
+      case "semantic_search": {
+        const query = params.query || params.q || "";
+        const limit = parseInt(params.limit || "10");
+        const minScore = parseFloat(params.minScore || params.score || "0.5");
+        const filePattern = params.filePattern || params.pattern;
+        const language = params.language || params.lang;
+        const includeTests = params.includeTests === "true";
+        const embeddingModel = params.embeddingModel || params.model || "nomic-embed-text";
+
+        if (!query) {
+          console.log(chalk.red("  ❌ Missing required parameter: query"));
+          return `Error: Missing query parameter`;
+        }
+
+        console.log(chalk.gray(`  🔍 Searching: "${query}"`));
+
+        try {
+          const result = await semanticSearch(query, this.cwd, this.provider, {
+            limit,
+            minScore,
+            filePattern,
+            language,
+            includeTests,
+            embeddingModel,
+          });
+
+          if (result.error) {
+            console.log(chalk.yellow(`  ⚠️  ${result.error}`));
+            return result.error;
+          }
+
+          console.log(chalk.green(`  ✓ Search completed`));
+          return result.result;
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          console.log(chalk.red(`  ❌ ${errorMsg}`));
+          return `Error: ${errorMsg}`;
+        }
+      }
+
       case "todo": {
         const action = (params.action || params.mode || "list").toLowerCase();
         const rawItemsSource =
@@ -2704,6 +2745,11 @@ Provide a practical alternative solution that addresses the root cause.`;
 18. **edit_line** - Edit a specific line when you know the exact line number
     Format: <tool name="edit_line" path="src/cli.ts" lineNumber="611" oldText='.version("1.0.0")' newText='.version("0.6.7")"></tool>
     Requires exact line number from grep. More efficient than propose_edit for single-line changes.
+
+19. **semantic_search** - Search codebase using natural language queries (AI-powered code search)
+    Format: <tool name="semantic_search" query="authentication logic" limit="10" minScore="0.5" filePattern="**/*.ts"></tool>
+    Use this to find code by meaning/intent, not just keywords. Great for discovering functionality, patterns, or similar code.
+    Note: Requires Ollama or OpenRouter provider with embedding support.
 
 ${mcpSection}
 
