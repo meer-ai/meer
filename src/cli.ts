@@ -1510,6 +1510,17 @@ export function createCLI(): Command {
         const useTui =
           Boolean(process.stdout.isTTY && process.stdin.isTTY) &&
           process.env.MEER_NO_TUI !== "1";
+        const pendingInputs: string[] = [];
+        let pendingResolver: ((value: string) => void) | null = null;
+        const enqueueInput = (value: string) => {
+          if (pendingResolver) {
+            const resolve = pendingResolver;
+            pendingResolver = null;
+            resolve(value);
+          } else {
+            pendingInputs.push(value);
+          }
+        };
         const oceanUI = useTui
           ? new OceanChatUI({
               provider: config.providerType,
@@ -1520,6 +1531,7 @@ export function createCLI(): Command {
           : null;
 
         oceanUI?.captureConsole();
+        oceanUI?.enableContinuousChat(enqueueInput);
 
         const handleExit = async () => {
           const finalStats = await sessionTracker.endSession();
@@ -1538,7 +1550,12 @@ export function createCLI(): Command {
 
         const askQuestion = async (): Promise<string> => {
           if (oceanUI) {
-            return oceanUI.prompt();
+            if (pendingInputs.length > 0) {
+              return pendingInputs.shift() as string;
+            }
+            return new Promise<string>((resolve) => {
+              pendingResolver = resolve;
+            });
           }
           return ChatBoxUI.handleInput({
             provider: config.providerType,
