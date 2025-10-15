@@ -9,13 +9,22 @@ import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
  */
 export interface MCPServerConfig {
   /** Command to execute (e.g., 'npx', 'node') */
-  command: string;
+  command?: string;
 
   /** Arguments to pass to the command */
-  args: string[];
+  args?: string[];
+
+  /** Remote server URL (when using HTTP/WebSocket transports) */
+  url?: string;
+
+  /** Transport type */
+  transport?: 'stdio' | 'websocket' | 'streaming-http';
 
   /** Environment variables */
   env?: Record<string, string>;
+
+  /** Additional HTTP headers (streaming-http transport) */
+  headers?: Record<string, string>;
 
   /** Whether this server is enabled */
   enabled: boolean;

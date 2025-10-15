@@ -5,6 +5,8 @@
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { spawn, type ChildProcess } from 'child_process';
 import chalk from 'chalk';
 import type {
@@ -19,7 +21,7 @@ import { resolveEnvVars } from './config.js';
 
 export class MCPClient {
   private client: Client;
-  private transport?: StdioClientTransport;
+  private transport?: any;
   private process?: ChildProcess;
   private connected = false;
   private serverName: string;
@@ -52,49 +54,12 @@ export class MCPClient {
     try {
       console.log(chalk.gray(`  🔌 Connecting to MCP server: ${this.serverName}...`));
 
-      // Spawn the server process
-      this.process = spawn(this.config.command, this.config.args, {
-        env: {
-          ...process.env,
-          ...this.config.env,
-        },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      // Handle process errors
-      this.process.on('error', (error) => {
-        console.error(
-          chalk.red(`  ❌ Failed to start ${this.serverName}:`),
-          error.message
-        );
-      });
-
-      this.process.stderr?.on('data', (data) => {
-        const message = data.toString();
-        if (message.trim()) {
-          console.error(chalk.yellow(`  ⚠️  ${this.serverName}:`), message);
-        }
-      });
-
-      // Create transport
-      const transportEnv: Record<string, string> = {};
-      for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined) {
-          transportEnv[key] = value;
-        }
-      }
-      if (this.config.env) {
-        Object.assign(transportEnv, this.config.env);
+      if (this.config.url) {
+        await this.connectViaUrl();
+      } else {
+        await this.connectViaProcess();
       }
 
-      this.transport = new StdioClientTransport({
-        command: this.config.command,
-        args: this.config.args,
-        env: transportEnv,
-      });
-
-      // Connect client
-      await this.client.connect(this.transport);
       this.connected = true;
 
       // Load capabilities
@@ -113,6 +78,79 @@ export class MCPClient {
         }`
       );
     }
+  }
+
+  private async connectViaProcess(): Promise<void> {
+    const command = this.config.command;
+    if (!command) {
+      throw new Error(
+        `Server ${this.serverName} is missing a command configuration`
+      );
+    }
+
+    const args = this.config.args ?? [];
+
+    // Spawn the server process for logging / lifecycle management
+    this.process = spawn(command, args, {
+      env: {
+        ...process.env,
+        ...this.config.env,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    this.process.on('error', (error) => {
+      console.error(
+        chalk.red(`  ❌ Failed to start ${this.serverName}:`),
+        error.message
+      );
+    });
+
+    this.process.stderr?.on('data', (data) => {
+      const message = data.toString();
+      if (message.trim()) {
+        console.error(chalk.yellow(`  ⚠️  ${this.serverName}:`), message);
+      }
+    });
+
+    const transportEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined) {
+        transportEnv[key] = value;
+      }
+    }
+    if (this.config.env) {
+      Object.assign(transportEnv, this.config.env);
+    }
+
+    this.transport = new StdioClientTransport({
+      command,
+      args,
+      env: transportEnv,
+    });
+
+    await this.client.connect(this.transport);
+  }
+
+  private async connectViaUrl(): Promise<void> {
+    const url = this.config.url!;
+    const urlInstance = new URL(url);
+    const transportType =
+      this.config.transport ??
+      (url.toLowerCase().startsWith('ws') ? 'websocket' : 'streaming-http');
+
+    if (transportType === 'websocket') {
+      this.transport = new WebSocketClientTransport(urlInstance);
+    } else {
+      const headers = this.config.headers ?? {};
+      this.transport = new StreamableHTTPClientTransport(urlInstance, {
+        requestInit: {
+          headers,
+        },
+      });
+    }
+
+    await this.client.connect(this.transport);
   }
 
   /**
@@ -282,6 +320,9 @@ export class MCPClient {
     if (this.connected) {
       try {
         await this.client.close();
+        if (typeof (this.transport as any)?.close === 'function') {
+          await (this.transport as any).close();
+        }
         this.process?.kill();
         this.connected = false;
         console.log(chalk.gray(`  🔌 Disconnected from ${this.serverName}`));

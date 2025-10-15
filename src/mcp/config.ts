@@ -74,6 +74,13 @@ const DEFAULT_MCP_CONFIG: MCPConfig = {
       description: 'GitHub API integration (repos, issues, PRs, search)',
       timeout: 30000,
     },
+    'figma-desktop': {
+      url: 'http://127.0.0.1:3845/mcp',
+      transport: 'streaming-http',
+      enabled: false,
+      description: 'Access designs from a running Figma Desktop instance',
+      timeout: 30000,
+    },
   },
   mcp: {
     autoStart: false,
@@ -228,6 +235,24 @@ export function resolveEnvVars(config: MCPServerConfig): MCPServerConfig {
         resolved.env[key] = value;
       }
     }
+  }
+
+  if (config.headers) {
+    resolved.headers = {};
+    for (const [key, value] of Object.entries(config.headers)) {
+      const match = value.match(/^\$\{(.+)\}$/);
+      if (match) {
+        const envVar = match[1];
+        resolved.headers[key] = process.env[envVar] || value;
+      } else {
+        resolved.headers[key] = value;
+      }
+    }
+  }
+
+  if (config.url) {
+    const match = config.url.match(/^\$\{(.+)\}$/);
+    resolved.url = match ? process.env[match[1]] || config.url : config.url;
   }
 
   return resolved;

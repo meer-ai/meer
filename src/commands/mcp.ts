@@ -60,6 +60,16 @@ function createListCommand(): Command {
           if (serverConfig.description) {
             console.log(`          ${chalk.gray(serverConfig.description)}`);
           }
+          if (serverConfig.url) {
+            console.log(`          ${chalk.gray(`URL: ${serverConfig.url}`)}`);
+            if (serverConfig.transport) {
+              console.log(`          ${chalk.gray(`Transport: ${serverConfig.transport}`)}`);
+            }
+          } else if (serverConfig.command) {
+            const args = serverConfig.args?.join(' ') ?? '';
+            const commandLine = args ? `${serverConfig.command} ${args}` : serverConfig.command;
+            console.log(`          ${chalk.gray(commandLine)}`);
+          }
         }
 
         console.log('');
