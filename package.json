@@ -18,7 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build",
-    "test": "echo \"No tests yet\" && exit 0",
+    "test": "tsx scripts/verify-langchain-tools.ts",
     "release": "./scripts/release.sh"
   },
   "keywords": [
@@ -41,6 +41,7 @@
   "dependencies": {
     "@babel/parser": "^7.28.4",
     "@babel/traverse": "^7.28.4",
+    "@langchain/core": "^0.3.78",
     "@modelcontextprotocol/sdk": "^1.19.1",
     "@types/inquirer": "^9.0.9",
     "blessed": "^0.1.81",
@@ -54,6 +55,7 @@
     "glob": "^11.0.0",
     "gpt-tokenizer": "^3.0.1",
     "inquirer": "^12.9.6",
+    "langchain": "^0.3.36",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
     "open": "^10.2.0",

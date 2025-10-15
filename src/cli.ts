@@ -1555,7 +1555,15 @@ export function createCLI(): Command {
     await showWelcomeScreen();
 
     const { loadConfig } = await import("./config.js");
+    const agentMode = (process.env.MEER_AGENT || "").toLowerCase();
+    const useLangChainAgent = agentMode === "langchain";
     const { AgentWorkflowV2 } = await import("./agent/workflow-v2.js");
+    let LangChainAgentWorkflow: any;
+    if (useLangChainAgent) {
+      ({ LangChainAgentWorkflow } = await import(
+        "./agent/langchainWorkflow.js"
+      ));
+    }
 
     let restarting = false;
 
@@ -1565,27 +1573,34 @@ export function createCLI(): Command {
       try {
         let config = loadConfig();
 
+        const providerType = config.providerType ?? "unknown";
+
         ProjectContextManager.getInstance().configureEmbeddings({
           enabled: config.contextEmbedding?.enabled ?? false,
           dimensions: config.contextEmbedding?.dimensions,
           maxFileSize: config.contextEmbedding?.maxFileSize,
         });
 
-        const sessionTracker = new SessionTracker(
-          config.providerType,
-          config.model
-        );
+        const sessionTracker = new SessionTracker(providerType, config.model);
 
-        const agent = new AgentWorkflowV2({
-          provider: config.provider,
-          cwd: process.cwd(),
-          maxIterations: config.maxIterations,
-          providerType: config.providerType,
-          model: config.model,
-          sessionTracker,
-        });
+        const agent = useLangChainAgent && LangChainAgentWorkflow
+          ? new LangChainAgentWorkflow({
+              provider: config.provider,
+              cwd: process.cwd(),
+              maxIterations: config.maxIterations,
+              providerType,
+              model: config.model,
+              sessionTracker,
+            })
+          : new AgentWorkflowV2({
+              provider: config.provider,
+              cwd: process.cwd(),
+              maxIterations: config.maxIterations,
+              providerType,
+              model: config.model,
+              sessionTracker,
+            });
 
-        // Simple initialization - no forced context loading
         await agent.initialize();
 
         const useTui =
@@ -1604,7 +1619,7 @@ export function createCLI(): Command {
         };
         const oceanUI = useTui
           ? new OceanChatUI({
-              provider: config.providerType,
+              provider: providerType,
               model: config.model,
               cwd: process.cwd(),
               showWorkflowPanel: false,
@@ -1639,7 +1654,7 @@ export function createCLI(): Command {
             });
           }
           return ChatBoxUI.handleInput({
-            provider: config.providerType,
+            provider: providerType,
             model: config.model,
             cwd: process.cwd(),
           });
@@ -1650,7 +1665,7 @@ export function createCLI(): Command {
         while (!exitRequested && !restarting) {
           if (!oceanUI) {
             ChatBoxUI.renderStatusBar({
-              provider: config.providerType,
+              provider: providerType,
               model: config.model,
               cwd: process.cwd(),
             });
@@ -1734,7 +1749,7 @@ export function createCLI(): Command {
                 ? () => oceanUI.startAssistantMessage()
                 : undefined,
               onAssistantChunk: oceanUI
-                ? (chunk) => oceanUI.appendAssistantChunk(chunk)
+                ? (chunk: string) => oceanUI.appendAssistantChunk(chunk)
                 : undefined,
               onAssistantEnd: oceanUI
                 ? () => oceanUI.finishAssistantMessage()
@@ -1773,6 +1788,7 @@ export function createCLI(): Command {
           break;
         }
       } catch (error) {
+        console.error(error);
         console.error(
           chalk.red("\n❌ Failed to start chat session:"),
           error instanceof Error ? error.message : String(error)
