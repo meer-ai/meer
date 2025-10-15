@@ -46,9 +46,16 @@ export class SuggestionManager {
   }
 
   private async getSlashSuggestions(input: string): Promise<SuggestionItem[]> {
-    const command = input.split(" ")[0];
-    if (command.length <= 1) {
+    const command = input.split(" ")[0] ?? "";
+    if (!command) {
       return [];
+    }
+    if (command === "/") {
+      return this.slashCommands.slice(0, this.maxSlashItems).map((cmd) => ({
+        source: "slash" as const,
+        label: cmd,
+        apply: () => cmd,
+      }));
     }
 
     const needle = command.toLowerCase();

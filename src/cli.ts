@@ -15,6 +15,7 @@ import { createLoginCommand } from "./commands/login.js";
 import { createLogoutCommand } from "./commands/logout.js";
 import { createWhoamiCommand } from "./commands/whoami.js";
 import { createIndexCommand } from "./commands/indexCmd.js";
+import { handleVersion } from "./commands/version.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { WorkflowTimeline, type Timeline } from "./ui/workflowTimeline.js";
@@ -367,8 +368,8 @@ async function handleImageFileRequest(
  * Extract file path from user input
  */
 function extractFilePath(userInput: string): string | null {
-  // Debug: show the raw input
-  console.log(chalk.gray(`  🔍 Raw input: "${userInput}"`));
+  // Only surface path-parsing traces when verbose logging is enabled
+  logVerbose(chalk.gray(`  🔍 Raw input: "${userInput}"`));
 
   // Method 1: Manual parsing for paths with escaped spaces
   // Look for the start of a path and manually parse until we hit a non-escaped space
@@ -401,7 +402,7 @@ function extractFilePath(userInput: string): string | null {
 
     if (path.length > 1) {
       const cleanedPath = path.trim();
-      console.log(
+      logVerbose(
         chalk.gray(`  🔧 Method 1 - Manual parsing: "${cleanedPath}"`)
       );
       return cleanedPath;
@@ -413,7 +414,7 @@ function extractFilePath(userInput: string): string | null {
   const pathWithEscapedSpaces = userInput.match(/(\/[^\s]+(?:\\\s[^\s]*)*)/);
   if (pathWithEscapedSpaces) {
     const cleanedPath = pathWithEscapedSpaces[1].replace(/\\\s/g, " ").trim();
-    console.log(
+    logVerbose(
       chalk.gray(
         `  🔧 Method 2 - Found path with escaped spaces: "${cleanedPath}"`
       )
@@ -425,7 +426,7 @@ function extractFilePath(userInput: string): string | null {
   const pathWithBackslashes = userInput.match(/(\/[^\s]+(?:\\[^\s]*)*)/);
   if (pathWithBackslashes) {
     const cleanedPath = pathWithBackslashes[1].replace(/\\\s/g, " ").trim();
-    console.log(
+    logVerbose(
       chalk.gray(
         `  🔧 Method 3 - Found path with backslashes: "${cleanedPath}"`
       )
@@ -440,7 +441,7 @@ function extractFilePath(userInput: string): string | null {
   if (escapedMatch) {
     // Clean up the path by removing backslashes before spaces
     const cleanedPath = escapedMatch[1].replace(/\\\s/g, " ").trim();
-    console.log(chalk.gray(`  🔧 Cleaned escaped path: "${cleanedPath}"`));
+    logVerbose(chalk.gray(`  🔧 Cleaned escaped path: "${cleanedPath}"`));
     return cleanedPath;
   }
 
@@ -449,7 +450,7 @@ function extractFilePath(userInput: string): string | null {
   const usersPathMatch = userInput.match(usersPathPattern);
   if (usersPathMatch) {
     const cleanedPath = usersPathMatch[0].replace(/\\\s/g, " ").trim();
-    console.log(chalk.gray(`  🔧 Cleaned /Users path: "${cleanedPath}"`));
+    logVerbose(chalk.gray(`  🔧 Cleaned /Users path: "${cleanedPath}"`));
     return cleanedPath;
   }
 
@@ -458,7 +459,7 @@ function extractFilePath(userInput: string): string | null {
   const absolutePathMatch = userInput.match(absolutePathPattern);
   if (absolutePathMatch) {
     const cleanedPath = absolutePathMatch[0].replace(/\\\s/g, " ").trim();
-    console.log(chalk.gray(`  🔧 Cleaned absolute path: "${cleanedPath}"`));
+    logVerbose(chalk.gray(`  🔧 Cleaned absolute path: "${cleanedPath}"`));
     return cleanedPath;
   }
 
@@ -467,7 +468,7 @@ function extractFilePath(userInput: string): string | null {
   const windowsPathMatch = userInput.match(windowsPathPattern);
   if (windowsPathMatch) {
     const cleanedPath = windowsPathMatch[0].replace(/\\\s/g, " ").trim();
-    console.log(chalk.gray(`  🔧 Cleaned Windows path: "${cleanedPath}"`));
+    logVerbose(chalk.gray(`  🔧 Cleaned Windows path: "${cleanedPath}"`));
     return cleanedPath;
   }
 
@@ -476,7 +477,7 @@ function extractFilePath(userInput: string): string | null {
   const relativePathMatch = userInput.match(relativePathPattern);
   if (relativePathMatch) {
     const cleanedPath = relativePathMatch[0].replace(/\\\s/g, " ").trim();
-    console.log(chalk.gray(`  🔧 Cleaned relative path: "${cleanedPath}"`));
+    logVerbose(chalk.gray(`  🔧 Cleaned relative path: "${cleanedPath}"`));
     return cleanedPath;
   }
 
@@ -484,7 +485,7 @@ function extractFilePath(userInput: string): string | null {
   const parentPathMatch = userInput.match(parentPathPattern);
   if (parentPathMatch) {
     const cleanedPath = parentPathMatch[0].replace(/\\\s/g, " ").trim();
-    console.log(chalk.gray(`  🔧 Cleaned parent path: "${cleanedPath}"`));
+    logVerbose(chalk.gray(`  🔧 Cleaned parent path: "${cleanedPath}"`));
     return cleanedPath;
   }
 
@@ -493,7 +494,7 @@ function extractFilePath(userInput: string): string | null {
   const anyPathMatch = userInput.match(anyPathPattern);
   if (anyPathMatch) {
     const cleanedPath = anyPathMatch[1].replace(/\\\s/g, " ").trim();
-    console.log(chalk.gray(`  🔧 Cleaned any path: "${cleanedPath}"`));
+    logVerbose(chalk.gray(`  🔧 Cleaned any path: "${cleanedPath}"`));
     return cleanedPath;
   }
 
@@ -508,6 +509,24 @@ async function handleSlashCommand(
   const [cmd, ...args] = command.split(" ");
 
   switch (cmd) {
+    case "/ask":
+      if (args.length === 0) {
+        console.log(
+          chalk.gray("\nTip: use /ask <question>. Example: /ask What does main.ts do?\n")
+        );
+        return "continue";
+      }
+      await runStandaloneCommand(createAskCommand, args);
+      return "continue";
+
+    case "/commit-msg":
+      await runStandaloneCommand(createCommitMsgCommand, args);
+      return "continue";
+
+    case "/index":
+      await runStandaloneCommand(createIndexCommand, args);
+      return "continue";
+
     case "/init":
       await handleInitCommand();
       return "continue"; // Continue chat session
@@ -547,6 +566,22 @@ async function handleSlashCommand(
       await handleAccountCommand();
       return "continue"; // Continue chat session
 
+    case "/login":
+      await runStandaloneCommand(createLoginCommand, args);
+      return "continue";
+
+    case "/logout":
+      await runStandaloneCommand(createLogoutCommand, args);
+      return "continue";
+
+    case "/mcp":
+      await runStandaloneCommand(createMCPCommand, args);
+      return "continue";
+
+    case "/memory":
+      await runStandaloneCommand(createMemoryCommand, args);
+      return "continue";
+
     case "/model":
       await handleModelCommand(config);
       return "continue"; // Continue chat session
@@ -555,9 +590,21 @@ async function handleSlashCommand(
       await handleProviderCommand();
       return "restart"; // Need to restart to load new provider
 
+    case "/review":
+      await runStandaloneCommand(createReviewCommand, args);
+      return "continue";
+
     case "/setup":
       await handleSetupCommand();
       return "restart"; // Need to restart to load new configuration
+
+    case "/version":
+      await handleVersion();
+      return "continue";
+
+    case "/whoami":
+      await runStandaloneCommand(createWhoamiCommand, args);
+      return "continue";
 
     case "/exit":
       console.log(chalk.gray("Exiting chat session..."));
@@ -567,6 +614,40 @@ async function handleSlashCommand(
       console.log(chalk.red(`Unknown command: ${cmd}`));
       console.log(chalk.gray("Type /help for available commands"));
       return "continue"; // Continue chat session
+  }
+}
+
+
+async function runStandaloneCommand(
+  factory: () => Command,
+  args: string[] = []
+): Promise<void> {
+  const command = factory();
+  command.exitOverride();
+  command.configureOutput({
+    writeOut: (str) => process.stdout.write(str),
+    writeErr: (str) => process.stderr.write(str),
+    outputError: (str, write) => write(chalk.red(str)),
+  });
+
+  try {
+    await command.parseAsync(args, { from: "user" });
+  } catch (error) {
+    const err = error as { code?: string; exitCode?: number; message?: string };
+    if (err?.code === "commander.helpDisplayed" || err?.code === "commander.version") {
+      return;
+    }
+    if (typeof err?.exitCode === "number") {
+      if (err.exitCode === 0) {
+        return;
+      }
+      const message = err.message ?? "Command exited with an error.";
+      console.log(chalk.red(`
+⚠ ${message.trim()}
+`));
+      return;
+    }
+    throw error;
   }
 }
 

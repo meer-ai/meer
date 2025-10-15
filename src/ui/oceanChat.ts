@@ -8,11 +8,14 @@ import type {
   InfoOptions as TimelineInfoOptions,
   TaskOptions as TimelineTaskOptions,
 } from "./workflowTimeline.js";
-import { InputController, type InputMode } from "./inputController.js";
+import type { InputMode } from "./inputController.js";
 import {
   SuggestionManager,
   type SuggestionItem,
 } from "./suggestionManager.js";
+import { DEFAULT_IGNORE_GLOBS } from "../tools/index.js";
+import { slashCommands as slashCommandDefinitions } from "./slashCommands.js";
+import { AuthStorage } from "../auth/storage.js";
 
 const PALETTE = {
   background: "#011627",
@@ -26,17 +29,9 @@ const PALETTE = {
   muted: "#64748b",
 };
 
-const BUILTIN_SLASH_COMMANDS = [
-  "/help",
-  "/init",
-  "/stats",
-  "/account",
-  "/setup",
-  "/provider",
-  "/model",
-  "/history",
-  "/exit",
-];
+const BUILTIN_SLASH_COMMANDS = slashCommandDefinitions.map(
+  (entry) => entry.command
+);
 
 type MessageRole = "user" | "assistant" | "system" | "workflow";
 
@@ -66,9 +61,9 @@ type InputState = "idle" | "suggesting" | "submitting";
 
 export class OceanChatUI {
   private screen: blessed.Widgets.Screen;
+  private headerBox: blessed.Widgets.BoxElement;
   private chatBox: blessed.Widgets.BoxElement;
-  private inputBox: blessed.Widgets.TextboxElement;
-  private inputController!: InputController;
+  private inputBox: blessed.Widgets.BoxElement;
   private statusBar: blessed.Widgets.BoxElement;
   private timelineEntries: TimelineEntry[] = [];
   private timelineSequence = 0;
@@ -94,11 +89,21 @@ export class OceanChatUI {
     loadedAt: number;
   } | null = null;
   private suggestionTimeout?: NodeJS.Timeout;
-  private suggestionsList?: blessed.Widgets.ListElement;
+  private suggestionsBox?: blessed.Widgets.BoxElement;
   private suggestionManager: SuggestionManager;
   private inputMode: InputMode = null;
   private inputState: InputState = "idle";
   private lastStatusContent = "";
+  private currentSuggestions: SuggestionItem[] = [];
+  private suggestionIndex = 0;
+  private inputBuffer = "";
+  private cursorIndex = 0;
+  private keypressHandler?: (
+    ch: string,
+    key: blessed.Widgets.Events.IKeyEventArg
+  ) => void;
+  private activeUserName: string | null = null;
+  private mouseCaptureEnabled = false;
 
   constructor(config: OceanChatConfig) {
     this.config = config;
@@ -117,11 +122,29 @@ export class OceanChatUI {
     this.screen.program.setupTput();
     this.screen.program.alternateBuffer();
     this.screen.program.hideCursor();
+    this.enableMouseCapture(true);
+
+    this.activeUserName = this.loadActiveUserName();
+
+    this.headerBox = blessed.box({
+      parent: this.screen,
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 3,
+      tags: true,
+      border: { type: "line", fg: PALETTE.border as any },
+      style: {
+        fg: PALETTE.text,
+        bg: "#02223a",
+        border: { fg: PALETTE.border },
+      },
+    });
 
     // Single conversation box that includes everything
     this.chatBox = blessed.box({
       parent: this.screen,
-      top: 0,
+      top: 3,
       left: 0,
       right: 0,
       bottom: 4,
@@ -144,8 +167,8 @@ export class OceanChatUI {
       },
     });
 
-    // Textbox for reliable input handling
-    this.inputBox = blessed.textbox({
+    // Prompt display (we manage input manually for full control)
+    this.inputBox = blessed.box({
       parent: this.screen,
       bottom: 1,
       left: 0,
@@ -158,29 +181,7 @@ export class OceanChatUI {
         bg: PALETTE.background,
         border: { fg: PALETTE.border },
       },
-      keys: true,
-      mouse: true,
-      inputOnFocus: false,
-    });
-
-    this.inputController = new InputController({
-      textbox: this.inputBox,
-      screen: this.screen,
-      onSubmit: (value) => {
-        void this.handleInputSubmit(value);
-      },
-      onCancel: () => {
-        this.handleInputCancel();
-      },
-      onChange: (value) => {
-        this.handleInputChange(value);
-      },
-      onModeChange: (mode) => {
-        this.handleModeChange(mode);
-      },
-      onKeypress: (value, key) => {
-        this.handleInputKeypress(value, key);
-      },
+      tags: true,
     });
 
     this.suggestionManager = new SuggestionManager({
@@ -204,6 +205,8 @@ export class OceanChatUI {
     this.bindKeys();
     this.renderStatus();
     this.renderMessages();
+    this.postWelcomeMessage();
+    this.initializeInputHandling();
 
     this.screen.render();
 
@@ -211,10 +214,114 @@ export class OceanChatUI {
     this.refocusInput();
   }
 
+  private initializeInputHandling(): void {
+    this.renderInput();
+    this.keypressHandler = (ch, key) => {
+      this.handleKeypress(ch ?? "", key);
+    };
+    this.screen.on("keypress", this.keypressHandler);
+  }
+
   // Helper to keep input alive
   private refocusInput(): void {
-    this.inputController.focus();
+    this.renderInput();
     this.screen.render();
+  }
+
+  private renderInput(): void {
+    const prefix = "{cyan-fg}> {/}";
+    if (this.inputBuffer.length === 0) {
+      this.inputBox.setContent(`${prefix}{gray-fg}Type a message...{/}`);
+      return;
+    }
+
+    const cursor = Math.max(0, Math.min(this.cursorIndex, this.inputBuffer.length));
+    const before = this.escapeForTags(this.inputBuffer.slice(0, cursor));
+    const rawChar =
+      cursor < this.inputBuffer.length ? this.inputBuffer[cursor] : "";
+    const after =
+      cursor < this.inputBuffer.length
+        ? this.escapeForTags(this.inputBuffer.slice(cursor + 1))
+        : "";
+    const cursorLabel =
+      rawChar === "\n"
+        ? "\\n"
+        : rawChar
+        ? this.escapeForTags(rawChar)
+        : " ";
+    const cursorDisplay = `{inverse}${(cursorLabel || " ").slice(0, 1)}{/}`;
+    const full = `${before}${cursorDisplay}${after}`;
+    const formatted = full.replace(/\n/g, "\n  ");
+    this.inputBox.setContent(`${prefix}${formatted}`);
+  }
+
+  private scrollChat(amount: number): void {
+    if (!amount) {
+      return;
+    }
+    this.chatBox.scroll(amount);
+    this.screen.render();
+  }
+
+  private renderHeader(): void {
+    if (!this.headerBox) {
+      return;
+    }
+    this.headerBox.setContent(this.buildHeaderContent());
+  }
+
+  private buildHeaderContent(): string {
+    const wave = "{cyan-fg}~{/}{blue-fg}≈{/}{cyan-fg}~{/}";
+    const title = `{bold}{cyan-fg}🌊 Meer AI Interactive Session{/cyan-fg}{/bold}`;
+    const providerLine = `${wave} {cyan-fg}⚙{/} {white-fg}${this.escapeForTags(this.config.provider)}:${this.escapeForTags(this.config.model)}{/}  {gray-fg}${this.escapeForTags(this.shortenPath(this.config.cwd, 48))}{/}`;
+    const userLine = this.activeUserName
+      ? `{green-fg}🧑  Signed in as{/} {white-fg}${this.escapeForTags(this.activeUserName)}{/}`
+      : `{yellow-fg}🧑  Not signed in{/} {gray-fg}(run "meer login" to sync){/}`;
+    return `${title}\n${providerLine}\n${userLine}`;
+  }
+
+  private escapeForTags(value: string): string {
+    if (!value) {
+      return "";
+    }
+    return value.replace(/\{/g, "\\{").replace(/\}/g, "\\}");
+  }
+
+  private shortenPath(value: string, maxLength: number): string {
+    if (value.length <= maxLength) {
+      return value;
+    }
+    return `...${value.slice(-(maxLength - 3))}`;
+  }
+
+  private loadActiveUserName(): string | null {
+    try {
+      const storage = new AuthStorage();
+      if (!storage.isAuthenticated()) {
+        return null;
+      }
+      const user = storage.getUser();
+      if (!user) {
+        return null;
+      }
+      return user.name || user.email || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private postWelcomeMessage(): void {
+    const lines = [
+      "🌊 Welcome to Meer AI!",
+      "Tip: Type /help for slash commands or '@' to mention files.",
+      "Press F2 to toggle text selection mode.",
+    ];
+    if (this.activeUserName) {
+      lines.push(`Signed in as ${this.activeUserName}.`);
+    } else {
+      lines.push('You are not signed in. Run "meer login" to enable cloud features.');
+    }
+    this.appendSystemMessage(lines.join("\n"));
   }
 
   // Resolve @ mentions in user input
@@ -307,24 +414,22 @@ export class OceanChatUI {
     try {
       const files = await glob("**/*", {
         cwd,
-        ignore: [
-          "node_modules/**",
-          ".git/**",
-          "dist/**",
-          "build/**",
-          "coverage/**",
-          "*.log",
-          ".DS_Store",
-        ],
+        nodir: true,
+        dot: false,
+        ignore: DEFAULT_IGNORE_GLOBS,
       });
+
+      const normalized = files
+        .map((file) => this.normalizePath(file))
+        .filter((file) => Boolean(file && file.trim()));
 
       this.fileCache = {
         cwd,
-        files,
+        files: normalized,
         loadedAt: Date.now(),
       };
 
-      return files;
+      return normalized;
     } catch (error) {
       return [];
     }
@@ -356,7 +461,7 @@ export class OceanChatUI {
   }
 
   private async refreshSuggestions(): Promise<void> {
-    const currentValue = this.inputController.getValue();
+    const currentValue = this.inputBuffer;
 
     if (!currentValue || (!currentValue.startsWith("/") && !currentValue.includes("@"))) {
       this.hideSuggestions();
@@ -365,7 +470,7 @@ export class OceanChatUI {
 
     const suggestions = await this.suggestionManager.getSuggestions(currentValue);
 
-    if (this.inputController.getValue() !== currentValue) {
+    if (this.inputBuffer !== currentValue) {
       return;
     }
 
@@ -384,12 +489,13 @@ export class OceanChatUI {
     this.hideSuggestions();
     this.setInputState("suggesting");
 
-    // Create a new suggestions list - position it above the input
-    const visibleSuggestions = suggestions.slice(0, 8);
-    const height = Math.min(visibleSuggestions.length, 8) + 2;
-    this.suggestionsList = blessed.list({
+    // Create a lightweight overlay above the input
+    this.currentSuggestions = suggestions.slice(0, 8);
+    this.suggestionIndex = 0;
+    const height = Math.min(this.currentSuggestions.length, 8) + 2;
+    this.suggestionsBox = blessed.box({
       parent: this.screen,
-      bottom: 4, // chatBox ends at bottom:4, so this sits right above input
+      bottom: 4,
       left: 0,
       right: 0,
       height,
@@ -398,56 +504,321 @@ export class OceanChatUI {
         fg: PALETTE.text,
         bg: PALETTE.background,
         border: { fg: PALETTE.border },
-        selected: { bg: PALETTE.primary, fg: PALETTE.background },
       },
-      keys: true,
-      mouse: true,
       tags: true,
-      scrollable: true,
-      alwaysScroll: true,
-      items: visibleSuggestions.map((item) => item.label),
+      mouse: true,
     });
 
-    // Handle selection
-    this.suggestionsList.on("select", (item, index) => {
-      const selectedSuggestion = visibleSuggestions[index];
-      if (!selectedSuggestion) {
-        return;
-      }
-
-      const currentValue = this.inputController.getValue();
-      const nextValue = selectedSuggestion.apply(currentValue);
-      this.inputController.setValue(nextValue, { silent: true });
-      this.handleModeChange(this.deriveInputMode(nextValue));
-      this.hideSuggestions();
-      this.refocusInput(); // <- not just focus(); restarts readInput()
+    this.renderSuggestions();
+    this.suggestionsBox.on("wheelup", () => {
+      this.suggestionIndex = Math.max(0, this.suggestionIndex - 1);
+      this.renderSuggestions();
+      this.screen.render();
     });
-
-    // Handle escape to close
-    this.suggestionsList.key(["escape"], () => {
-      this.hideSuggestions();
-      this.refocusInput();
+    this.suggestionsBox.on("wheeldown", () => {
+      this.suggestionIndex = Math.min(
+        this.currentSuggestions.length - 1,
+        this.suggestionIndex + 1
+      );
+      this.renderSuggestions();
+      this.screen.render();
     });
-
-    // Close on blur
-    this.suggestionsList.on("blur", () => this.hideSuggestions());
-
-    // Focus the suggestions list
-    this.suggestionsList.focus();
     this.screen.render();
+    this.refocusInput();
+  }
+
+  private renderSuggestions(): void {
+    if (!this.suggestionsBox) {
+      return;
+    }
+    if (this.currentSuggestions.length === 0) {
+      this.suggestionsBox.setContent("");
+      return;
+    }
+
+    if (this.suggestionIndex >= this.currentSuggestions.length) {
+      this.suggestionIndex = Math.max(0, this.currentSuggestions.length - 1);
+    }
+
+    const lines = this.currentSuggestions.map((item, index) => {
+      const isActive = index === this.suggestionIndex;
+      const bullet = isActive ? "{cyan-fg}> {/}" : "  ";
+      const label = isActive
+        ? `{cyan-fg}${item.label}{/}`
+        : item.label;
+      return `${bullet}${label}`;
+    });
+
+    lines.push("{gray-fg}Tab to insert · Esc to close{/}");
+    this.suggestionsBox.setContent(lines.join("\n"));
   }
 
   // Hide suggestions list
   private hideSuggestions(): void {
-    if (this.suggestionsList) {
-      this.suggestionsList.detach();
-      this.suggestionsList.destroy();
-      this.suggestionsList = undefined;
+    if (this.suggestionsBox) {
+      this.suggestionsBox.detach();
+      this.suggestionsBox.destroy();
+      this.suggestionsBox = undefined;
       this.screen.render();
     }
+    this.currentSuggestions = [];
+    this.suggestionIndex = 0;
     if (this.inputState === "suggesting") {
       this.setInputState("idle");
     }
+  }
+
+  private setInputValue(
+    value: string,
+    cursor?: number,
+    options: { emitChange?: boolean } = {}
+  ): void {
+    this.inputBuffer = value;
+    this.cursorIndex = Math.max(
+      0,
+      Math.min(cursor ?? value.length, value.length)
+    );
+    this.renderInput();
+    const shouldEmit = options.emitChange !== false;
+    if (shouldEmit) {
+      void this.handleInputChange(this.inputBuffer);
+    }
+    this.handleModeChange(this.deriveInputMode(this.inputBuffer));
+  }
+
+  private insertText(text: string): void {
+    if (!text) return;
+    const before = this.inputBuffer.slice(0, this.cursorIndex);
+    const after = this.inputBuffer.slice(this.cursorIndex);
+    this.setInputValue(before + text + after, this.cursorIndex + text.length);
+  }
+
+  private deleteBackward(): void {
+    if (this.cursorIndex === 0) return;
+    const before = this.inputBuffer.slice(0, this.cursorIndex - 1);
+    const after = this.inputBuffer.slice(this.cursorIndex);
+    this.setInputValue(before + after, this.cursorIndex - 1);
+  }
+
+  private deleteForward(): void {
+    if (this.cursorIndex >= this.inputBuffer.length) return;
+    const before = this.inputBuffer.slice(0, this.cursorIndex);
+    const after = this.inputBuffer.slice(this.cursorIndex + 1);
+    this.setInputValue(before + after, this.cursorIndex);
+  }
+
+  private moveCursor(delta: number): void {
+    if (delta === 0) return;
+    const next = Math.max(
+      0,
+      Math.min(this.cursorIndex + delta, this.inputBuffer.length)
+    );
+    if (next === this.cursorIndex) return;
+    this.cursorIndex = next;
+    this.renderInput();
+    this.screen.render();
+  }
+
+  private handleKeypress(
+    ch: string,
+    key: blessed.Widgets.Events.IKeyEventArg
+  ): void {
+    if (!key) {
+      return;
+    }
+    if (!this.promptActive) {
+      return;
+    }
+
+    if (!this.suggestionsBox) {
+      if (key.name === "pageup") {
+        this.scrollChat(-10);
+        return;
+      }
+      if (key.name === "pagedown") {
+        this.scrollChat(10);
+        return;
+      }
+      if (key.ctrl && key.name === "up") {
+        this.scrollChat(-1);
+        return;
+      }
+      if (key.ctrl && key.name === "down") {
+        this.scrollChat(1);
+        return;
+      }
+    }
+
+    if (key.ctrl && key.name === "c") {
+      return; // let global handler process Ctrl+C
+    }
+
+    if (this.handleSuggestionNavigation(key)) {
+      return;
+    }
+
+    if (key.name === "enter" || key.name === "return") {
+      if (key.shift) {
+        this.insertText("\n");
+      } else {
+        const raw = this.inputBuffer;
+        if (!raw.trim()) {
+          this.setInputValue("", 0, { emitChange: false });
+          this.renderInput();
+          this.screen.render();
+          return;
+        }
+        this.submitInput(raw);
+      }
+      return;
+    }
+
+    if (key.name === "backspace") {
+      this.deleteBackward();
+      return;
+    }
+
+    if (key.name === "delete") {
+      this.deleteForward();
+      return;
+    }
+
+    if (key.name === "left") {
+      this.moveCursor(-1);
+      return;
+    }
+
+    if (key.name === "right") {
+      this.moveCursor(1);
+      return;
+    }
+
+    if (key.name === "home") {
+      this.cursorIndex = 0;
+      this.renderInput();
+      this.screen.render();
+      return;
+    }
+
+    if (key.name === "end") {
+      this.cursorIndex = this.inputBuffer.length;
+      this.renderInput();
+      this.screen.render();
+      return;
+    }
+
+    if (key.name === "escape") {
+      if (this.suggestionsBox) {
+        this.hideSuggestions();
+        this.refocusInput();
+      } else {
+        this.handleInputCancel();
+      }
+      return;
+    }
+
+    if (key.ctrl && key.name === "u") {
+      this.setInputValue("", 0);
+      return;
+    }
+
+    if (key.ctrl && key.name === "a") {
+      this.cursorIndex = 0;
+      this.renderInput();
+      this.screen.render();
+      return;
+    }
+
+    if (key.ctrl && key.name === "e") {
+      this.cursorIndex = this.inputBuffer.length;
+      this.renderInput();
+      this.screen.render();
+      return;
+    }
+
+    if (ch && !key.ctrl && !key.meta) {
+      this.insertText(ch);
+    }
+  }
+
+  private handleSuggestionNavigation(
+    key: blessed.Widgets.Events.IKeyEventArg
+  ): boolean {
+    if (!this.suggestionsBox) {
+      return false;
+    }
+
+    if (
+      key.name === "tab" &&
+      !key.shift &&
+      !key.ctrl &&
+      !key.meta
+    ) {
+      this.applySuggestion();
+      return true;
+    }
+
+    if (
+      (key.name === "enter" || key.name === "return") &&
+      !key.shift &&
+      !key.ctrl &&
+      !key.meta
+    ) {
+      this.applySuggestion();
+      return true;
+    }
+
+    if (key.name === "down") {
+      this.suggestionIndex = Math.min(
+        this.currentSuggestions.length - 1,
+        this.suggestionIndex + 1
+      );
+      this.renderSuggestions();
+      this.screen.render();
+      return true;
+    }
+
+    if (key.name === "up" || key.full === "S-tab") {
+      this.suggestionIndex = Math.max(0, this.suggestionIndex - 1);
+      this.renderSuggestions();
+      this.screen.render();
+      return true;
+    }
+
+    if (key.name === "escape") {
+      this.hideSuggestions();
+      this.refocusInput();
+      return true;
+    }
+
+    return false;
+  }
+
+  private applySuggestion(index?: number): void {
+    if (!this.currentSuggestions.length) {
+      return;
+    }
+    const selectedIndex =
+      typeof index === "number" ? index : this.suggestionIndex;
+    this.suggestionIndex = selectedIndex;
+    const suggestion = this.currentSuggestions[selectedIndex] ?? this.currentSuggestions[0];
+    if (!suggestion) {
+      return;
+    }
+
+    const currentValue = this.inputBuffer;
+    const nextValue = suggestion.apply(currentValue);
+    this.setInputValue(nextValue);
+    this.hideSuggestions();
+    this.refocusInput();
+  }
+
+  private submitInput(raw: string): void {
+    this.setInputValue("", 0, { emitChange: false });
+    this.handleModeChange(null);
+    this.renderInput();
+    this.screen.render();
+    void this.handleInputSubmit(raw);
   }
 
   private deriveInputMode(value: string): InputMode {
@@ -515,6 +886,13 @@ export class OceanChatUI {
 
   private async handleInputSubmit(raw: string): Promise<void> {
     const value = raw.trim();
+      if (/^`[^`]+`$/.test(value)) {
+        this.appendSystemMessage("{gray-fg}Add a short note along with the file mention before sending.{/}");
+        this.setInputValue(`${value} `, value.length + 1, { emitChange: false });
+        this.screen.render();
+        return;
+      }
+
     this.setInputState("submitting");
     this.hideSuggestions();
 
@@ -525,6 +903,12 @@ export class OceanChatUI {
       }
 
       if (value.startsWith("/")) {
+        if (this.onSubmit) {
+          this.onSubmit(value);
+          this.refocusInput();
+          return;
+        }
+
         const shouldContinue = await this.handleSlashCommand(value);
         this.refocusInput();
         if (!shouldContinue) {
@@ -558,7 +942,7 @@ export class OceanChatUI {
     this.hideSuggestions();
 
     if (this.onSubmit) {
-      this.inputController.clear({ silent: true });
+      this.setInputValue("", 0, { emitChange: false });
       this.handleModeChange(null);
       this.refocusInput();
       this.setInputState("idle");
@@ -572,28 +956,6 @@ export class OceanChatUI {
 
     this.finishPrompt("");
     this.setInputState("idle");
-  }
-
-  private handleInputKeypress(
-    value: string,
-    key: blessed.Widgets.Events.IKeyEventArg
-  ): void {
-    if (key.name === "enter" && key.shift) {
-      if (this.onSubmit) {
-        this.inputController.setValue(`${value}\n`, { silent: true });
-        this.handleModeChange(this.deriveInputMode(this.inputController.getValue()));
-        this.screen.render();
-        return;
-      }
-
-      if (!this.promptActive) {
-        return;
-      }
-
-      this.inputController.setValue(`${value}\n`, { silent: true });
-      this.handleModeChange(this.deriveInputMode(this.inputController.getValue()));
-      this.screen.render();
-    }
   }
 
   // Show slash command help
@@ -675,6 +1037,10 @@ export class OceanChatUI {
     if (this.promptActive) {
       this.promptRejecter?.(new Error("UI destroyed"));
     }
+    if (this.keypressHandler) {
+      this.screen.off("keypress", this.keypressHandler);
+      this.keypressHandler = undefined;
+    }
     this.hideSuggestions();
     this.restoreConsole();
     this.stopStatusSpinner();
@@ -687,7 +1053,7 @@ export class OceanChatUI {
   enableContinuousChat(onSubmit: (text: string) => void): void {
     this.onSubmit = onSubmit;
     this.promptActive = true;
-    this.inputController.clear({ silent: true });
+    this.setInputValue("", 0, { emitChange: false });
     this.handleModeChange(null);
     this.refocusInput();
   }
@@ -705,8 +1071,7 @@ export class OceanChatUI {
       this.promptRejecter = reject;
 
       // Clear input and focus
-      this.inputController.clear({ silent: true });
-      this.inputController.setValue("", { silent: true });
+      this.setInputValue("", 0, { emitChange: false });
       this.handleModeChange(null);
       this.refocusInput();
     });
@@ -846,25 +1211,13 @@ export class OceanChatUI {
     });
 
     // Enable scrolling with arrow keys
-    this.chatBox.key(["up"], () => {
-      this.chatBox.scroll(-1);
-      this.screen.render();
-    });
-
-    this.chatBox.key(["down"], () => {
-      this.chatBox.scroll(1);
-      this.screen.render();
-    });
-
-    this.chatBox.key(["pageup"], () => {
-      this.chatBox.scroll(-10);
-      this.screen.render();
-    });
-
-    this.chatBox.key(["pagedown"], () => {
-      this.chatBox.scroll(10);
-      this.screen.render();
-    });
+    this.chatBox.key(["up"], () => this.scrollChat(-1));
+    this.chatBox.key(["down"], () => this.scrollChat(1));
+    this.chatBox.key(["pageup"], () => this.scrollChat(-10));
+    this.chatBox.key(["pagedown"], () => this.scrollChat(10));
+    this.chatBox.on("wheelup", () => this.scrollChat(-3));
+    this.chatBox.on("wheeldown", () => this.scrollChat(3));
+    this.screen.key(["f2"], () => this.toggleMouseCapture());
   }
 
   private finishPrompt(value: string): void {
@@ -873,7 +1226,7 @@ export class OceanChatUI {
     this.promptRejecter = null;
     this.promptActive = false;
 
-    this.inputController.clear({ silent: true });
+    this.setInputValue("", 0, { emitChange: false });
     this.handleModeChange(null);
     this.refocusInput();
     this.updateStatusBar();
@@ -882,14 +1235,15 @@ export class OceanChatUI {
   }
 
   private renderStatus(): void {
-    const cwd =
-      this.config.cwd.length > 35
-        ? `...${this.config.cwd.slice(-32)}`
-        : this.config.cwd;
-    this.footerStatic = `{gray-fg}${cwd}{/}  {cyan-fg}●{/} {white-fg}${this.config.provider}:${this.config.model}{/}`;
+    const cwdLabel = this.escapeForTags(this.shortenPath(this.config.cwd, 40));
+    const providerLabel = `${this.escapeForTags(this.config.provider)}:${this.escapeForTags(this.config.model)}`;
+    const userSegment = this.activeUserName
+      ? `  {yellow-fg}@{/} {white-fg}${this.escapeForTags(this.activeUserName)}{/}`
+      : `  {yellow-fg}@{/} {gray-fg}guest{/}`;
+    this.footerStatic = `{gray-fg}${cwdLabel}{/}  {cyan-fg}⚙{/} {white-fg}${providerLabel}{/}${userSegment}`;
+    this.renderHeader();
     this.updateStatusBar();
   }
-
   private formatForChat(raw: string): string {
     const parts: string[] = [];
     const regex = /```([a-zA-Z0-9+-_.]*)?\n([\s\S]*?)```/g;
@@ -912,6 +1266,11 @@ export class OceanChatUI {
     return parts.join("");
   }
 
+  private decorateAssistantContent(raw: string): string {
+    const formatted = this.formatForChat(raw);
+    return this.highlightAssistantMarkup(formatted);
+  }
+
   private renderCodeBlock(code: string, lang: string): string {
     const safe = this.escape(code);
     const title = lang ? ` {gray-fg}[${lang}]{/}` : "";
@@ -923,6 +1282,105 @@ export class OceanChatUI {
     );
   }
 
+  private highlightAssistantMarkup(content: string): string {
+    let result = content;
+
+    result = result.replace(/^(Thinking.*)$/gm, (line) => `{cyan-fg}${line}{/}`);
+    result = result.replace(/^(Tokens:.*)$/gm, (line) => `{gray-fg}${line}{/}`);
+    result = result.replace(/^(Iteration\s+\d+\/\d+)/gm, (line) => `{yellow-fg}${line}{/}`);
+    result = result.replace(/Executing\s+\d+\s+tool\(s\)\.\.\./g, (line) => `{magenta-fg}${line}{/}`);
+
+    result = result.replace(/<tool name="([^"]+)"([^>]*)>/g, (_match, name, attrs) => {
+      const friendly = this.getFriendlyToolLabel(name);
+      const attrMatches = Array.from(attrs.matchAll(/(\w+)="([^"]*)"/g)) as RegExpMatchArray[];
+      const attrDisplay = attrMatches
+        .map((match) => {
+          const key = match[1] ?? "";
+          const val = match[2] ?? "";
+          return `{green-fg}${this.escapeForTags(key)}{/}{gray-fg}="${this.escapeForTags(val)}"{/}`;
+        })
+        .join("  ");
+      return attrDisplay
+        ? `{cyan-fg}🛠  ${friendly}{/}  ${attrDisplay}`
+        : `{cyan-fg}🛠  ${friendly}{/}`;
+    });
+
+    result = result.replace(/<\/tool>/g, `{cyan-fg}🛠  done{/}`);
+    result = result.replace(/^(\s*)([a-z_]+)\s+running$/gm, (_match, indent, tool) =>
+      `${indent}{cyan-fg}🛠  ${this.getFriendlyToolLabel(tool)} running{/}`
+    );
+
+    return result;
+  }
+
+  private getFriendlyToolLabel(name: string): string {
+    const normalized = name.toLowerCase();
+    const labels: Record<string, string> = {
+      analyze_project: "Analyze Project",
+      read_file: "Read File",
+      read_many_files: "Read Files",
+      read_folder: "Read Folder",
+      list_files: "List Files",
+      find_files: "Find Files",
+      search_text: "Search Text",
+      grep: "Grep",
+      run_command: "Run Command",
+      propose_edit: "Edit / Create File",
+      write_file: "Write File",
+      edit_line: "Edit Line",
+      save_memory: "Save Memory",
+      load_memory: "Load Memory",
+      google_search: "Google Search",
+      web_fetch: "Fetch Web",
+      read_image: "Read Image",
+      read_many_images: "Read Images",
+      git_status: "Git Status",
+      git_diff: "Git Diff",
+      git_log: "Git Log",
+      git_commit: "Git Commit",
+      git_branch: "Git Branch",
+    };
+    if (labels[normalized]) {
+      return labels[normalized];
+    }
+    return this.toTitleCase(normalized.replace(/_/g, " "));
+  }
+
+  private toTitleCase(value: string): string {
+    return value.replace(/\b\w+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1));
+  }
+
+
+  private toggleMouseCapture(): void {
+    if (this.mouseCaptureEnabled) {
+      this.disableMouseCapture();
+    } else {
+      this.enableMouseCapture();
+    }
+  }
+
+  private enableMouseCapture(silent = false): void {
+    if (this.mouseCaptureEnabled) {
+      return;
+    }
+    this.mouseCaptureEnabled = true;
+    (this.screen as any).enableMouse?.();
+    (this.screen.program as any).enableMouse?.();
+    if (!silent) {
+      this.appendSystemMessage("{gray-fg}Mouse capture re-enabled. Press F2 again to enter selection mode.{/}");
+    }
+  }
+
+  private disableMouseCapture(): void {
+    if (!this.mouseCaptureEnabled) {
+      return;
+    }
+    this.mouseCaptureEnabled = false;
+    (this.screen as any).disableMouse?.();
+    (this.screen.program as any).disableMouse?.();
+    this.appendSystemMessage("{yellow-fg}Selection mode active.{/} {gray-fg}Click and drag to highlight text. Press F2 to resume interactive mode.{/}");
+  }
+
   private renderMessages(): void {
     const lines: string[] = [];
 
@@ -932,7 +1390,7 @@ export class OceanChatUI {
         const content = this.escape(message.content);
         lines.push(`\n{cyan-fg}>{/} {bold}${content}{/}\n`);
       } else if (message.role === "assistant") {
-        const content = this.formatForChat(message.content);
+        const content = this.decorateAssistantContent(message.content);
         if (content.trim()) {
           lines.push(`{cyan-fg}●{/} ${content}\n`);
         }
