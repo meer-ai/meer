@@ -1,0 +1,42 @@
+name: "Feature request"
+description: "Suggest an idea or improvement for Meer AI"
+labels:
+  - enhancement
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We love ideas that make Meer AI better for everyone. Please share your proposal with as much detail as possible.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence that captures the feature or improvement.
+      placeholder: "Add support for ..."
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What problem does this solve? Why is it important?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe your idea. Include mockups, commands, or pseudo-code if helpful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Did you consider other options or workarounds?
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else we should know (linked issues, related discussions, etc.).

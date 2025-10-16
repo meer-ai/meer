@@ -1,0 +1,65 @@
+name: "Bug report"
+description: "Report a reproducible problem in Meer AI"
+labels:
+  - bug
+  - needs-triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out a bug report! Please include as much detail as you can so we can help quickly.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where does the issue occur?
+      options:
+        - CLI / terminal interface
+        - LangChain workflow
+        - Agent workflow
+        - MCP integration
+        - Tooling / plugins
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: "What happened? What did you expect to happen instead?"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Please provide detailed steps and include command output or logs where possible.
+      placeholder: |
+        1. Run `meer ...`
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment details
+      description: Operating system, shell, Node.js version, provider configuration, etc.
+      placeholder: |
+        - OS: Windows 11
+        - Shell: PowerShell
+        - Node.js version: 20.x
+        - Meer AI version: 0.x
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Drag and drop logs, stack traces, or screenshots that help illustrate the problem.
+      render: shell
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other information you think may be helpful.
