@@ -112,6 +112,28 @@ MEER_AGENT=langchain meer ask "Refactor the provider registry"
 
 ---
 
+## Tracing with LangSmith
+
+MeerAI can emit LangChain traces to [LangSmith](https://smith.langchain.com/) (or a self-hosted LangChain endpoint). Set the following environment variables before starting `meer`:
+
+```bash
+export LANGCHAIN_TRACING_V2="true"
+export LANGCHAIN_API_KEY="sk-..."        # LangSmith API key
+export LANGCHAIN_PROJECT="meer-ai-cli"   # optional, defaults to "default"
+# optional for self-hosting:
+# export LANGCHAIN_ENDPOINT="https://api.smith.langchain.com"
+```
+
+Then launch the CLI with the LangChain agent:
+
+```bash
+MEER_AGENT=langchain meer
+```
+
+Every conversation turn is streamed to LangSmith with the built-in callback manager. Disable tracing by unsetting `LANGCHAIN_TRACING_V2`.
+
+---
+
 ## Agent Workflows
 
 ### Classic (`MEER_AGENT=classic` or unset)

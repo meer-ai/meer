@@ -7,7 +7,6 @@ import type { FileEdit, ToolResult } from "../../tools/index.js";
 import * as tools from "../../tools/index.js";
 import type { Provider } from "../../providers/base.js";
 import type { MCPTool } from "../../mcp/types.js";
-
 export interface MeerLangChainToolContext {
   cwd: string;
   provider?: Provider;
@@ -22,6 +21,10 @@ export interface MeerLangChainToolContext {
     toolName: string,
     input: Record<string, unknown>
   ) => Promise<string>;
+  /**
+   * Ask the user before running shell commands.
+   */
+  confirmCommand?: (command: string) => Promise<boolean>;
 }
 
 export interface MeerLangChainToolOptions {
@@ -108,6 +111,15 @@ async function ensureEditApproval(
   return context.reviewFileEdit(edit);
 }
 
+async function ensureCommandApproval(
+  context: MeerLangChainToolContext,
+  command: string
+): Promise<boolean> {
+  if (!context.confirmCommand) {
+    return true;
+  }
+  return context.confirmCommand(command);
+}
 async function callMeerTool(
   name: string,
   input: Record<string, unknown>,
@@ -121,7 +133,11 @@ async function callMeerTool(
       return unwrap(tools.readFile(String(input.path), context.cwd));
     }
     case "list_files": {
-      const path = input.path ? String(input.path) : ".";
+      const rawPath = input.path;
+      const path =
+        typeof rawPath === "string" && rawPath.trim().length > 0
+          ? rawPath
+          : ".";
       return unwrap(tools.listFiles(path, context.cwd));
     }
     case "propose_edit": {
@@ -138,7 +154,14 @@ async function callMeerTool(
       return unwrap(tools.applyEdit(edit, context.cwd));
     }
     case "run_command": {
-      const command = String(input.command);
+      const rawCommand = input.command;
+      const command = typeof rawCommand === "string" ? rawCommand.trim() : "";
+      if (!command) {
+        throw new Error("run_command requires a command string.");
+      }
+      if (!(await ensureCommandApproval(context, command))) {
+        return `⚠️ Command cancelled: ${command}`;
+      }
       const timeoutMs =
         input.timeoutMs !== undefined ? Number(input.timeoutMs) : undefined;
       const result = await tools.runCommand(command, context.cwd, {
@@ -1663,7 +1686,10 @@ export function createMeerLangChainTools(
       new DynamicStructuredTool({
         name,
         description,
-        schema,
+        schema:
+          schema instanceof z.ZodObject
+            ? schema.catchall(z.any()).passthrough()
+            : schema,
         func: async (input) =>
           execute(input as Record<string, unknown>, context),
       })
@@ -1682,7 +1708,10 @@ export function createMeerLangChainTools(
     return new DynamicStructuredTool({
       name: tool.name,
       description,
-      schema,
+      schema:
+        schema instanceof z.ZodObject
+          ? schema.catchall(z.any()).passthrough()
+          : schema,
       func: async (input) => {
         if (!context.executeMcpTool) {
           throw new Error(

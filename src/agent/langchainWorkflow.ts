@@ -66,6 +66,11 @@ export class LangChainAgentWorkflow {
     choices: Array<{ label: string; value: string }>,
     defaultValue: string
   ) => Promise<string>;
+  private promptChoice?: (
+    message: string,
+    choices: Array<{ label: string; value: string }>,
+    defaultValue: string
+  ) => Promise<string>;
 
   constructor(config: LangChainAgentConfig) {
     this.provider = config.provider;
@@ -120,6 +125,7 @@ export class LangChainAgentWorkflow {
         cwd: this.cwd,
         provider: this.provider,
         reviewFileEdit: async (edit) => this.reviewFileEdit(edit),
+        confirmCommand: async (command) => this.confirmCommand(command),
         executeMcpTool: (toolName, params) =>
           this.executeMcpTool(toolName, params),
       },
@@ -371,6 +377,7 @@ export class LangChainAgentWorkflow {
     } finally {
       this.runWithTerminal = undefined;
       this.promptChoice = undefined;
+      this.promptChoice = undefined;
     }
   }
 
@@ -560,6 +567,43 @@ export class LangChainAgentWorkflow {
       diffLines.slice(maxLines).forEach((line) => console.log(line));
       console.log(chalk.gray("└─\n"));
     }
+  }
+
+  private async confirmCommand(command: string): Promise<boolean> {
+    if (this.promptChoice) {
+      const choice = await this.promptChoice(
+        `Run shell command: ${command}`,
+        [
+          { label: "Run command", value: "run" },
+          { label: "Cancel", value: "cancel" },
+        ],
+        "run"
+      );
+      return choice === "run";
+    }
+
+    console.log(chalk.bold.yellow(`\n[Command] preview`));
+    console.log(chalk.gray(`   ${command}\n`));
+
+    const { action } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "action",
+        message: `Run "${command}"?`,
+        choices: [
+          { name: "Run command", value: "run" },
+          { name: "Cancel", value: "cancel" },
+        ],
+        default: "run",
+      },
+    ]);
+
+    if (action === "run") {
+      return true;
+    }
+
+    console.log(chalk.yellow(`\n[Command] cancelled: ${command}\n`));
+    return false;
   }
 }
 

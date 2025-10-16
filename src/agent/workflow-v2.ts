@@ -492,9 +492,18 @@ export class AgentWorkflowV2 {
           return `⏭️ Edit skipped for ${edit.path}. You can apply it manually later if needed.`;
         }
 
-      case "run_command":
-        const cmdResult = await tools.runCommand(params.command, this.cwd);
+      case "run_command": {
+        const command =
+          params.command !== undefined ? String(params.command) : "";
+        if (!command) {
+          return "run_command requires a command string.";
+        }
+        if (!(await this.confirmCommand(command))) {
+          return `⚠️ Command cancelled: ${command}`;
+        }
+        const cmdResult = await tools.runCommand(command, this.cwd, params);
         return cmdResult.error ? cmdResult.error : cmdResult.result;
+      }
 
       case "find_files":
         const findResult = tools.findFiles(
@@ -916,4 +925,42 @@ export class AgentWorkflowV2 {
     }
     return task();
   }
+
+  private async confirmCommand(command: string): Promise<boolean> {
+    if (this.promptChoice) {
+      const choice = await this.promptChoice(
+        `Run shell command: ${command}`,
+        [
+          { label: "Run command", value: "run" },
+          { label: "Cancel", value: "cancel" },
+        ],
+        "run"
+      );
+      return choice === "run";
+    }
+
+    console.log(chalk.bold.yellow(`\n[Command] preview`));
+    console.log(chalk.gray(`   ${command}\n`));
+
+    const { action } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "action",
+        message: `Run "${command}"?`,
+        choices: [
+          { name: "Run command", value: "run" },
+          { name: "Cancel", value: "cancel" },
+        ],
+        default: "run",
+      },
+    ]);
+
+    if (action === "run") {
+      return true;
+    }
+
+    console.log(chalk.yellow(`\n[Command] cancelled: ${command}\n`));
+    return false;
+  }
+
 }
