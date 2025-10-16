@@ -990,7 +990,7 @@ You: "Font error fixed. Now let me verify the .env file has a real API key."
 Stay concise, professional, and helpful. Use markdown and code blocks for clarity.`;
 }
 
-function renderMcpToolsSection(mcpTools: MCPTool[]): string {
+export function renderMcpToolsSection(mcpTools: MCPTool[]): string {
   if (mcpTools.length === 0) return "";
 
   let section = "\n## Additional MCP Tools\n\n";

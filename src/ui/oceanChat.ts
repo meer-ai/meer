@@ -1047,6 +1047,10 @@ export class OceanChatUI {
     this.stopStatusSpinner();
     this.screen.program.showCursor();
     this.screen.program.normalBuffer();
+    const input: any = this.screen.program?.input ?? process.stdin;
+    if (input?.isTTY && typeof input.setRawMode === "function") {
+      input.setRawMode(false);
+    }
     this.screen.destroy();
   }
 

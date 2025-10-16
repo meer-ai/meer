@@ -66,6 +66,18 @@ export class ProviderChatModel extends BaseChatModel<BaseChatModelCallOptions> {
     return `meer-provider:${providerType}`;
   }
 
+  /**
+   * Implements bindTools for LangChain 0.3+ compatibility.
+   * For StructuredChatAgent, tools are handled through prompts rather than native tool calling,
+   * so we return the same instance without modification.
+   */
+  bindTools(_tools: any[], _kwargs?: any): this {
+    // StructuredChatAgent doesn't use native tool calling via bindTools
+    // It formats tools in the prompt instead
+    // So we simply return this instance without binding anything
+    return this;
+  }
+
   async _generate(
     messages: BaseMessage[],
     options?: BaseChatModelCallOptions

@@ -15,6 +15,12 @@ import type {
 import { loadMCPConfig, getEnabledServers } from './config.js';
 import { MCPClient } from './client.js';
 import { logVerbose } from '../logger.js';
+import {
+  withMCPConnectionTelemetry,
+  log,
+  mcpConnectionsTotal,
+  mcpActiveConnections
+} from '../telemetry/index.js';
 
 export class MCPManager {
   private static instance: MCPManager;
@@ -70,10 +76,15 @@ export class MCPManager {
         successCount++;
       } else {
         failCount++;
+        const serverName = serverNames[index];
         console.error(
-          chalk.red(`  ❌ Failed to connect to ${serverNames[index]}:`),
+          chalk.red(`  ❌ Failed to connect to ${serverName}:`),
           result.reason
         );
+
+        // Track connection failure in metrics
+        mcpConnectionsTotal.inc({ server_name: serverName, status: 'failure' });
+        log.mcp(serverName, 'error', { error: result.reason });
       }
     });
 
@@ -114,9 +125,15 @@ export class MCPManager {
       throw new Error(`Server ${serverName} is not enabled`);
     }
 
-    const client = new MCPClient(serverName, serverConfig);
-    await client.connect();
-    this.clients.set(serverName, client);
+    await withMCPConnectionTelemetry(serverName, async () => {
+      const client = new MCPClient(serverName, serverConfig);
+      await client.connect();
+      this.clients.set(serverName, client);
+
+      // Update metrics
+      mcpConnectionsTotal.inc({ server_name: serverName, status: 'success' });
+      mcpActiveConnections.inc({ server_name: serverName });
+    });
   }
 
   /**
@@ -127,6 +144,10 @@ export class MCPManager {
     if (client) {
       await client.disconnect();
       this.clients.delete(serverName);
+
+      // Update metrics
+      mcpActiveConnections.dec({ server_name: serverName });
+      log.mcp(serverName, 'disconnect');
     }
   }
 
@@ -185,6 +206,24 @@ export class MCPManager {
    * Execute a tool on the appropriate server
    */
   async executeTool(toolName: string, params: any): Promise<MCPToolResult> {
+    // Validate tool name format
+    if (!toolName || typeof toolName !== 'string') {
+      return {
+        success: false,
+        content: [],
+        error: `Invalid tool name: expected non-empty string, got "${String(toolName)}"`,
+      };
+    }
+
+    const toolNameRegex = /^[a-z0-9_-]+\.[a-z0-9_.-]+$/i;
+    if (!toolNameRegex.test(toolName)) {
+      return {
+        success: false,
+        content: [],
+        error: `Invalid tool name format. Expected "serverName.toolName" (alphanumeric with dots, dashes, underscores), got "${toolName}"`,
+      };
+    }
+
     // Parse server name from tool name (format: "serverName.toolName")
     const parts = toolName.split('.');
     if (parts.length < 2) {
@@ -198,24 +237,121 @@ export class MCPManager {
     const serverName = parts[0];
     const actualToolName = parts.slice(1).join('.');
 
+    // Check if server exists
     const client = this.clients.get(serverName);
     if (!client) {
+      const availableServers = Array.from(this.clients.keys()).sort();
+      const suggestion = this.findClosestServerName(serverName, availableServers);
+
       return {
         success: false,
         content: [],
-        error: `Server "${serverName}" is not connected`,
+        error: [
+          `MCP server "${serverName}" not found.`,
+          availableServers.length > 0
+            ? `Available servers: ${availableServers.join(', ')}`
+            : 'No MCP servers are currently connected.',
+          suggestion ? `Did you mean "${suggestion}"?` : '',
+          `\nTip: Use \`meer /mcp list\` to see all available servers and tools.`
+        ].filter(Boolean).join('\n')
       };
     }
 
+    // Check if server is connected
     if (!client.isConnected()) {
       return {
         success: false,
         content: [],
-        error: `Server "${serverName}" is not connected`,
+        error: `Server "${serverName}" is not connected. Please check the server status and try again.`,
+      };
+    }
+
+    // Validate tool exists on server
+    const availableTools = client.getTools();
+    const toolExists = availableTools.some(t => t.originalName === actualToolName);
+    if (!toolExists) {
+      const availableToolNames = availableTools.map(t => t.originalName).sort();
+      const toolSuggestion = this.findClosestToolName(actualToolName, availableToolNames);
+
+      return {
+        success: false,
+        content: [],
+        error: [
+          `Tool "${actualToolName}" not found on server "${serverName}".`,
+          availableToolNames.length > 0
+            ? `Available tools: ${availableToolNames.join(', ')}`
+            : `Server "${serverName}" has no tools available.`,
+          toolSuggestion ? `Did you mean "${serverName}.${toolSuggestion}"?` : ''
+        ].filter(Boolean).join('\n')
       };
     }
 
     return await client.executeTool(actualToolName, params);
+  }
+
+  /**
+   * Find closest server name using simple edit distance
+   */
+  private findClosestServerName(input: string, available: string[]): string | null {
+    if (available.length === 0) return null;
+
+    const distances = available.map(name => ({
+      name,
+      distance: this.levenshteinDistance(input.toLowerCase(), name.toLowerCase())
+    }));
+
+    const closest = distances.sort((a, b) => a.distance - b.distance)[0];
+    // Only suggest if distance is <= 3 (reasonable typo)
+    return closest.distance <= 3 ? closest.name : null;
+  }
+
+  /**
+   * Find closest tool name using simple edit distance
+   */
+  private findClosestToolName(input: string, available: string[]): string | null {
+    if (available.length === 0) return null;
+
+    const distances = available.map(name => ({
+      name,
+      distance: this.levenshteinDistance(input.toLowerCase(), name.toLowerCase())
+    }));
+
+    const closest = distances.sort((a, b) => a.distance - b.distance)[0];
+    // Only suggest if distance is <= 3 (reasonable typo)
+    return closest.distance <= 3 ? closest.name : null;
+  }
+
+  /**
+   * Calculate Levenshtein distance between two strings
+   */
+  private levenshteinDistance(str1: string, str2: string): number {
+    const len1 = str1.length;
+    const len2 = str2.length;
+    const matrix: number[][] = [];
+
+    for (let i = 0; i <= len1; i++) {
+      matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= len2; j++) {
+      matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= len1; i++) {
+      for (let j = 1; j <= len2; j++) {
+        if (str1[i - 1] === str2[j - 1]) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1, // substitution
+            matrix[i][j - 1] + 1,     // insertion
+            matrix[i - 1][j] + 1      // deletion
+          );
+        }
+      }
+    }
+
+    return matrix[len1][len2];
   }
 
   /**

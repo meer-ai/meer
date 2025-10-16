@@ -45,6 +45,99 @@ interface ToolDefinition<TSchema extends z.ZodTypeAny> {
 
 const FALLBACK_SCHEMA = z.object({}).catchall(z.any());
 
+type ToolName = string;
+
+const PRIMITIVE_INPUT_COERCIONS: Record<
+  ToolName,
+  (value: string) => Record<string, unknown>
+> = {
+  read_file: (value) => ({ path: value }),
+  list_files: (value) => ({ path: value }),
+  read_folder: (value) => ({ path: value }),
+  run_command: (value) => ({ command: value }),
+  find_files: (value) => ({ pattern: value }),
+  search_text: (value) => ({ term: value }),
+  grep: (value) => {
+    const [path, pattern] = value.split(/\s+/, 2);
+    if (pattern) {
+      return { path, pattern };
+    }
+    return { path: ".", pattern: value };
+  },
+};
+
+function parseJsonIfPossible(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      // fall through
+    }
+  }
+  return raw;
+}
+
+function coercePrimitiveInput(name: string, raw: unknown): unknown {
+  if (typeof raw !== "string") {
+    return raw;
+  }
+  const jsonCandidate = parseJsonIfPossible(raw);
+  if (jsonCandidate !== raw) {
+    return jsonCandidate;
+  }
+
+  const coercer = PRIMITIVE_INPUT_COERCIONS[name];
+  if (coercer) {
+    return coercer(raw.trim());
+  }
+
+  return raw;
+}
+
+function normalizeToolInputValue(name: string, raw: unknown): unknown {
+  if (raw === null || raw === undefined) {
+    return {};
+  }
+
+  if (
+    typeof raw === "object" &&
+    raw !== null &&
+    "action_input" in (raw as Record<string, unknown>)
+  ) {
+    const actionInput = (raw as Record<string, unknown>).action_input;
+    return normalizeToolInputValue(name, actionInput);
+  }
+
+  return coercePrimitiveInput(name, raw);
+}
+
+function adaptSchemaForAgent(
+  name: string,
+  schema: z.ZodTypeAny
+): {
+  schema: z.ZodTypeAny;
+  validate: (raw: unknown) => any;
+} {
+  const baseSchema =
+    schema instanceof z.ZodObject
+      ? schema.catchall(z.any()).passthrough()
+      : schema;
+
+  const validate = (raw: unknown) => {
+    const normalized = normalizeToolInputValue(name, raw);
+    return baseSchema.parse(normalized);
+  };
+
+  return {
+    schema: z.any(),
+    validate,
+  };
+}
+
 function jsonSchemaToZod(schema?: MCPTool["inputSchema"]): z.ZodTypeAny {
   if (!schema) {
     return FALLBACK_SCHEMA;
@@ -821,8 +914,15 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     schema: z.object({
       path: z.string().min(1, "path is required"),
     }),
-    execute: (input, context) =>
-      callMeerTool("read_file", input as Record<string, unknown>, context),
+    execute: (input, context) => {
+      const normalized =
+        typeof input === "string" ? { path: input } : (input ?? {});
+      return callMeerTool(
+        "read_file",
+        normalized as Record<string, unknown>,
+        context
+      );
+    },
   },
   {
     name: "list_files",
@@ -830,8 +930,15 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     schema: z.object({
       path: z.string().optional(),
     }),
-    execute: (input, context) =>
-      callMeerTool("list_files", input as Record<string, unknown>, context),
+    execute: (input, context) => {
+      const normalized =
+        typeof input === "string" ? { path: input } : (input ?? {});
+      return callMeerTool(
+        "list_files",
+        normalized as Record<string, unknown>,
+        context
+      );
+    },
   },
   {
     name: "propose_edit",
@@ -1682,17 +1789,18 @@ export function createMeerLangChainTools(
   options: MeerLangChainToolOptions = {}
 ): StructuredToolInterface[] {
   const builtinTools = baseToolDefinitions.map(
-    ({ name, description, schema, execute }) =>
-      new DynamicStructuredTool({
+    ({ name, description, schema, execute }) => {
+      const { schema: lcSchema, validate } = adaptSchemaForAgent(name, schema);
+      return new DynamicStructuredTool({
         name,
         description,
-        schema:
-          schema instanceof z.ZodObject
-            ? schema.catchall(z.any()).passthrough()
-            : schema,
-        func: async (input) =>
-          execute(input as Record<string, unknown>, context),
-      })
+        schema: lcSchema,
+        func: async (input) => {
+          const parsed = validate(input);
+          return execute(parsed as Record<string, unknown>, context);
+        },
+      });
+    }
   );
 
   const mcpTools = (options.mcpTools ?? []).map((tool) => {

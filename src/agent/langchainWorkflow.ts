@@ -8,9 +8,9 @@ import {
 } from "@langchain/core/prompts";
 import {
   AgentExecutor,
-  StructuredChatAgent,
   createStructuredChatAgent,
 } from "langchain/agents";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
   AIMessage,
   HumanMessage,
@@ -20,7 +20,7 @@ import {
 import type { Provider, ChatMessage } from "../providers/base.js";
 import { createMeerLangChainTools } from "./tools/langchain.js";
 import { ProviderChatModel } from "./langchain/providerChatModel.js";
-import { buildAgentSystemPrompt } from "./prompts/systemPrompt.js";
+import { buildLangChainSystemPrompt } from "./prompts/langchainSystemPrompt.js";
 import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
 import type { MCPTool, MCPToolResult } from "../mcp/types.js";
@@ -32,6 +32,119 @@ import {
 } from "../token/utils.js";
 import { generateDiff, applyEdit, type FileEdit } from "../tools/index.js";
 import type { Timeline } from "../ui/workflowTimeline.js";
+import {
+  log,
+  llmRequestsTotal,
+  llmLatency,
+  llmTokensTotal,
+  contextWindowUsage,
+  contextPruningEvents,
+} from "../telemetry/index.js";
+
+function normalizeAgentOutput(value: unknown): string {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeAgentOutput(item)).join("");
+  }
+
+  if (typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+
+    if (typeof candidate.text === "string") {
+      return candidate.text;
+    }
+
+    if ("message" in candidate) {
+      return normalizeAgentOutput(candidate.message);
+    }
+
+    if ("output" in candidate) {
+      return normalizeAgentOutput(candidate.output);
+    }
+
+    if ("content" in candidate) {
+      return normalizeAgentOutput(candidate.content);
+    }
+
+    try {
+      return JSON.stringify(candidate);
+    } catch {
+      return String(candidate);
+    }
+  }
+
+  return String(value);
+}
+
+interface ActionDirective {
+  action: string;
+  input: unknown;
+}
+
+function tryParseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function parseActionDirective(raw: unknown): ActionDirective | null {
+  if (raw === null || raw === undefined) {
+    return null;
+  }
+
+  let candidate: unknown = raw;
+
+  if (typeof raw === "string") {
+    candidate = tryParseJson(raw.trim());
+  }
+
+  if (Array.isArray(candidate)) {
+    for (const item of candidate) {
+      const parsed = parseActionDirective(item);
+      if (parsed) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  if (typeof candidate !== "object") {
+    return null;
+  }
+
+  const record = candidate as Record<string, unknown>;
+  const action =
+    typeof record.action === "string"
+      ? record.action
+      : typeof record.tool === "string"
+      ? record.tool
+      : typeof record.name === "string"
+      ? record.name
+      : null;
+
+  if (!action) {
+    return null;
+  }
+
+  const input =
+    record.args ??
+    record.arguments ??
+    record.action_input ??
+    record.input ??
+    record.parameters ??
+    {};
+
+  return { action, input };
+}
 
 export interface LangChainAgentConfig {
   provider: Provider;
@@ -58,14 +171,11 @@ export class LangChainAgentWorkflow {
   private chatTimeout: number;
   private messages: ChatMessage[] = [];
   private executor?: AgentExecutor;
+  private tools: StructuredToolInterface[] = [];
+  private toolMap = new Map<string, StructuredToolInterface>();
   private mcpManager = MCPManager.getInstance();
   private mcpTools: MCPTool[] = [];
   private runWithTerminal?: <T>(fn: () => Promise<T>) => Promise<T>;
-  private promptChoice?: (
-    message: string,
-    choices: Array<{ label: string; value: string }>,
-    defaultValue: string
-  ) => Promise<string>;
   private promptChoice?: (
     message: string,
     choices: Array<{ label: string; value: string }>,
@@ -105,7 +215,7 @@ export class LangChainAgentWorkflow {
       this.mcpTools = this.mcpManager.listAllTools();
     }
 
-    const systemPrompt = buildAgentSystemPrompt({
+    const systemPrompt = buildLangChainSystemPrompt({
       cwd: this.cwd,
       mcpTools: this.mcpTools,
     });
@@ -120,7 +230,7 @@ export class LangChainAgentWorkflow {
       providerType: this.providerType,
     });
 
-    const tools = createMeerLangChainTools(
+    this.tools = createMeerLangChainTools(
       {
         cwd: this.cwd,
         provider: this.provider,
@@ -133,33 +243,44 @@ export class LangChainAgentWorkflow {
         mcpTools: this.mcpTools,
       }
     );
+    this.toolMap = new Map(
+      this.tools.map((tool) => [tool.name, tool] as const)
+    );
 
+    // Build prompt for StructuredChatAgent
+    // The system prompt must be escaped and properly formatted for the agent
     const escapedPrompt = fullPrompt
       .replaceAll("{", "{{")
       .replaceAll("}", "}}");
 
-    const systemContent =
-      `${escapedPrompt}\n\nAvailable tools:\n{tools}\n\nTool usage instructions: only call tools listed above using their exact ` +
-      `names ({tool_names}).`;
+    const systemMessage = [
+      escapedPrompt,
+      "You have access to the following tools:\n{tools}",
+      "When you invoke a tool, reference its name exactly as listed in {tool_names}.",
+    ].join("\n\n");
 
     const prompt = ChatPromptTemplate.fromMessages([
-      ["system", systemContent],
-      new MessagesPlaceholder("history"),
+      ["system", systemMessage],
+      new MessagesPlaceholder({ variableName: "chat_history", optional: true }),
       ["human", "{input}"],
-      new MessagesPlaceholder("agent_scratchpad"),
+      new MessagesPlaceholder({
+        variableName: "agent_scratchpad",
+        optional: true,
+      }),
     ]);
 
     const agent = await createStructuredChatAgent({
       llm: chatModel,
-      tools,
+      tools: this.tools,
       prompt,
     });
 
     this.executor = new AgentExecutor({
       agent,
-      tools,
+      tools: this.tools,
       maxIterations: this.maxIterations,
       verbose: false,
+      returnIntermediateSteps: false,
     });
   }
 
@@ -191,6 +312,9 @@ export class LangChainAgentWorkflow {
     this.promptChoice = options?.promptChoice;
 
     this.messages.push({ role: "user", content: userMessage });
+
+    // Prune messages if approaching context limit
+    this.pruneMessagesIfNeeded();
 
     if (this.enableMemory) {
       memory.addToSession({
@@ -290,13 +414,14 @@ export class LangChainAgentWorkflow {
       },
     });
 
+    const llmStartTime = Date.now();
+
     try {
       const result = await this.withTimeout(
         this.executor.invoke(
           {
             input: userMessage,
-            history: historyMessages,
-            agent_scratchpad: [],
+            chat_history: historyMessages,
           },
           {
             callbacks: [callbackManager],
@@ -306,10 +431,35 @@ export class LangChainAgentWorkflow {
         "LangChain agent"
       );
 
-      const response =
+      // Track successful LLM request
+      const llmDuration = (Date.now() - llmStartTime) / 1000;
+      llmRequestsTotal.inc({
+        provider: this.providerType,
+        model: this.model,
+        status: 'success'
+      });
+      llmLatency.observe({
+        provider: this.providerType,
+        model: this.model
+      }, llmDuration);
+
+      const responseOutput =
         typeof result === "object" && result !== null && "output" in result
-          ? String((result as any).output)
-          : "";
+          ? (result as any).output
+          : result;
+
+      const directive = parseActionDirective(responseOutput);
+      let response = normalizeAgentOutput(responseOutput);
+
+      if (directive) {
+        const fallback = await this.executeFallbackToolAction(
+          directive,
+          timeline
+        );
+        if (fallback !== null) {
+          response = fallback;
+        }
+      }
 
       if (timeline && thinkingTaskId) {
         timeline.succeed(thinkingTaskId, "Response ready");
@@ -334,6 +484,25 @@ export class LangChainAgentWorkflow {
 
       const completionTokens = countTokens(this.model, response);
       this.sessionTracker?.trackCompletionTokens(completionTokens);
+
+      // Track token metrics
+      llmTokensTotal.inc({
+        provider: this.providerType,
+        model: this.model,
+        type: 'prompt'
+      }, promptTokens);
+      llmTokensTotal.inc({
+        provider: this.providerType,
+        model: this.model,
+        type: 'completion'
+      }, completionTokens);
+
+      // Track context window usage
+      if (this.contextLimit) {
+        const totalTokens = promptTokens + completionTokens;
+        const usageRatio = totalTokens / this.contextLimit;
+        contextWindowUsage.observe({ model: this.model }, usageRatio);
+      }
 
       this.messages.push({ role: "assistant", content: response });
 
@@ -362,6 +531,18 @@ export class LangChainAgentWorkflow {
 
       return response;
     } catch (error) {
+      // Track failed LLM request
+      llmRequestsTotal.inc({
+        provider: this.providerType,
+        model: this.model,
+        status: 'failure'
+      });
+
+      log.error(`LLM request failed: ${this.providerType}/${this.model}`, error as Error, {
+        provider: this.providerType,
+        model: this.model
+      });
+
       stopSpinner();
       if (timeline && thinkingTaskId) {
         timeline.fail(
@@ -376,7 +557,6 @@ export class LangChainAgentWorkflow {
       throw error;
     } finally {
       this.runWithTerminal = undefined;
-      this.promptChoice = undefined;
       this.promptChoice = undefined;
     }
   }
@@ -442,6 +622,73 @@ export class LangChainAgentWorkflow {
     } else if (usage > 0.7) {
       console.log(
         chalk.yellow(`\n⚠️ Context usage: ${(usage * 100).toFixed(0)}%`)
+      );
+    }
+  }
+
+  /**
+   * Prune old messages if approaching context limit
+   */
+  private pruneMessagesIfNeeded(): void {
+    if (!this.contextLimit) return;
+
+    // Calculate target token count (70% of limit to leave room for response)
+    const targetTokens = Math.floor(this.contextLimit * 0.7);
+    let currentTokens = countMessageTokens(this.model, this.messages);
+
+    // If we're under the target, no need to prune
+    if (currentTokens <= targetTokens) {
+      return;
+    }
+
+    console.log(
+      chalk.yellow(
+        `\n⚠️  Context window is full (${currentTokens.toLocaleString()} / ${this.contextLimit.toLocaleString()} tokens). Pruning old messages...`
+      )
+    );
+
+    // Keep system message (index 0) and most recent messages
+    // Remove oldest user/assistant message pairs
+    const systemMessage = this.messages[0];
+    let messagesToKeep = [systemMessage];
+    let recentMessages = this.messages.slice(1);
+
+    // Start from the end and keep as many recent messages as fit
+    while (recentMessages.length > 0) {
+      const candidateMessages = [systemMessage, ...recentMessages];
+      const candidateTokens = countMessageTokens(this.model, candidateMessages);
+
+      if (candidateTokens <= targetTokens) {
+        messagesToKeep = candidateMessages;
+        break;
+      }
+
+      // Remove oldest non-system message
+      recentMessages = recentMessages.slice(1);
+    }
+
+    const prunedCount = this.messages.length - messagesToKeep.length;
+    if (prunedCount > 0) {
+      this.messages = messagesToKeep;
+      const newTokenCount = countMessageTokens(this.model, this.messages);
+
+      // Track context pruning event
+      contextPruningEvents.inc({ model: this.model });
+      log.info('Context window pruned', {
+        model: this.model,
+        messagesPruned: prunedCount,
+        tokensBefore: currentTokens,
+        tokensAfter: newTokenCount,
+        contextLimit: this.contextLimit,
+        usageAfter: ((newTokenCount / this.contextLimit) * 100).toFixed(2) + '%'
+      });
+
+      console.log(
+        chalk.green(
+          `  ✅ Pruned ${prunedCount} ${prunedCount === 1 ? 'message' : 'messages'}. ` +
+          `Context: ${newTokenCount.toLocaleString()} / ${this.contextLimit.toLocaleString()} tokens ` +
+          `(${((newTokenCount / this.contextLimit) * 100).toFixed(0)}%)`
+        )
       );
     }
   }
@@ -604,6 +851,45 @@ export class LangChainAgentWorkflow {
 
     console.log(chalk.yellow(`\n[Command] cancelled: ${command}\n`));
     return false;
+  }
+
+  private async executeFallbackToolAction(
+    directive: ActionDirective,
+    timeline?: Timeline
+  ): Promise<string | null> {
+    const tool = this.toolMap.get(directive.action);
+    if (!tool) {
+      return null;
+    }
+
+    let taskId: string | undefined;
+    if (timeline) {
+      taskId = timeline.startTask(`Tool: ${directive.action}`);
+    }
+
+    try {
+      const result = await tool.call(directive.input ?? {});
+      if (taskId && timeline) {
+        timeline.succeed(taskId);
+      }
+      return normalizeAgentOutput(result);
+    } catch (error) {
+      if (taskId && timeline) {
+        timeline.fail(
+          taskId,
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+      log.warn(
+        `LangChain fallback tool execution failed for ${directive.action}`,
+        {
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+      return `⚠️ Tool "${directive.action}" failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
   }
 }
 
