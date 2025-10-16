@@ -290,6 +290,7 @@ export class LangChainAgentWorkflow {
           {
             input: userMessage,
             history: historyMessages,
+            agent_scratchpad: [],
           },
           {
             callbacks: [callbackManager],
