@@ -1754,6 +1754,16 @@ export function createCLI(): Command {
               onAssistantEnd: oceanUI
                 ? () => oceanUI.finishAssistantMessage()
                 : undefined,
+              withTerminal: oceanUI
+                ? <T>(fn: () => Promise<T>) => oceanUI.runWithTerminal(fn)
+                : undefined,
+              promptChoice: oceanUI
+                ? (
+                    prompt: string,
+                    choices: Array<{ label: string; value: string }>,
+                    defaultValue: string
+                  ) => oceanUI.promptChoice(prompt, choices, defaultValue)
+                : undefined,
             });
 
             sessionTracker.trackApiCall(Date.now() - messageStartTime);

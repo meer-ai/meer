@@ -5,13 +5,27 @@ import {
 import { z } from "zod";
 import type { FileEdit, ToolResult } from "../../tools/index.js";
 import * as tools from "../../tools/index.js";
+import type { Provider } from "../../providers/base.js";
+import type { MCPTool } from "../../mcp/types.js";
 
 export interface MeerLangChainToolContext {
   cwd: string;
+  provider?: Provider;
   /**
    * Required for tools that generate FileEdit payloads (propose_edit, edit_line).
    */
   reviewFileEdit?: (edit: FileEdit) => Promise<boolean>;
+  /**
+   * Execute an MCP tool when available.
+   */
+  executeMcpTool?: (
+    toolName: string,
+    input: Record<string, unknown>
+  ) => Promise<string>;
+}
+
+export interface MeerLangChainToolOptions {
+  mcpTools?: MCPTool[];
 }
 
 type ToolExecutor<TInput> = (
@@ -24,6 +38,55 @@ interface ToolDefinition<TSchema extends z.ZodTypeAny> {
   description: string;
   schema: TSchema;
   execute: ToolExecutor<z.infer<TSchema>>;
+}
+
+const FALLBACK_SCHEMA = z.object({}).catchall(z.any());
+
+function jsonSchemaToZod(schema?: MCPTool["inputSchema"]): z.ZodTypeAny {
+  if (!schema) {
+    return FALLBACK_SCHEMA;
+  }
+
+  const required = new Set(schema.required ?? []);
+
+  const convert = (node: any): z.ZodTypeAny => {
+    if (!node || typeof node !== "object") {
+      return z.any();
+    }
+
+    switch (node.type) {
+      case "string":
+        return z.string();
+      case "number":
+        return z.number();
+      case "integer":
+        return z.number().int();
+      case "boolean":
+        return z.boolean();
+      case "array": {
+        if (node.items) {
+          return z.array(convert(node.items));
+        }
+        return z.array(z.any());
+      }
+      case "object": {
+        const properties = node.properties ?? {};
+        const shape: Record<string, z.ZodTypeAny> = {};
+        for (const [key, value] of Object.entries(properties)) {
+          const propertySchema = convert(value);
+          shape[key] = required.has(key)
+            ? propertySchema
+            : propertySchema.optional();
+        }
+        return z.object(shape).passthrough();
+      }
+      default:
+        return z.any();
+    }
+  };
+
+  const root = convert(schema);
+  return root instanceof z.ZodObject ? root.passthrough() : root;
 }
 
 function unwrap(result: ToolResult): string {
@@ -225,6 +288,69 @@ async function callMeerTool(
     case "load_memory": {
       const key = String(input.key);
       return unwrap(tools.loadMemory(key, context.cwd));
+    }
+    case "scaffold_project": {
+      const projectType = String(input.projectType ?? input.type ?? "").trim();
+      const projectName = String(
+        input.projectName ?? input.name ?? ""
+      ).trim();
+      if (!projectType || !projectName) {
+        throw new Error(
+          "scaffold_project requires both projectType and projectName."
+        );
+      }
+      return unwrap(
+        tools.scaffoldProject(projectType, projectName, context.cwd)
+      );
+    }
+    case "suggest_setup": {
+      const request = String(input.request ?? input.userRequest ?? "").trim();
+      if (!request) {
+        throw new Error("suggest_setup requires a non-empty request.");
+      }
+      const analysis = tools.analyzeProject(context.cwd);
+      return unwrap(tools.suggestSetup(request, analysis));
+    }
+    case "semantic_search": {
+      const query = String(input.query ?? input.term ?? "").trim();
+      if (!query) {
+        throw new Error("semantic_search requires a non-empty query.");
+      }
+      if (!context.provider || typeof context.provider.embed !== "function") {
+        throw new Error(
+          "semantic_search requires a provider with embedding support."
+        );
+      }
+      const options = {
+        limit:
+          input.limit !== undefined && input.limit !== null
+            ? Number(input.limit)
+            : undefined,
+        minScore:
+          input.minScore !== undefined && input.minScore !== null
+            ? Number(input.minScore)
+            : undefined,
+        filePattern:
+          typeof input.filePattern === "string" ? input.filePattern : undefined,
+        language:
+          typeof input.language === "string" ? input.language : undefined,
+        includeTests:
+          input.includeTests !== undefined
+            ? ["true", "1"].includes(String(input.includeTests).toLowerCase()) ||
+              input.includeTests === true
+            : undefined,
+        embeddingModel:
+          typeof input.embeddingModel === "string"
+            ? input.embeddingModel
+            : undefined,
+      };
+      const result = await tools.semanticSearch(
+        query,
+        context.cwd,
+        context.provider,
+        options
+      );
+      return unwrap(result);
     }
     case "grep": {
       const path = String(input.path ?? "");
@@ -654,6 +780,19 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("analyze_project", input as Record<string, unknown>, context),
   },
   {
+    name: "suggest_setup",
+    description:
+      "Offer setup recommendations based on the user request and project analysis.",
+    schema: z.object({
+      request: z
+        .string()
+        .min(1, "request is required")
+        .describe("The user request to guide setup suggestions."),
+    }),
+    execute: (input, context) =>
+      callMeerTool("suggest_setup", input as Record<string, unknown>, context),
+  },
+  {
     name: "read_file",
     description: "Read the contents of a file in the workspace.",
     schema: z.object({
@@ -730,6 +869,36 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("search_text", input as Record<string, unknown>, context),
+  },
+  {
+    name: "semantic_search",
+    description:
+      "Run a semantic (embedding-powered) search across the workspace.",
+    schema: z.object({
+      query: z
+        .string()
+        .min(3, "query must be at least 3 characters")
+        .describe("Natural language search query."),
+      limit: z.coerce
+        .number()
+        .int()
+        .positive()
+        .max(50)
+        .optional()
+        .describe("Maximum number of results to return (default 10)."),
+      minScore: z.coerce
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe("Minimum similarity score threshold (0-1)."),
+      filePattern: z.string().optional(),
+      language: z.string().optional(),
+      includeTests: z.union([z.boolean(), z.string()]).optional(),
+      embeddingModel: z.string().optional(),
+    }),
+    execute: (input, context) =>
+      callMeerTool("semantic_search", input as Record<string, unknown>, context),
   },
   {
     name: "read_folder",
@@ -951,6 +1120,25 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("package_list", input as Record<string, unknown>, context),
+  },
+  {
+    name: "scaffold_project",
+    description:
+      "Scaffold a new project such as React, Vue, Next.js, Node, Python, Go, or Rust.",
+    schema: z.object({
+      projectType: z
+        .string()
+        .min(1, "projectType is required")
+        .describe(
+          "Project type to scaffold (react, vue, angular, next, nuxt, node, python, go, rust)."
+        ),
+      projectName: z
+        .string()
+        .min(1, "projectName is required")
+        .describe("Directory name for the new project."),
+    }),
+    execute: (input, context) =>
+      callMeerTool("scaffold_project", input as Record<string, unknown>, context),
   },
   {
     name: "get_env",
@@ -1467,9 +1655,10 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
 ];
 
 export function createMeerLangChainTools(
-  context: MeerLangChainToolContext
+  context: MeerLangChainToolContext,
+  options: MeerLangChainToolOptions = {}
 ): StructuredToolInterface[] {
-  return baseToolDefinitions.map(
+  const builtinTools = baseToolDefinitions.map(
     ({ name, description, schema, execute }) =>
       new DynamicStructuredTool({
         name,
@@ -1479,4 +1668,34 @@ export function createMeerLangChainTools(
           execute(input as Record<string, unknown>, context),
       })
   );
+
+  const mcpTools = (options.mcpTools ?? []).map((tool) => {
+    const schema =
+      tool.inputSchema?.type === "object"
+        ? (jsonSchemaToZod(tool.inputSchema) as z.ZodTypeAny)
+        : FALLBACK_SCHEMA;
+    const description =
+      tool.description && tool.description.trim().length > 0
+        ? `${tool.description} (MCP:${tool.serverName})`
+        : `MCP tool from ${tool.serverName}`;
+
+    return new DynamicStructuredTool({
+      name: tool.name,
+      description,
+      schema,
+      func: async (input) => {
+        if (!context.executeMcpTool) {
+          throw new Error(
+            `MCP execution is unavailable for tool "${tool.name}".`
+          );
+        }
+        return context.executeMcpTool(
+          tool.name,
+          (input as Record<string, unknown>) ?? {}
+        );
+      },
+    });
+  });
+
+  return [...builtinTools, ...mcpTools];
 }

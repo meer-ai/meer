@@ -1,5 +1,6 @@
 import {
   AIMessage,
+  AIMessageChunk,
   type BaseMessage,
   type MessageContent,
 } from "@langchain/core/messages";
@@ -7,8 +8,9 @@ import {
   BaseChatModel,
   type BaseChatModelCallOptions,
 } from "@langchain/core/language_models/chat_models";
-import type { ChatResult } from "@langchain/core/outputs";
-import type { ChatMessage, Provider } from "../../providers/base.js";
+import { ChatGenerationChunk, type ChatResult } from "@langchain/core/outputs";
+import type { CallbackManagerForLLMRun } from "@langchain/core/callbacks/manager";
+import type { ChatMessage, ChatOptions, Provider } from "../../providers/base.js";
 
 export interface ProviderChatModelOptions {
   model?: string;
@@ -69,7 +71,12 @@ export class ProviderChatModel extends BaseChatModel<BaseChatModelCallOptions> {
     options?: BaseChatModelCallOptions
   ): Promise<ChatResult> {
     const providerMessages = messages.map(toProviderMessage);
-    const response = await this.provider.chat(providerMessages);
+    const chatOptions = this.buildChatOptions(options);
+    const abortSignal = this.getAbortSignal(options);
+    const response = await this.callWithAbort(
+      () => this.provider.chat(providerMessages, chatOptions),
+      abortSignal
+    );
 
     return {
       generations: [
@@ -79,5 +86,84 @@ export class ProviderChatModel extends BaseChatModel<BaseChatModelCallOptions> {
         },
       ],
     };
+  }
+
+  async *_streamResponseChunks(
+    messages: BaseMessage[],
+    options: BaseChatModelCallOptions,
+    runManager?: CallbackManagerForLLMRun
+  ): AsyncGenerator<ChatGenerationChunk> {
+    const providerMessages = messages.map(toProviderMessage);
+    const chatOptions = this.buildChatOptions(options);
+    const abortSignal = this.getAbortSignal(options);
+
+    if (abortSignal?.aborted) {
+      throw new Error("AbortError: The operation was aborted.");
+    }
+
+    const stream = this.provider.stream(providerMessages, chatOptions);
+    for await (const chunk of stream) {
+      if (abortSignal?.aborted) {
+        throw new Error("AbortError: The operation was aborted.");
+      }
+      const text = typeof chunk === "string" ? chunk : String(chunk ?? "");
+      if (!text) {
+        continue;
+      }
+      if (runManager) {
+        await runManager.handleLLMNewToken(text);
+      }
+      yield new ChatGenerationChunk({
+        text,
+        message: new AIMessageChunk({ content: text }),
+      });
+    }
+  }
+
+  private buildChatOptions(
+    options?: BaseChatModelCallOptions
+  ): ChatOptions | undefined {
+    if (!options) {
+      return undefined;
+    }
+    const optionEntries = { ...(options as Record<string, unknown>) };
+    return optionEntries as ChatOptions;
+  }
+
+  private getAbortSignal(
+    options?: BaseChatModelCallOptions
+  ): AbortSignal | undefined {
+    if (!options) {
+      return undefined;
+    }
+    const signal = (options as Record<string, unknown>).signal;
+    if (
+      signal &&
+      typeof signal === "object" &&
+      "aborted" in (signal as Record<string, unknown>)
+    ) {
+      return signal as AbortSignal;
+    }
+    return undefined;
+  }
+
+  private async callWithAbort<T>(
+    factory: () => Promise<T>,
+    signal?: AbortSignal
+  ): Promise<T> {
+    if (!signal) {
+      return factory();
+    }
+    if (signal.aborted) {
+      throw new Error("AbortError: The operation was aborted.");
+    }
+    return await new Promise<T>((resolve, reject) => {
+      const abortHandler = () =>
+        reject(new Error("AbortError: The operation was aborted."));
+      signal.addEventListener("abort", abortHandler, { once: true });
+      factory()
+        .then(resolve, reject)
+        .finally(() => signal.removeEventListener("abort", abortHandler));
+    });
   }
 }

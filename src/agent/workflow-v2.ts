@@ -42,6 +42,12 @@ export class AgentWorkflowV2 {
   private sessionTracker?: SessionTracker;
   private contextLimit?: number;
   private chatTimeout: number;
+  private runWithTerminal?: <T>(fn: () => Promise<T>) => Promise<T>;
+  private promptChoice?: (
+    message: string,
+    choices: Array<{ label: string; value: string }>,
+    defaultValue: string
+  ) => Promise<string>;
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -103,6 +109,12 @@ export class AgentWorkflowV2 {
       onAssistantStart?: () => void;
       onAssistantChunk?: (chunk: string) => void;
       onAssistantEnd?: () => void;
+      withTerminal?: <T>(fn: () => Promise<T>) => Promise<T>;
+      promptChoice?: (
+        message: string,
+        choices: Array<{ label: string; value: string }>,
+        defaultValue: string
+      ) => Promise<string>;
     }
   ): Promise<string> {
     const timeline = options?.timeline;
@@ -110,6 +122,8 @@ export class AgentWorkflowV2 {
     const onAssistantChunk = options?.onAssistantChunk;
     const onAssistantEnd = options?.onAssistantEnd;
     const useUI = Boolean(onAssistantChunk);
+    this.runWithTerminal = options?.withTerminal;
+    this.promptChoice = options?.promptChoice;
 
     // Add user message
     this.messages.push({ role: "user", content: userMessage });
@@ -179,7 +193,9 @@ export class AgentWorkflowV2 {
               spinner.stop();
             }
             if (useUI) {
-              onAssistantStart?.();
+              if (!timeline) {
+                onAssistantStart?.();
+              }
             } else {
               ensureConsoleHeader();
             }
@@ -209,7 +225,9 @@ export class AgentWorkflowV2 {
           }
 
           if (useUI) {
-            onAssistantStart?.();
+            if (!timeline) {
+              onAssistantStart?.();
+            }
             onAssistantChunk?.(response);
             onAssistantEnd?.();
           } else {
@@ -375,6 +393,8 @@ export class AgentWorkflowV2 {
       }
     }
 
+    this.runWithTerminal = undefined;
+    this.promptChoice = undefined;
     return fullResponse;
   }
 
@@ -393,18 +413,33 @@ export class AgentWorkflowV2 {
       console.log(chalk.green("   No textual diff (new or identical file)\n"));
     }
 
-    const { action } = await inquirer.prompt([
-      {
-        type: "list",
-        name: "action",
-        message: `Apply changes to ${edit.path}?`,
-        choices: [
-          { name: "Apply", value: "apply" },
-          { name: "Skip", value: "skip" },
+    let action: string;
+    if (this.promptChoice) {
+      action = await this.promptChoice(
+        `Apply changes to ${edit.path}?`,
+        [
+          { label: "Apply", value: "apply" },
+          { label: "Skip", value: "skip" },
         ],
-        default: "apply",
-      },
-    ]);
+        "apply"
+      );
+    } else {
+      const result = await this.runInteractivePrompt(() =>
+        inquirer.prompt([
+          {
+            type: "list",
+            name: "action",
+            message: `Apply changes to ${edit.path}?`,
+            choices: [
+              { name: "Apply", value: "apply" },
+              { name: "Skip", value: "skip" },
+            ],
+            default: "apply",
+          },
+        ])
+      );
+      action = result.action;
+    }
 
     if (action === "apply") {
       const result = applyEdit(edit, this.cwd);
@@ -841,19 +876,44 @@ export class AgentWorkflowV2 {
       diffLines.slice(0, maxLines).forEach((line) => console.log(line));
       console.log(chalk.gray(`└─ ... and ${diffLines.length - maxLines} more lines\n`));
 
-      const { showMore } = await inquirer.prompt([
-        {
-          type: "confirm",
-          name: "showMore",
-          message: `Show remaining ${diffLines.length - maxLines} lines?`,
-          default: false,
-        },
-      ]);
+      let showMore: boolean;
+      if (this.promptChoice) {
+        const choice = await this.promptChoice(
+          `Show remaining ${diffLines.length - maxLines} lines?`,
+          [
+            { label: "Yes, show all", value: "yes" },
+            { label: "No, keep hidden", value: "no" },
+          ],
+          "no"
+        );
+        showMore = choice === "yes";
+      } else {
+        const result = await this.runInteractivePrompt(() =>
+          inquirer.prompt([
+            {
+              type: "confirm",
+              name: "showMore",
+              message: `Show remaining ${diffLines.length - maxLines} lines?`,
+              default: false,
+            },
+          ])
+        );
+        showMore = result.showMore;
+      }
 
       if (showMore) {
         diffLines.slice(maxLines).forEach((line) => console.log(line));
         console.log(chalk.gray("└─\n"));
       }
     }
+  }
+
+  private async runInteractivePrompt<T>(
+    task: () => Promise<T>
+  ): Promise<T> {
+    if (this.runWithTerminal) {
+      return this.runWithTerminal(task);
+    }
+    return task();
   }
 }

@@ -11,6 +11,7 @@ const exportedNames = toolkit.map((tool) => tool.name).sort();
 
 const expectedNames = [
   "analyze_project",
+  "suggest_setup",
   "read_file",
   "list_files",
   "propose_edit",
@@ -18,6 +19,7 @@ const expectedNames = [
   "find_files",
   "read_many_files",
   "search_text",
+  "semantic_search",
   "read_folder",
   "google_search",
   "web_fetch",
@@ -37,6 +39,7 @@ const expectedNames = [
   "package_install",
   "package_run_script",
   "package_list",
+  "scaffold_project",
   "get_env",
   "set_env",
   "list_env",

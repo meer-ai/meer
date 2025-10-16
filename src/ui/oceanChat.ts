@@ -79,6 +79,7 @@ export class OceanChatUI {
     warn: typeof console.warn;
   };
   private footerStatic: string = "";
+  private suspendedForPrompt = false;
   private statusSpinnerInterval?: NodeJS.Timeout;
   private statusSpinnerFrame = 0;
   private activeSpinnerTaskId?: string;
@@ -272,7 +273,7 @@ export class OceanChatUI {
 
   private buildHeaderContent(): string {
     const wave = "{cyan-fg}~{/}{blue-fg}≈{/}{cyan-fg}~{/}";
-    const title = `{bold}{cyan-fg}🌊 Meer AI Interactive Session{/cyan-fg}{/bold}`;
+    const title = `{bold}{cyan-fg}🌊 Meer AI{/cyan-fg}{/bold}`;
     const providerLine = `${wave} {cyan-fg}⚙{/} {white-fg}${this.escapeForTags(this.config.provider)}:${this.escapeForTags(this.config.model)}{/}  {gray-fg}${this.escapeForTags(this.shortenPath(this.config.cwd, 48))}{/}`;
     const userLine = this.activeUserName
       ? `{green-fg}🧑  Signed in as{/} {white-fg}${this.escapeForTags(this.activeUserName)}{/}`
@@ -1160,6 +1161,143 @@ export class OceanChatUI {
     console.error = this.originalConsole.error;
     console.warn = this.originalConsole.warn;
     this.originalConsole = undefined;
+  }
+
+  async runWithTerminal<T>(task: () => Promise<T>): Promise<T> {
+    if (this.suspendedForPrompt) {
+      return task();
+    }
+
+    this.suspendedForPrompt = true;
+    const handler = this.keypressHandler;
+    if (handler) {
+      this.screen.off("keypress", handler);
+    }
+
+    this.restoreConsole();
+
+    const program = (this.screen as unknown as { program?: any }).program;
+    const screenAny = this.screen as unknown as {
+      leave?: () => void;
+      enter?: () => void;
+    };
+
+    const disableRawMode = () => {
+      const input: any = program?.input ?? process.stdin;
+      if (input?.isTTY && typeof input.setRawMode === "function") {
+        input.setRawMode(false);
+      }
+    };
+    const enableRawMode = () => {
+      const input: any = program?.input ?? process.stdin;
+      if (input?.isTTY && typeof input.setRawMode === "function") {
+        input.setRawMode(true);
+      }
+    };
+
+    disableRawMode();
+    program?.showCursor?.();
+    program?.disableMouse?.();
+    program?.normalBuffer?.();
+    screenAny.leave?.();
+    program?.flush?.();
+    console.log(""); // ensure prompt starts on a clean line
+
+    try {
+      return await task();
+    } finally {
+      screenAny.enter?.();
+      program?.alternateBuffer?.();
+      program?.enableMouse?.();
+      program?.hideCursor?.();
+      enableRawMode();
+      if (handler) {
+        this.screen.on("keypress", handler);
+      }
+      this.captureConsole();
+      this.renderMessages();
+      this.renderInput();
+      this.screen.render();
+      this.refocusInput();
+      this.suspendedForPrompt = false;
+    }
+  }
+
+  async promptChoice<T extends string>(
+    message: string,
+    options: Array<{ label: string; value: T }>,
+    defaultValue: T
+  ): Promise<T> {
+    return new Promise<T>((resolve) => {
+      const overlay = blessed.box({
+        top: "center",
+        left: "center",
+        width: "50%",
+        height: options.length + 6,
+        border: { type: "line", fg: PALETTE.accent },
+        style: {
+          bg: PALETTE.background,
+          border: { fg: PALETTE.accent },
+        },
+        tags: true,
+      } as any);
+
+      blessed.text({
+        parent: overlay,
+        top: 1,
+        left: 2,
+        width: "90%",
+        content: `{cyan-fg}${message}{/}`,
+        tags: true,
+      });
+
+      const list = blessed.list({
+        parent: overlay,
+        top: 3,
+        left: 2,
+        width: "90%",
+        height: options.length + 2,
+        keys: true,
+        mouse: true,
+        vi: true,
+        style: {
+          item: { fg: PALETTE.text },
+          selected: { fg: PALETTE.background, bg: PALETTE.accent },
+        },
+      } as any) as blessed.Widgets.ListElement & { selected?: number };
+
+      options.forEach((option) => list.addItem(option.label));
+
+      const defaultIndex = Math.max(
+        0,
+        options.findIndex((option) => option.value === defaultValue)
+      );
+      (list as any).select(defaultIndex);
+
+      const cleanup = (result: T) => {
+        overlay.destroy();
+        this.screen.render();
+        this.refocusInput();
+        resolve(result);
+      };
+
+      const getSelectedIndex = (): number => {
+        const idx = list.selected;
+        return typeof idx === "number" ? idx : defaultIndex;
+      };
+
+      list.key(["enter"], () => {
+        const index = getSelectedIndex();
+        const selected = options[index] ?? options[defaultIndex];
+        cleanup(selected.value);
+      });
+
+      list.key(["escape", "q"], () => cleanup(defaultValue));
+
+      this.screen.append(overlay);
+      this.screen.render();
+      list.focus();
+    });
   }
 
   getTimelineAdapter(): Timeline {

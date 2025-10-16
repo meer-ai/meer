@@ -1,6 +1,7 @@
 import chalk from "chalk";
 import ora, { type Ora } from "ora";
 import inquirer from "inquirer";
+import { CallbackManager } from "@langchain/core/callbacks/manager";
 import {
   ChatPromptTemplate,
   MessagesPlaceholder,
@@ -22,7 +23,7 @@ import { ProviderChatModel } from "./langchain/providerChatModel.js";
 import { buildAgentSystemPrompt } from "./prompts/systemPrompt.js";
 import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
-import type { MCPTool } from "../mcp/types.js";
+import type { MCPTool, MCPToolResult } from "../mcp/types.js";
 import type { SessionTracker } from "../session/tracker.js";
 import {
   countTokens,
@@ -59,6 +60,12 @@ export class LangChainAgentWorkflow {
   private executor?: AgentExecutor;
   private mcpManager = MCPManager.getInstance();
   private mcpTools: MCPTool[] = [];
+  private runWithTerminal?: <T>(fn: () => Promise<T>) => Promise<T>;
+  private promptChoice?: (
+    message: string,
+    choices: Array<{ label: string; value: string }>,
+    defaultValue: string
+  ) => Promise<string>;
 
   constructor(config: LangChainAgentConfig) {
     this.provider = config.provider;
@@ -108,10 +115,18 @@ export class LangChainAgentWorkflow {
       providerType: this.providerType,
     });
 
-    const tools = createMeerLangChainTools({
-      cwd: this.cwd,
-      reviewFileEdit: async (edit) => this.reviewFileEdit(edit),
-    });
+    const tools = createMeerLangChainTools(
+      {
+        cwd: this.cwd,
+        provider: this.provider,
+        reviewFileEdit: async (edit) => this.reviewFileEdit(edit),
+        executeMcpTool: (toolName, params) =>
+          this.executeMcpTool(toolName, params),
+      },
+      {
+        mcpTools: this.mcpTools,
+      }
+    );
 
     const escapedPrompt = fullPrompt
       .replaceAll("{", "{{")
@@ -149,6 +164,12 @@ export class LangChainAgentWorkflow {
       onAssistantStart?: () => void;
       onAssistantChunk?: (chunk: string) => void;
       onAssistantEnd?: () => void;
+      withTerminal?: <T>(fn: () => Promise<T>) => Promise<T>;
+      promptChoice?: (
+        message: string,
+        choices: Array<{ label: string; value: string }>,
+        defaultValue: string
+      ) => Promise<string>;
     }
   ): Promise<string> {
     if (!this.executor) {
@@ -160,6 +181,8 @@ export class LangChainAgentWorkflow {
     const onAssistantChunk = options?.onAssistantChunk;
     const onAssistantEnd = options?.onAssistantEnd;
     const useUI = Boolean(onAssistantChunk);
+    this.runWithTerminal = options?.withTerminal;
+    this.promptChoice = options?.promptChoice;
 
     this.messages.push({ role: "user", content: userMessage });
 
@@ -182,6 +205,22 @@ export class LangChainAgentWorkflow {
 
     let spinner: Ora | null = null;
     let thinkingTaskId: string | undefined;
+    const stopSpinner = () => {
+      if (spinner) {
+        spinner.stop();
+        spinner = null;
+      }
+    };
+    let streamStarted = false;
+    let uiStreamStarted = false;
+    let headerPrinted = false;
+
+    const printConsoleHeader = () => {
+      if (!headerPrinted) {
+        console.log(chalk.green("\n🤖 MeerAI (LangChain):\n"));
+        headerPrinted = true;
+      }
+    };
 
     if (timeline) {
       thinkingTaskId = timeline.startTask("Thinking", {
@@ -192,16 +231,70 @@ export class LangChainAgentWorkflow {
         text: chalk.blue("Thinking..."),
         spinner: "dots",
       }).start();
-    } else {
-      onAssistantStart?.();
     }
+
+    const callbackManager = CallbackManager.fromHandlers({
+      handleLLMNewToken: async (token) => {
+        if (token === undefined || token === null) {
+          return;
+        }
+        const text = String(token);
+        if (!text) {
+          return;
+        }
+        streamStarted = true;
+        if (timeline && thinkingTaskId) {
+          timeline.succeed(thinkingTaskId, "Streaming response");
+          thinkingTaskId = undefined;
+        }
+        stopSpinner();
+        if (useUI) {
+          if (!uiStreamStarted) {
+            uiStreamStarted = true;
+            if (!timeline) {
+              onAssistantStart?.();
+            }
+          }
+          onAssistantChunk?.(text);
+        } else {
+          printConsoleHeader();
+          process.stdout.write(text);
+        }
+      },
+      handleLLMEnd: async () => {
+        stopSpinner();
+        if (useUI && uiStreamStarted) {
+          onAssistantEnd?.();
+        } else if (!useUI && streamStarted) {
+          console.log("");
+        }
+      },
+      handleLLMError: async (err) => {
+        stopSpinner();
+        if (timeline && thinkingTaskId) {
+          timeline.fail(
+            thinkingTaskId,
+            err instanceof Error ? err.message : String(err)
+          );
+          thinkingTaskId = undefined;
+        }
+        if (useUI && uiStreamStarted) {
+          onAssistantEnd?.();
+        }
+      },
+    });
 
     try {
       const result = await this.withTimeout(
-        this.executor.invoke({
-          input: userMessage,
-          history: historyMessages,
-        }),
+        this.executor.invoke(
+          {
+            input: userMessage,
+            history: historyMessages,
+          },
+          {
+            callbacks: [callbackManager],
+          }
+        ),
         this.chatTimeout,
         "LangChain agent"
       );
@@ -213,14 +306,21 @@ export class LangChainAgentWorkflow {
 
       if (timeline && thinkingTaskId) {
         timeline.succeed(thinkingTaskId, "Response ready");
-      } else if (spinner) {
-        spinner.stop();
+        thinkingTaskId = undefined;
+      } else {
+        stopSpinner();
       }
 
       if (!useUI) {
-        console.log(chalk.green("\n🤖 MeerAI (LangChain):\n"));
-        console.log(response);
-      } else {
+        if (!streamStarted) {
+          printConsoleHeader();
+          console.log(response);
+        }
+      } else if (!uiStreamStarted) {
+        uiStreamStarted = true;
+        if (!timeline) {
+          onAssistantStart?.();
+        }
         onAssistantChunk?.(response);
         onAssistantEnd?.();
       }
@@ -255,17 +355,73 @@ export class LangChainAgentWorkflow {
 
       return response;
     } catch (error) {
-      if (spinner) {
-        spinner.stop();
-      }
+      stopSpinner();
       if (timeline && thinkingTaskId) {
         timeline.fail(
           thinkingTaskId,
           error instanceof Error ? error.message : String(error)
         );
+        thinkingTaskId = undefined;
+      }
+      if (useUI && uiStreamStarted) {
+        onAssistantEnd?.();
       }
       throw error;
+    } finally {
+      this.runWithTerminal = undefined;
+      this.promptChoice = undefined;
     }
+  }
+
+  private async runInteractivePrompt<T>(
+    task: () => Promise<T>
+  ): Promise<T> {
+    if (this.runWithTerminal) {
+      return this.runWithTerminal(task);
+    }
+    return task();
+  }
+
+  private async executeMcpTool(
+    toolName: string,
+    params: Record<string, unknown>
+  ): Promise<string> {
+    const result = await this.mcpManager.executeTool(toolName, params);
+    return this.formatMcpToolResult(toolName, result);
+  }
+
+  private formatMcpToolResult(
+    toolName: string,
+    result: MCPToolResult
+  ): string {
+    if (!result.success) {
+      const reason = result.error ?? "Unknown error";
+      throw new Error(`MCP tool "${toolName}" failed: ${reason}`);
+    }
+
+    if (!Array.isArray(result.content) || result.content.length === 0) {
+      return `MCP tool "${toolName}" executed successfully (no content).`;
+    }
+
+    const parts = result.content.map((item) => {
+      if (item.type === "text" && item.text) {
+        return item.text;
+      }
+      if (item.type === "image" && item.data) {
+        return `[image:${item.mimeType ?? "unknown"} size=${item.data.length}B]`;
+      }
+      if (item.type === "resource" && item.text) {
+        return item.text;
+      }
+      return JSON.stringify(item);
+    });
+
+    const duration =
+      typeof result.metadata?.executionTime === "number"
+        ? `\n\nDuration: ${result.metadata.executionTime}ms`
+        : "";
+
+    return parts.join("\n\n") + duration;
   }
 
   private warnIfContextHigh(tokens: number) {
@@ -313,18 +469,33 @@ export class LangChainAgentWorkflow {
       );
     }
 
-    const { action } = await inquirer.prompt([
-      {
-        type: "list",
-        name: "action",
-        message: `Apply changes to ${edit.path}?`,
-        choices: [
-          { name: "Apply", value: "apply" },
-          { name: "Skip", value: "skip" },
+    let action: string;
+    if (this.promptChoice) {
+      action = await this.promptChoice(
+        `Apply changes to ${edit.path}?`,
+        [
+          { label: "Apply", value: "apply" },
+          { label: "Skip", value: "skip" },
         ],
-        default: "apply",
-      },
-    ]);
+        "apply"
+      );
+    } else {
+      const result = await this.runInteractivePrompt(() =>
+        inquirer.prompt([
+          {
+            type: "list",
+            name: "action",
+            message: `Apply changes to ${edit.path}?`,
+            choices: [
+              { name: "Apply", value: "apply" },
+              { name: "Skip", value: "skip" },
+            ],
+            default: "apply",
+          },
+        ])
+      );
+      action = result.action;
+    }
 
     if (action === "apply") {
       const result = applyEdit(edit, this.cwd);
@@ -359,14 +530,30 @@ export class LangChainAgentWorkflow {
       chalk.gray(`└─ ... and ${diffLines.length - maxLines} more lines\n`)
     );
 
-    const { showMore } = await inquirer.prompt([
-      {
-        type: "confirm",
-        name: "showMore",
-        message: `Show remaining ${diffLines.length - maxLines} lines?`,
-        default: false,
-      },
-    ]);
+    let showMore: boolean;
+    if (this.promptChoice) {
+      const choice = await this.promptChoice(
+        `Show remaining ${diffLines.length - maxLines} lines?`,
+        [
+          { label: "Yes, show all", value: "yes" },
+          { label: "No, keep hidden", value: "no" },
+        ],
+        "no"
+      );
+      showMore = choice === "yes";
+    } else {
+      const result = await this.runInteractivePrompt(() =>
+        inquirer.prompt([
+          {
+            type: "confirm",
+            name: "showMore",
+            message: `Show remaining ${diffLines.length - maxLines} lines?`,
+            default: false,
+          },
+        ])
+      );
+      showMore = result.showMore;
+    }
 
     if (showMore) {
       diffLines.slice(maxLines).forEach((line) => console.log(line));
