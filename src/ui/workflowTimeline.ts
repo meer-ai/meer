@@ -1,5 +1,6 @@
-import ora, { type Ora } from "ora";
+import ora, { type Ora, type Spinner } from "ora";
 import chalk from "chalk";
+import { getTheme } from "./theme.js";
 
 type TaskStatus = "pending" | "success" | "error";
 
@@ -25,13 +26,9 @@ export interface InfoOptions {
   dim?: boolean;
 }
 
-const PALETTE = {
-  primary: "#0ea5e9",
-  accent: "#06b6d4",
-  success: "#14b8a6",
-  danger: "#f87171",
-  warning: "#f97316",
-  muted: "#64748b",
+export const OCEAN_SPINNER: Spinner = {
+  interval: 80,
+  frames: ["~    ", " ~   ", "  ~  ", "   ~ ", "  ~  ", " ~   "],
 };
 
 export interface Timeline {
@@ -54,10 +51,11 @@ export interface Timeline {
 export class WorkflowTimeline implements Timeline {
   private tasks = new Map<string, Task>();
   private sequence = 0;
+  private theme = getTheme();
 
   startTask(label: string, options: TaskOptions = {}): string {
     const id = `task-${++this.sequence}`;
-    const color = options.color || PALETTE.accent;
+    const color = options.color || this.theme.accent;
     const detail = options.detail;
     const spinnerEnabled = options.spinner !== false;
 
@@ -77,6 +75,7 @@ export class WorkflowTimeline implements Timeline {
     const spinner = ora({
       text: this.formatSpinnerText(label, detail, color),
       color: "cyan",
+      spinner: OCEAN_SPINNER,
     }).start();
 
     this.tasks.set(id, {
@@ -108,10 +107,12 @@ export class WorkflowTimeline implements Timeline {
     task.detail = detail ?? task.detail;
     if (task.spinner) {
       task.spinner.succeed(
-        this.formatLine("✔", task.label, task.detail, PALETTE.success)
+        this.formatLine("✔", task.label, task.detail, this.theme.success)
       );
     } else {
-      console.log(this.formatLine("✔", task.label, task.detail, PALETTE.success));
+      console.log(
+        this.formatLine("✔", task.label, task.detail, this.theme.success)
+      );
     }
     this.tasks.delete(id);
   }
@@ -123,31 +124,33 @@ export class WorkflowTimeline implements Timeline {
     task.detail = detail ?? task.detail;
     if (task.spinner) {
       task.spinner.fail(
-        this.formatLine("✖", task.label, task.detail, PALETTE.danger)
+        this.formatLine("✖", task.label, task.detail, this.theme.danger)
       );
     } else {
-      console.log(this.formatLine("✖", task.label, task.detail, PALETTE.danger));
+      console.log(
+        this.formatLine("✖", task.label, task.detail, this.theme.danger)
+      );
     }
     this.tasks.delete(id);
   }
 
   info(message: string, options: InfoOptions = {}): void {
     const icon = options.icon ?? "•";
-    const color = options.color ?? PALETTE.accent;
+    const color = options.color ?? this.theme.accent;
     const content = options.dim ? chalk.dim(message) : chalk.white(message);
     console.log(`${chalk.hex(color)(icon)} ${content}`);
   }
 
   note(message: string): void {
-    this.info(message, { icon: "·", color: PALETTE.primary, dim: true });
+    this.info(message, { icon: "·", color: this.theme.primary, dim: true });
   }
 
   warn(message: string): void {
-    this.info(message, { icon: "⚠", color: PALETTE.warning });
+    this.info(message, { icon: "⚠", color: this.theme.warning });
   }
 
   error(message: string): void {
-    this.info(message, { icon: "✖", color: PALETTE.danger });
+    this.info(message, { icon: "✖", color: this.theme.danger });
   }
 
   close(): void {
@@ -155,11 +158,13 @@ export class WorkflowTimeline implements Timeline {
       if (task.status !== "pending") continue;
       if (task.spinner) {
         task.spinner.stopAndPersist({
-          symbol: chalk.hex(PALETTE.muted)("•"),
-          text: this.formatLine("•", task.label, task.detail, PALETTE.muted),
+          symbol: chalk.hex(this.theme.muted)("•"),
+          text: this.formatLine("•", task.label, task.detail, this.theme.muted),
         });
       } else {
-        console.log(this.formatLine("•", task.label, task.detail, PALETTE.muted));
+        console.log(
+          this.formatLine("•", task.label, task.detail, this.theme.muted)
+        );
       }
     }
     this.tasks.clear();
@@ -171,15 +176,23 @@ export class WorkflowTimeline implements Timeline {
     detail?: string,
     color?: string
   ): string {
-    const main = `${chalk.hex(color ?? PALETTE.accent)(icon)} ${chalk.white(label)}`;
+    const hasDetail = Boolean(detail && detail.trim().length > 0);
+    const useDetailAsPrimary = icon === "✔" && hasDetail;
+    const primaryText = useDetailAsPrimary ? detail!.trim() : label;
+    const secondaryText = useDetailAsPrimary ? label : detail;
+    const main = `${chalk.hex(color ?? this.theme.accent)(icon)} ${chalk.white(
+      primaryText
+    )}`;
     const extra =
-      detail && detail.trim().length > 0 ? chalk.gray(` (${detail})`) : "";
+      secondaryText && secondaryText.trim().length > 0
+        ? chalk.gray(` (${secondaryText.trim()})`)
+        : "";
     return `${main}${extra}`;
   }
 
   private formatSpinnerText(label: string, detail?: string, color?: string): string {
     const detailText =
       detail && detail.trim().length > 0 ? chalk.gray(` (${detail})`) : "";
-    return `${chalk.hex(color ?? PALETTE.accent)(label)}${detailText}`;
+    return `${chalk.hex(color ?? this.theme.accent)(label)}${detailText}`;
   }
 }

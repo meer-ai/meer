@@ -31,7 +31,7 @@ import {
   getContextLimit,
 } from "../token/utils.js";
 import { generateDiff, applyEdit, type FileEdit } from "../tools/index.js";
-import type { Timeline } from "../ui/workflowTimeline.js";
+import { OCEAN_SPINNER, type Timeline } from "../ui/workflowTimeline.js";
 import {
   log,
   llmRequestsTotal,
@@ -89,8 +89,21 @@ interface ActionDirective {
 }
 
 function tryParseJson(value: string): unknown {
+  const trimmed = value.trim();
+
+  if (trimmed.startsWith("```")) {
+    const fenceMatch = trimmed.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i);
+    if (fenceMatch) {
+      try {
+        return JSON.parse(fenceMatch[1]);
+      } catch {
+        // fall through to default behavior
+      }
+    }
+  }
+
   try {
-    return JSON.parse(value);
+    return JSON.parse(trimmed);
   } catch {
     return value;
   }
@@ -359,7 +372,7 @@ export class LangChainAgentWorkflow {
     } else if (!useUI) {
       spinner = ora({
         text: chalk.blue("Thinking..."),
-        spinner: "dots",
+        spinner: OCEAN_SPINNER,
       }).start();
     }
 
@@ -862,13 +875,36 @@ export class LangChainAgentWorkflow {
       return null;
     }
 
+    let toolInput: unknown = directive.input ?? {};
+
+    if (directive.action === "suggest_setup") {
+      if (typeof toolInput === "string" && toolInput.trim().length > 0) {
+        toolInput = { request: toolInput.trim() };
+      } else if (typeof toolInput !== "object" || toolInput === null) {
+        toolInput = {};
+      }
+
+      const inputRecord = toolInput as Record<string, unknown>;
+      const hasRequest =
+        typeof inputRecord.request === "string" &&
+        inputRecord.request.trim().length > 0;
+      if (!hasRequest) {
+        const latestUserMessage = [...this.messages]
+          .reverse()
+          .find((message) => message.role === "user");
+        if (latestUserMessage && latestUserMessage.content) {
+          inputRecord.request = latestUserMessage.content;
+        }
+      }
+    }
+
     let taskId: string | undefined;
     if (timeline) {
       taskId = timeline.startTask(`Tool: ${directive.action}`);
     }
 
     try {
-      const result = await tool.call(directive.input ?? {});
+      const result = await tool.call(toolInput ?? {});
       if (taskId && timeline) {
         timeline.succeed(taskId);
       }

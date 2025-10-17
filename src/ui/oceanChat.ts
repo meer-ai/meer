@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { glob } from "glob";
 import { existsSync, statSync } from "fs";
 import { join } from "path";
+import { execSync } from "child_process";
 import type {
   Timeline,
   InfoOptions as TimelineInfoOptions,
@@ -16,18 +17,7 @@ import {
 import { DEFAULT_IGNORE_GLOBS } from "../tools/index.js";
 import { slashCommands as slashCommandDefinitions } from "./slashCommands.js";
 import { AuthStorage } from "../auth/storage.js";
-
-const PALETTE = {
-  background: "#011627",
-  border: "#0ea5e9",
-  primary: "#0ea5e9",
-  accent: "#06b6d4",
-  success: "#14b8a6",
-  danger: "#f87171",
-  warning: "#fbbf24",
-  text: "#e0f2fe",
-  muted: "#64748b",
-};
+import { getTheme, type ThemePalette } from "./theme.js";
 
 const BUILTIN_SLASH_COMMANDS = slashCommandDefinitions.map(
   (entry) => entry.command
@@ -65,6 +55,7 @@ export class OceanChatUI {
   private chatBox: blessed.Widgets.BoxElement;
   private inputBox: blessed.Widgets.BoxElement;
   private statusBar: blessed.Widgets.BoxElement;
+  private theme: ThemePalette = getTheme();
   private timelineEntries: TimelineEntry[] = [];
   private timelineSequence = 0;
   private messages: ChatMessage[] = [];
@@ -78,10 +69,11 @@ export class OceanChatUI {
     error: typeof console.error;
     warn: typeof console.warn;
   };
-  private footerStatic: string = "";
   private suspendedForPrompt = false;
   private statusSpinnerInterval?: NodeJS.Timeout;
   private statusSpinnerFrame = 0;
+  private statusMessage: string | null = null;
+  private statusRefreshInterval?: NodeJS.Timeout;
   private activeSpinnerTaskId?: string;
   private onSubmit?: (text: string) => void;
   private fileCache: {
@@ -95,6 +87,11 @@ export class OceanChatUI {
   private inputMode: InputMode = null;
   private inputState: InputState = "idle";
   private lastStatusContent = "";
+  private branchCache: { value: string | null; checkedAt: number } = {
+    value: null,
+    checkedAt: 0,
+  };
+  private showReasoning = false;
   private currentSuggestions: SuggestionItem[] = [];
   private suggestionIndex = 0;
   private inputBuffer = "";
@@ -127,6 +124,8 @@ export class OceanChatUI {
 
     this.activeUserName = this.loadActiveUserName();
 
+    const theme = this.theme;
+
     this.headerBox = blessed.box({
       parent: this.screen,
       top: 0,
@@ -134,11 +133,11 @@ export class OceanChatUI {
       right: 0,
       height: 3,
       tags: true,
-      border: { type: "line", fg: PALETTE.border as any },
+      border: { type: "line", fg: theme.border as any },
       style: {
-        fg: PALETTE.text,
-        bg: "#02223a",
-        border: { fg: PALETTE.border },
+        fg: theme.text,
+        bg: theme.surface,
+        border: { fg: theme.border },
       },
     });
 
@@ -149,11 +148,11 @@ export class OceanChatUI {
       left: 0,
       right: 0,
       bottom: 4,
-      border: { type: "line", fg: PALETTE.border as any },
+      border: { type: "line", fg: theme.border as any },
       style: {
-        fg: PALETTE.text,
-        bg: PALETTE.background,
-        border: { fg: PALETTE.border },
+        fg: theme.text,
+        bg: theme.background,
+        border: { fg: theme.border },
       },
       tags: true,
       scrollable: true,
@@ -164,7 +163,7 @@ export class OceanChatUI {
       mouse: true,
       scrollbar: {
         ch: "│",
-        style: { fg: PALETTE.primary },
+        style: { fg: theme.primary },
       },
     });
 
@@ -174,13 +173,10 @@ export class OceanChatUI {
       bottom: 1,
       left: 0,
       right: 0,
-      height: 3, // still shows a bordered "bar"
-      border: { type: "line", fg: PALETTE.border as any },
-      label: " > ",
+      height: 3,
       style: {
-        fg: PALETTE.text,
-        bg: PALETTE.background,
-        border: { fg: PALETTE.border },
+        fg: theme.text,
+        bg: theme.background,
       },
       tags: true,
     });
@@ -198,8 +194,8 @@ export class OceanChatUI {
       height: 1,
       tags: true,
       style: {
-        fg: PALETTE.text,
-        bg: "#02223a",
+        fg: theme.text,
+        bg: theme.panel,
       },
     });
 
@@ -210,6 +206,13 @@ export class OceanChatUI {
     this.initializeInputHandling();
 
     this.screen.render();
+
+    this.statusRefreshInterval = setInterval(() => {
+      if (this.statusSpinnerInterval) {
+        return;
+      }
+      this.updateStatusBar();
+    }, 5000);
 
     // Make the input live right away (even before enableContinuousChat/prompt)
     this.refocusInput();
@@ -230,13 +233,11 @@ export class OceanChatUI {
   }
 
   private renderInput(): void {
-    const prefix = "{cyan-fg}> {/}";
-    if (this.inputBuffer.length === 0) {
-      this.inputBox.setContent(`${prefix}{gray-fg}Type a message...{/}`);
-      return;
-    }
-
-    const cursor = Math.max(0, Math.min(this.cursorIndex, this.inputBuffer.length));
+    const width = this.getContentWidth() - 4;
+    const cursor = Math.max(
+      0,
+      Math.min(this.cursorIndex, this.inputBuffer.length)
+    );
     const before = this.escapeForTags(this.inputBuffer.slice(0, cursor));
     const rawChar =
       cursor < this.inputBuffer.length ? this.inputBuffer[cursor] : "";
@@ -246,14 +247,38 @@ export class OceanChatUI {
         : "";
     const cursorLabel =
       rawChar === "\n"
-        ? "\\n"
+        ? " "
         : rawChar
         ? this.escapeForTags(rawChar)
         : " ";
-    const cursorDisplay = `{inverse}${(cursorLabel || " ").slice(0, 1)}{/}`;
-    const full = `${before}${cursorDisplay}${after}`;
-    const formatted = full.replace(/\n/g, "\n  ");
-    this.inputBox.setContent(`${prefix}${formatted}`);
+    const cursorDisplay = `{inverse}${cursorLabel.slice(0, 1)}{/}`;
+    const composed =
+      this.inputBuffer.length === 0
+        ? `{gray-fg}Type a message...{/}`
+        : `${before}${cursorDisplay}${after}`;
+    const lines = composed
+      .split("\n")
+      .map((line, index) =>
+        `${index === 0 ? `{${this.fgTag(this.theme.accent)}}›{/}` : " "} ${
+          line || " "
+        }`
+      )
+      .flatMap((line) => this.wrapRichLine(line, width - 2));
+    const frame = this.renderFramedBlock(
+      "Input",
+      lines.length > 0 ? lines : [" "],
+      this.theme.accent
+    );
+    const desiredHeight = frame.split("\n").length;
+    if ((this.inputBox.height as number) !== desiredHeight) {
+      this.inputBox.height = desiredHeight;
+      (this.inputBox as any).height = desiredHeight;
+      this.inputBox.setHeight?.(desiredHeight);
+      this.chatBox.bottom = desiredHeight + 1;
+      (this.chatBox as any).bottom = desiredHeight + 1;
+      this.chatBox.setBottom?.(desiredHeight + 1);
+    }
+    this.inputBox.setContent(frame);
   }
 
   private scrollChat(amount: number): void {
@@ -494,17 +519,19 @@ export class OceanChatUI {
     this.currentSuggestions = suggestions.slice(0, 8);
     this.suggestionIndex = 0;
     const height = Math.min(this.currentSuggestions.length, 8) + 2;
+    const theme = this.theme;
+
     this.suggestionsBox = blessed.box({
       parent: this.screen,
       bottom: 4,
       left: 0,
       right: 0,
       height,
-      border: { type: "line", fg: PALETTE.border as any },
+      border: { type: "line", fg: theme.border as any },
       style: {
-        fg: PALETTE.text,
-        bg: PALETTE.background,
-        border: { fg: PALETTE.border },
+        fg: theme.text,
+        bg: theme.background,
+        border: { fg: theme.border },
       },
       tags: true,
       mouse: true,
@@ -858,21 +885,14 @@ export class OceanChatUI {
       stateTag = "{magenta-fg}● Sending{/}";
     }
 
-    if (modeTag) {
-      const segments = [modeTag];
-      if (stateTag) {
-        segments.push(stateTag);
-      }
-      segments.push(this.footerStatic);
-      this.setStatusContent(segments.join("  "));
+    if (modeTag || stateTag) {
+      const segments = [modeTag, stateTag].filter(Boolean);
+      this.statusMessage = segments.join("  ");
+      this.updateStatusBar();
       return;
     }
 
-    if (stateTag) {
-      this.setStatusContent(`${stateTag}  ${this.footerStatic}`);
-      return;
-    }
-
+    this.statusMessage = null;
     this.updateStatusBar();
   }
 
@@ -1044,6 +1064,10 @@ export class OceanChatUI {
     }
     this.hideSuggestions();
     this.restoreConsole();
+    if (this.statusRefreshInterval) {
+      clearInterval(this.statusRefreshInterval);
+      this.statusRefreshInterval = undefined;
+    }
     this.stopStatusSpinner();
     this.screen.program.showCursor();
     this.screen.program.normalBuffer();
@@ -1127,11 +1151,12 @@ export class OceanChatUI {
   }
 
   setStatus(text: string): void {
-    if (this.statusSpinnerInterval) {
-      clearInterval(this.statusSpinnerInterval);
-      this.statusSpinnerInterval = undefined;
-    }
-    this.updateStatusBar(text);
+    this.stopStatusSpinner(false);
+    const trimmed = text?.trim();
+    this.statusMessage = trimmed
+      ? `{cyan-fg}${this.escapeForTags(trimmed)}{/}`
+      : null;
+    this.updateStatusBar();
   }
 
   captureConsole(): void {
@@ -1233,15 +1258,16 @@ export class OceanChatUI {
     defaultValue: T
   ): Promise<T> {
     return new Promise<T>((resolve) => {
+      const theme = this.theme;
       const overlay = blessed.box({
         top: "center",
         left: "center",
         width: "50%",
         height: options.length + 6,
-        border: { type: "line", fg: PALETTE.accent },
+        border: { type: "line", fg: theme.accent },
         style: {
-          bg: PALETTE.background,
-          border: { fg: PALETTE.accent },
+          bg: theme.background,
+          border: { fg: theme.accent },
         },
         tags: true,
       } as any);
@@ -1265,8 +1291,8 @@ export class OceanChatUI {
         mouse: true,
         vi: true,
         style: {
-          item: { fg: PALETTE.text },
-          selected: { fg: PALETTE.background, bg: PALETTE.accent },
+          item: { fg: theme.text },
+          selected: { fg: theme.background, bg: theme.accent },
         },
       } as any) as blessed.Widgets.ListElement & { selected?: number };
 
@@ -1360,6 +1386,14 @@ export class OceanChatUI {
     this.chatBox.on("wheelup", () => this.scrollChat(-3));
     this.chatBox.on("wheeldown", () => this.scrollChat(3));
     this.screen.key(["f2"], () => this.toggleMouseCapture());
+    this.screen.key(["C-r"], () => {
+      this.showReasoning = !this.showReasoning;
+      const status = this.showReasoning
+        ? "Showing reasoning blocks"
+        : "Hiding reasoning blocks";
+      this.setStatus(status);
+      this.renderMessages();
+    });
   }
 
   private finishPrompt(value: string): void {
@@ -1377,12 +1411,6 @@ export class OceanChatUI {
   }
 
   private renderStatus(): void {
-    const cwdLabel = this.escapeForTags(this.shortenPath(this.config.cwd, 40));
-    const providerLabel = `${this.escapeForTags(this.config.provider)}:${this.escapeForTags(this.config.model)}`;
-    const userSegment = this.activeUserName
-      ? `  {yellow-fg}@{/} {white-fg}${this.escapeForTags(this.activeUserName)}{/}`
-      : `  {yellow-fg}@{/} {gray-fg}guest{/}`;
-    this.footerStatic = `{gray-fg}${cwdLabel}{/}  {cyan-fg}⚙{/} {white-fg}${providerLabel}{/}${userSegment}`;
     this.renderHeader();
     this.updateStatusBar();
   }
@@ -1408,9 +1436,40 @@ export class OceanChatUI {
     return parts.join("");
   }
 
+  private pruneReasoningBlocks(content: string): string {
+    if (this.showReasoning) {
+      return content;
+    }
+
+    const withoutToolBlocks = content.replace(
+      /<tool name="[^"]+"[\s\S]*?<\/tool>/g,
+      ""
+    );
+
+    const withoutReasoningLines = withoutToolBlocks
+      .replace(/^Thinking.*$/gm, "")
+      .replace(/^Iteration\s+\d+.*$/gm, "")
+      .replace(/^Executing\s+\d+\s+tool\(s\)\.\.\.$/gm, "")
+      .replace(/^\s*🛠.*$/gm, "");
+
+    const collapsed = withoutReasoningLines
+      .split("\n")
+      .filter((line, index, arr) => {
+        if (line.trim().length > 0) {
+          return true;
+        }
+        const nextLine = arr[index + 1];
+        return Boolean(nextLine && nextLine.trim().length > 0);
+      })
+      .join("\n");
+
+    return collapsed.trim();
+  }
+
   private decorateAssistantContent(raw: string): string {
     const formatted = this.formatForChat(raw);
-    return this.highlightAssistantMarkup(formatted);
+    const withoutReasoning = this.pruneReasoningBlocks(formatted);
+    return this.highlightAssistantMarkup(withoutReasoning);
   }
 
   private renderCodeBlock(code: string, lang: string): string {
@@ -1524,57 +1583,137 @@ export class OceanChatUI {
   }
 
   private renderMessages(): void {
-    const lines: string[] = [];
+    const blocks: string[] = [];
 
-    // Render all messages and inline workflow items
     for (const message of this.messages) {
-      if (message.role === "user") {
-        const content = this.escape(message.content);
-        lines.push(`\n{cyan-fg}>{/} {bold}${content}{/}\n`);
-      } else if (message.role === "assistant") {
-        const content = this.decorateAssistantContent(message.content);
-        if (content.trim()) {
-          lines.push(`{cyan-fg}●{/} ${content}\n`);
+      switch (message.role) {
+        case "user": {
+          const block = this.renderUserBlock(message.content);
+          if (block) blocks.push(block);
+          break;
         }
-      } else if (message.role === "system") {
-        const content = this.escape(message.content);
-        lines.push(`{gray-fg}  ${content}{/}`);
-      } else if (message.role === "workflow") {
-        lines.push(message.content);
+        case "assistant": {
+          const content = this.decorateAssistantContent(message.content);
+          const block = this.renderAssistantBlock(content);
+          if (block.trim()) blocks.push(block);
+          break;
+        }
+        case "system": {
+          const block = this.renderSystemBlock(message.content);
+          if (block) blocks.push(block);
+          break;
+        }
+        case "workflow":
+          // workflow messages are handled via timeline rendering
+          break;
       }
     }
 
-    // Add active workflow items at the end
     const activeWorkflow = this.timelineEntries
-      .filter((e) => e.status === "pending")
+      .filter(
+        (entry) =>
+          entry.status === "pending" &&
+          entry.label.trim().toLowerCase() !== "thinking"
+      )
       .slice(-3);
 
     if (activeWorkflow.length > 0) {
-      lines.push("");
-      activeWorkflow.forEach((entry) => {
-        lines.push(this.renderTimelineEntry(entry));
-      });
+      blocks.push(this.renderWorkflowBlock(activeWorkflow));
     }
 
-    if (lines.length === 0) {
+    if (blocks.length === 0) {
       this.chatBox.setContent(
         "\n{gray-fg}Ask me anything about your code...{/}"
       );
     } else {
-      this.chatBox.setContent(lines.join("\n"));
+      this.chatBox.setContent(blocks.join("\n\n"));
     }
 
     this.screen.render();
   }
 
+  private renderUserBlock(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return "";
+    }
+    const width = this.getContentWidth() - 4;
+    const textWidth = Math.max(8, width - 2);
+    const segments = trimmed.split(/\r?\n/);
+    const wrapped: string[] = [];
+    segments.forEach((segment, idx) => {
+      const chunk = this.wrapPlainText(segment, textWidth - 2);
+      wrapped.push(...(chunk.length ? chunk : [""]));
+      if (idx < segments.length - 1) {
+        wrapped.push("");
+      }
+    });
+    const lines = wrapped.map((line, index) =>
+      `${index === 0 ? `{${this.fgTag(this.theme.accent)}}›{/}` : " "} ${
+        index === 0 ? "" : " "
+      }{white-fg}${this.escape(line)}{/}`
+    );
+    return this.renderFramedBlock("You", lines, this.theme.accent);
+  }
+
+  private renderAssistantBlock(content: string): string {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return "";
+    }
+    const width = this.getContentWidth() - 4;
+    const textWidth = Math.max(8, width - 2);
+    const segments = trimmed.split(/\r?\n/);
+    const wrappedLines: string[] = [];
+    segments.forEach((segment, idx) => {
+      const chunk = this.wrapRichLine(segment, textWidth - 2);
+      wrappedLines.push(...(chunk.length ? chunk : [""]));
+      if (idx < segments.length - 1) {
+        wrappedLines.push("");
+      }
+    });
+    const lines = wrappedLines.map((line, index) =>
+      `${index === 0 ? `{${this.fgTag(this.theme.primary)}}◦{/}` : " "} ${
+        line || " "
+      }`
+    );
+    return this.renderFramedBlock("Meer", lines, this.theme.primary);
+  }
+
+  private renderSystemBlock(raw: string): string {
+    if (!raw.trim()) {
+      return "";
+    }
+    const width = this.getContentWidth() - 4;
+    const textWidth = Math.max(8, width - 2);
+    const segments = raw.split(/\r?\n/);
+    const wrapped: string[] = [];
+    segments.forEach((segment, idx) => {
+      const chunk = this.wrapPlainText(segment, textWidth);
+      wrapped.push(...(chunk.length ? chunk : [""]));
+      if (idx < segments.length - 1) {
+        wrapped.push("");
+      }
+    });
+    const lines = wrapped.map(
+      (line) => `{gray-fg}${this.escape(line)}{/}`
+    );
+    return this.renderFramedBlock("System", lines, this.theme.muted);
+  }
+
+  private renderWorkflowBlock(entries: TimelineEntry[]): string {
+    const items = entries.map((entry) => this.renderTimelineEntry(entry));
+    return this.renderFramedBlock("Tasks", items, this.theme.accent);
+  }
+
   private renderTimelineEntry(entry: TimelineEntry): string {
     switch (entry.type) {
       case "task": {
-        let icon = "{cyan-fg}○{/}";
+        let icon = `{${this.fgTag(this.theme.accent)}}○{/}`;
         if (entry.status === "success") {
-          icon = "{green-fg}✓{/}";
+          icon = `{${this.fgTag(this.theme.success)}}✓{/}`;
         } else if (entry.status === "error") {
-          icon = "{red-fg}✗{/}";
+          icon = `{${this.fgTag(this.theme.danger)}}✗{/}`;
         }
         const detail = entry.detail
           ? ` {gray-fg}${this.escape(entry.detail)}{/}`
@@ -1585,10 +1724,10 @@ export class OceanChatUI {
       case "note": {
         // Don't escape the label for notes as it may contain emojis/formatted text
         // Ensure the label is displayed properly without escaping
-        return `  ${entry.label}`;
+        return `${entry.label}`;
       }
       default:
-        return `{gray-fg}  ${this.escape(entry.label)}{/}`;
+        return `{gray-fg}${this.escape(entry.label)}{/}`;
     }
   }
 
@@ -1607,14 +1746,6 @@ export class OceanChatUI {
       status: "pending",
     });
 
-    // Add to conversation as workflow message
-    this.messages.push({
-      role: "workflow",
-      content: this.renderTimelineEntry(
-        this.timelineEntries[this.timelineEntries.length - 1]
-      ),
-    });
-
     this.renderMessages();
     this.scrollToBottom();
 
@@ -1629,7 +1760,7 @@ export class OceanChatUI {
     if (!entry) return;
 
     entry.detail = detail;
-    this.updateWorkflowMessage(id);
+    this.renderMessages();
 
     if (this.activeSpinnerTaskId === id) {
       this.startStatusSpinner(entry.label);
@@ -1649,26 +1780,11 @@ export class OceanChatUI {
       entry.detail = detail;
     }
 
-    this.updateWorkflowMessage(id);
+    this.renderMessages();
 
     if (this.activeSpinnerTaskId === id) {
       this.stopStatusSpinner();
       this.activeSpinnerTaskId = undefined;
-    }
-  }
-
-  private updateWorkflowMessage(taskId: string): void {
-    const entry = this.timelineEntries.find((e) => e.id === taskId);
-    if (!entry) return;
-
-    // Find and update the workflow message
-    const msgIndex = this.messages.findIndex(
-      (m) => m.role === "workflow" && m.content.includes(entry.label)
-    );
-
-    if (msgIndex >= 0) {
-      this.messages[msgIndex].content = this.renderTimelineEntry(entry);
-      this.renderMessages();
     }
   }
 
@@ -1686,14 +1802,6 @@ export class OceanChatUI {
     };
 
     this.timelineEntries.push(entry);
-
-    // Render the timeline entry content
-    const renderedContent = this.renderTimelineEntry(entry);
-
-    this.messages.push({
-      role: "workflow",
-      content: renderedContent,
-    });
     this.renderMessages();
     this.scrollToBottom();
   }
@@ -1716,14 +1824,81 @@ export class OceanChatUI {
   }
 
   private updateStatusBar(activeText?: string): void {
-    const content = activeText
-      ? `{cyan-fg}${activeText} ~≈{/}  ${this.footerStatic}`
-      : this.footerStatic;
+    const content = this.buildStatusLine(activeText);
     this.setStatusContent(content);
   }
 
+  private buildStatusLine(activeText?: string): string {
+    const parts: string[] = [];
+    const cwdLabel = this.escapeForTags(this.shortenPath(this.config.cwd, 40));
+    parts.push(`{gray-fg}${cwdLabel}{/}`);
+
+    const branch = this.getCurrentBranch();
+    if (branch) {
+      parts.push(
+        `{green-fg}🌿{/} {white-fg}${this.escapeForTags(branch)}{/}`
+      );
+    }
+
+    const providerLabel = `${this.escapeForTags(
+      this.config.provider
+    )}:${this.escapeForTags(this.config.model)}`;
+    parts.push(`{cyan-fg}⚙{/} {white-fg}${providerLabel}{/}`);
+
+    const userSegment = this.activeUserName
+      ? `{green-fg}🧑{/} {white-fg}${this.escapeForTags(
+          this.activeUserName
+        )}{/}`
+      : `{yellow-fg}🧑{/} {gray-fg}guest{/}`;
+    parts.push(userSegment);
+
+    parts.push(`{gray-fg}/help · Ctrl+C to exit{/}`);
+
+    let statusSegment: string | null = null;
+    if (activeText !== undefined) {
+      const trimmed = activeText.trim();
+      statusSegment = trimmed
+        ? `{cyan-fg}${this.escapeForTags(trimmed)}{/}`
+        : null;
+    } else if (this.statusMessage) {
+      statusSegment = this.statusMessage;
+    }
+
+    if (statusSegment) {
+      parts.push(statusSegment);
+    }
+
+    return parts.filter(Boolean).join("  ");
+  }
+
+  private getCurrentBranch(): string | null {
+    const now = Date.now();
+    if (now - this.branchCache.checkedAt < 5000) {
+      return this.branchCache.value;
+    }
+
+    this.branchCache.checkedAt = now;
+    try {
+      const output = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: this.config.cwd,
+        stdio: ["ignore", "pipe", "ignore"],
+      })
+        .toString()
+        .trim();
+      if (!output || output === "HEAD") {
+        this.branchCache.value = null;
+      } else {
+        this.branchCache.value = output;
+      }
+    } catch {
+      this.branchCache.value = null;
+    }
+
+    return this.branchCache.value;
+  }
+
   private startStatusSpinner(label: string): void {
-    this.stopStatusSpinner();
+    this.stopStatusSpinner(false);
     this.statusSpinnerFrame = 0;
     const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     this.statusSpinnerInterval = setInterval(() => {
@@ -1733,12 +1908,14 @@ export class OceanChatUI {
     }, 80);
   }
 
-  private stopStatusSpinner(): void {
+  private stopStatusSpinner(refresh = true): void {
     if (this.statusSpinnerInterval) {
       clearInterval(this.statusSpinnerInterval);
       this.statusSpinnerInterval = undefined;
     }
-    this.updateStatusBar();
+    if (refresh) {
+      this.updateStatusBar();
+    }
   }
 
   private setStatusContent(content: string): void {
@@ -1748,6 +1925,124 @@ export class OceanChatUI {
     this.lastStatusContent = content;
     this.statusBar.setContent(content);
     this.screen.render();
+  }
+
+  private getContentWidth(): number {
+    const screenWidth =
+      typeof this.screen.width === "number" ? this.screen.width : 100;
+    return Math.max(40, screenWidth - 6);
+  }
+
+  private fgTag(color: string): string {
+    const hex = color.startsWith("#") ? color.slice(1) : color;
+    return color.startsWith("#") ? `#${hex}-fg` : color;
+  }
+
+  private renderFramedBlock(
+    title: string,
+    lines: string[],
+    color: string
+  ): string {
+    const frameWidth = this.getContentWidth();
+    const innerWidth = frameWidth - 2;
+    const textWidth = Math.max(10, innerWidth - 2);
+    const top = this.buildFrameEdge("┌", "┐", title, color, innerWidth);
+    const bottom = this.buildFrameEdge("└", "┘", "", color, innerWidth);
+    const contentLines =
+      lines.length > 0 ? lines : [" "];
+    const body = contentLines
+      .flatMap((line) => this.wrapRichLine(line, textWidth))
+      .map(
+        (line) =>
+          `{${this.fgTag(color)}}│{/} ${this.padVisible(
+            line,
+            textWidth
+          )} {${this.fgTag(color)}}│{/}`
+      );
+    return [top, ...body, bottom].join("\n");
+  }
+
+  private buildFrameEdge(
+    left: string,
+    right: string,
+    title: string,
+    color: string,
+    innerWidth: number
+  ): string {
+    const display = title ? ` ${title} ` : "";
+    const visible = this.visibleLength(display);
+    const available = Math.max(0, innerWidth - visible);
+    const leftFill = Math.floor(available / 2);
+    const rightFill = available - leftFill;
+    return `{${this.fgTag(color)}}${left}${"─".repeat(leftFill)}${display}${"─".repeat(
+      rightFill
+    )}${right}{/}`;
+  }
+
+  private wrapPlainText(text: string, width: number): string[] {
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let current = "";
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (candidate.length > width && current) {
+        lines.push(current);
+        current = word;
+      } else if (candidate.length > width) {
+        lines.push(word);
+        current = "";
+      } else {
+        current = candidate;
+      }
+    }
+    if (current) {
+      lines.push(current);
+    }
+    return lines.length ? lines : [text];
+  }
+
+  private wrapRichLine(line: string, width: number): string[] {
+    if (this.visibleLength(line) <= width) {
+      return [this.padVisible(line, width)];
+    }
+
+    const segments: string[] = [];
+    let current = "";
+    let visible = 0;
+    const tokens = line.match(/\{[^}]+\}|./g) ?? [];
+    for (const token of tokens) {
+      if (token.startsWith("{") && token.endsWith("}")) {
+        current += token;
+        continue;
+      }
+      if (visible >= width) {
+        segments.push(this.padVisible(current, width));
+        current = "";
+        visible = 0;
+      }
+      current += token;
+      visible += 1;
+    }
+    if (current) {
+      segments.push(this.padVisible(current, width));
+    }
+    return segments.length ? segments : [this.padVisible("", width)];
+  }
+
+  private padVisible(text: string, width: number): string {
+    const visible = this.visibleLength(text);
+    if (visible >= width) {
+      return text;
+    }
+    return `${text}${" ".repeat(width - visible)}`;
+  }
+
+  private visibleLength(text: string): number {
+    return this.stripFormatting(text).length;
+  }
+
+  private stripFormatting(text: string): string {
+    return text.replace(/\{[^}]+\}/g, "");
   }
 }
 

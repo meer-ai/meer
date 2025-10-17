@@ -37,6 +37,128 @@ function contentToString(content: MessageContent): string {
   return "";
 }
 
+function stripCodeFences(text: string): string {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/^```(?:\w+)?\s*\n?([\s\S]*?)\n?```$/);
+  if (fenceMatch) {
+    return fenceMatch[1].trim();
+  }
+  if (trimmed === "```json" || trimmed === "```") {
+    return "";
+  }
+  return text;
+}
+
+function extractBalancedJson(text: string): string | null {
+  const firstBrace = text.indexOf("{");
+  if (firstBrace === -1) {
+    return null;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let result = "";
+
+  for (let i = firstBrace; i < text.length; i++) {
+    const char = text[i];
+    result += char;
+
+    if (char === '"' && text[i - 1] !== "\\") {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      if (char === "\\") {
+        i += 1;
+        if (i < text.length) {
+          result += text[i];
+        }
+      }
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return result;
+      }
+    }
+  }
+
+  return null;
+}
+
+function repairJsonString(raw: string): string {
+  let inString = false;
+  let repaired = "";
+
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i];
+
+    if (char === '"' && raw[i - 1] !== "\\") {
+      inString = !inString;
+      repaired += char;
+      continue;
+    }
+
+    if (inString && (char === "\n" || char === "\r")) {
+      repaired += "\\n";
+      if (char === "\r" && raw[i + 1] === "\n") {
+        i += 1;
+      }
+      continue;
+    }
+
+    repaired += char;
+  }
+
+  return repaired;
+}
+
+function sanitizeStructuredOutput(text: string): string {
+  if (!text) {
+    return text;
+  }
+
+  const stripped = stripCodeFences(text);
+  const candidate = extractBalancedJson(stripped);
+
+  const wrapAsCodeBlock = (value: Record<string, unknown>) =>
+    "```json\n" + JSON.stringify(value, null, 2) + "\n```";
+
+  if (!candidate) {
+    return wrapAsCodeBlock({
+      action: "Final Answer",
+      action_input: {
+        response: stripped,
+      },
+    });
+  }
+
+  const attempts = [candidate, repairJsonString(candidate)];
+
+  for (const attempt of attempts) {
+    try {
+      const parsed = JSON.parse(attempt);
+      if (parsed && typeof parsed === "object") {
+        return "```json\n" + JSON.stringify(parsed, null, 2) + "\n```";
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return wrapAsCodeBlock({
+    action: "Final Answer",
+    action_input: {
+      response: stripped,
+    },
+  });
+}
+
 function toProviderMessage(message: BaseMessage): ChatMessage {
   const content = contentToString(message.content);
   switch (message._getType()) {
@@ -89,12 +211,13 @@ export class ProviderChatModel extends BaseChatModel<BaseChatModelCallOptions> {
       () => this.provider.chat(providerMessages, chatOptions),
       abortSignal
     );
+    const sanitized = sanitizeStructuredOutput(String(response));
 
     return {
       generations: [
         {
-          text: response,
-          message: new AIMessage(response),
+          text: sanitized,
+          message: new AIMessage(sanitized),
         },
       ],
     };

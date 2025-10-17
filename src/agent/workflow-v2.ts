@@ -9,7 +9,7 @@ import { MCPManager } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";
 import type { SessionTracker } from "../session/tracker.js";
 import { countTokens, countMessageTokens, getContextLimit } from "../token/utils.js";
-import type { Timeline } from "../ui/workflowTimeline.js";
+import { OCEAN_SPINNER, type Timeline } from "../ui/workflowTimeline.js";
 import { buildAgentSystemPrompt } from "./prompts/systemPrompt.js";
 
 export interface AgentConfig {
@@ -168,7 +168,7 @@ export class AgentWorkflowV2 {
       } else {
         spinner = ora({
           text: chalk.blue("Thinking..."),
-          spinner: "dots",
+          spinner: OCEAN_SPINNER,
         }).start();
       }
 

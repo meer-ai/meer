@@ -35,12 +35,25 @@ export class OpenRouterProvider implements Provider {
   }
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-    const response = await this.makeRequest("/v1/chat/completions", {
+    const responseFormat =
+      (process.env.MEER_AGENT || "").toLowerCase() === "langchain"
+        ? { type: "json_object" }
+        : undefined;
+
+    const payload: Record<string, unknown> = {
       model: this.config.model,
       messages: this.convertMessages(messages),
       temperature: options?.temperature ?? this.config.temperature,
       max_tokens: options?.maxTokens ?? this.config.maxTokens,
       stream: false,
+    };
+
+    if (responseFormat) {
+      payload.response_format = responseFormat;
+    }
+
+    const response = await this.makeRequest("/v1/chat/completions", {
+      ...payload,
     });
 
     return response.choices?.[0]?.message?.content || "";
@@ -50,6 +63,23 @@ export class OpenRouterProvider implements Provider {
     messages: ChatMessage[],
     options?: ChatOptions
   ): AsyncIterable<string> {
+    const responseFormat =
+      (process.env.MEER_AGENT || "").toLowerCase() === "langchain"
+        ? { type: "json_object" }
+        : undefined;
+
+    const body: Record<string, unknown> = {
+      model: this.config.model,
+      messages: this.convertMessages(messages),
+      temperature: options?.temperature ?? this.config.temperature,
+      max_tokens: options?.maxTokens ?? this.config.maxTokens,
+      stream: true,
+    };
+
+    if (responseFormat) {
+      body.response_format = responseFormat;
+    }
+
     const response = await fetch(`${this.config.baseURL}/v1/chat/completions`, {
       method: "POST",
       headers: {
@@ -58,13 +88,7 @@ export class OpenRouterProvider implements Provider {
         "HTTP-Referer": this.config.siteUrl || "",
         "X-Title": this.config.siteName || "",
       },
-      body: JSON.stringify({
-        model: this.config.model,
-        messages: this.convertMessages(messages),
-        temperature: options?.temperature ?? this.config.temperature,
-        max_tokens: options?.maxTokens ?? this.config.maxTokens,
-        stream: true,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {

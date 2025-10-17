@@ -67,7 +67,8 @@
     "vscode-languageserver-types": "^3.17.5",
     "winston": "^3.18.3",
     "yaml": "^2.6.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "@types/babel__traverse": "^7.28.0",

@@ -1,0 +1,15 @@
+<svg width="256" height="256" viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">MeerAI Wave</title>
+  <desc id="desc">A stylised ocean wave inspired by the MeerAI identity</desc>
+  <defs>
+    <linearGradient id="waveGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="32" fill="#011627"/>
+  <path fill="none" stroke="#0ea5e9" stroke-width="10" stroke-linecap="round" stroke-dasharray="14 14" d="M36 72h184"/>
+  <path fill="url(#waveGradient)" d="M28 140c38-54 96-70 132-44 26 19 20 44-4 52-24 8-40-14-22-29-30-2-52 16-72 44l-34-23z"/>
+  <path fill="#06b6d4" d="M80 188c44-60 104-46 140 8l-32 24c-24-34-52-34-80 0l-28-32z"/>
+  <circle cx="190" cy="116" r="18" fill="#e0f2fe" opacity="0.85"/>
+</svg>
