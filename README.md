@@ -22,7 +22,7 @@ MeerAI delivers intelligent assistance **inside your terminal** — no browser t
 
 - **Local-first or cloud-smart** – chat with local [Ollama](https://ollama.ai) models, Meer Managed, or remote APIs (OpenAI, Anthropic, Gemini, Hugging Face, vLLM, TGI)
 - **Two agent workflows** – classic streaming agent or LangChain structured agent with 60+ tools and MCP integration
-- **Rich TUI experience** – blessed-based UI with timelines, diff previews, approval overlays, slash command palette
+- **Rich TUI experience** – Ink-based terminal UI with timelines, diff previews, approval overlays, slash command palette
 - **Workspace-native** – read/edit files, run commands/tests, manage git, scaffold projects, execute semantic search
 - **Private by default** – nothing leaves your machine unless you choose a remote provider
 - **Extensible** – add providers, tools, MCP servers, or CLI commands without touching core logic

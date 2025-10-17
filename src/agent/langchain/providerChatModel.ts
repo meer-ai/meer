@@ -119,44 +119,9 @@ function repairJsonString(raw: string): string {
 }
 
 function sanitizeStructuredOutput(text: string): string {
-  if (!text) {
-    return text;
-  }
-
-  const stripped = stripCodeFences(text);
-  const candidate = extractBalancedJson(stripped);
-
-  const wrapAsCodeBlock = (value: Record<string, unknown>) =>
-    "```json\n" + JSON.stringify(value, null, 2) + "\n```";
-
-  if (!candidate) {
-    return wrapAsCodeBlock({
-      action: "Final Answer",
-      action_input: {
-        response: stripped,
-      },
-    });
-  }
-
-  const attempts = [candidate, repairJsonString(candidate)];
-
-  for (const attempt of attempts) {
-    try {
-      const parsed = JSON.parse(attempt);
-      if (parsed && typeof parsed === "object") {
-        return "```json\n" + JSON.stringify(parsed, null, 2) + "\n```";
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  return wrapAsCodeBlock({
-    action: "Final Answer",
-    action_input: {
-      response: stripped,
-    },
-  });
+  // Don't sanitize - let the model return natural responses
+  // Tool calling will be handled through proper LangChain mechanisms
+  return text;
 }
 
 function toProviderMessage(message: BaseMessage): ChatMessage {

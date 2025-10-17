@@ -19,7 +19,7 @@ import { handleVersion } from "./commands/version.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { WorkflowTimeline, type Timeline } from "./ui/workflowTimeline.js";
-import { OceanChatUI } from "./ui/oceanChat.js";
+import { InkChatAdapter } from "./ui/ink/index.js";
 import { logVerbose, setVerboseLogging } from "./logger.js";
 import { showSlashHelp } from "./ui/slashHelp.js";
 import { ProjectContextManager } from "./context/manager.js";
@@ -1617,23 +1617,22 @@ export function createCLI(): Command {
             pendingInputs.push(value);
           }
         };
-        const oceanUI = useTui
-          ? new OceanChatUI({
+        const chatUI = useTui
+          ? new InkChatAdapter({
               provider: providerType,
               model: config.model,
               cwd: process.cwd(),
-              showWorkflowPanel: false,
             })
           : null;
 
-        oceanUI?.captureConsole();
-        oceanUI?.enableContinuousChat(enqueueInput);
+        chatUI?.captureConsole();
+        chatUI?.enableContinuousChat(enqueueInput);
 
         const handleExit = async () => {
           const finalStats = await sessionTracker.endSession();
-          if (oceanUI) {
-            oceanUI.appendSystemMessage("Session ended. Goodbye! 🌊");
-            oceanUI.destroy();
+          if (chatUI) {
+            chatUI.appendSystemMessage("Session ended. Goodbye! 🌊");
+            chatUI.destroy();
           } else {
             console.log("\n");
           }
@@ -1645,7 +1644,7 @@ export function createCLI(): Command {
         process.on("SIGTERM", handleExit);
 
         const askQuestion = async (): Promise<string> => {
-          if (oceanUI) {
+          if (chatUI) {
             if (pendingInputs.length > 0) {
               return pendingInputs.shift() as string;
             }
@@ -1663,7 +1662,7 @@ export function createCLI(): Command {
         let exitRequested = false;
 
         while (!exitRequested && !restarting) {
-          if (!oceanUI) {
+          if (!chatUI) {
             ChatBoxUI.renderStatusBar({
               provider: providerType,
               model: config.model,
@@ -1680,34 +1679,34 @@ export function createCLI(): Command {
 
           const lowered = userInput.toLowerCase();
           if (lowered === "exit" || lowered === "quit") {
-            if (oceanUI) {
-              oceanUI.appendSystemMessage("Exiting chat session...");
+            if (chatUI) {
+              chatUI.appendSystemMessage("Exiting chat session...");
             }
             exitRequested = true;
             break;
           }
 
           if (await isImageFileRequest(rawInput)) {
-            if (oceanUI) {
-              oceanUI.appendSystemMessage("Processing image command...");
+            if (chatUI) {
+              chatUI.appendSystemMessage("Processing image command...");
             }
             await handleImageFileRequest(rawInput, config);
-            if (!oceanUI) {
+            if (!chatUI) {
               console.log("");
             }
             continue;
           }
 
           if (userInput.startsWith("/")) {
-            if (oceanUI) {
-              oceanUI.appendSystemMessage(userInput);
+            if (chatUI) {
+              chatUI.appendSystemMessage(userInput);
             }
 
-            const result = await handleSlashCommand(
-              userInput,
-              config,
-              sessionTracker
-            );
+            const runSlash = () =>
+              handleSlashCommand(userInput, config, sessionTracker);
+            const result = chatUI
+              ? await chatUI.runWithTerminal(runSlash)
+              : await runSlash();
 
             if (result === "exit") {
               exitRequested = true;
@@ -1716,28 +1715,28 @@ export function createCLI(): Command {
 
             if (result === "restart") {
               restarting = true;
-              if (oceanUI) {
-                oceanUI.appendSystemMessage("Reloading configuration...");
+              if (chatUI) {
+                chatUI.appendSystemMessage("Reloading configuration...");
               } else {
                 console.log(chalk.yellow("\n🔄 Reloading configuration...\n"));
               }
               break;
             }
 
-            if (!oceanUI) {
+            if (!chatUI) {
               console.log("");
             }
             continue;
           }
 
-          if (oceanUI) {
-            oceanUI.appendUserMessage(userInput);
+          if (chatUI) {
+            chatUI.appendUserMessage(userInput);
           }
 
           sessionTracker.trackMessage();
 
-          const timeline: Timeline = oceanUI
-            ? oceanUI.getTimelineAdapter()
+          const timeline: Timeline = chatUI
+            ? chatUI.getTimelineAdapter()
             : new WorkflowTimeline();
 
           try {
@@ -1745,24 +1744,24 @@ export function createCLI(): Command {
 
             await agent.processMessage(userInput, {
               timeline,
-              onAssistantStart: oceanUI
-                ? () => oceanUI.startAssistantMessage()
+              onAssistantStart: chatUI
+                ? () => chatUI.startAssistantMessage()
                 : undefined,
-              onAssistantChunk: oceanUI
-                ? (chunk: string) => oceanUI.appendAssistantChunk(chunk)
+              onAssistantChunk: chatUI
+                ? (chunk: string) => chatUI.appendAssistantChunk(chunk)
                 : undefined,
-              onAssistantEnd: oceanUI
-                ? () => oceanUI.finishAssistantMessage()
+              onAssistantEnd: chatUI
+                ? () => chatUI.finishAssistantMessage()
                 : undefined,
-              withTerminal: oceanUI
-                ? <T>(fn: () => Promise<T>) => oceanUI.runWithTerminal(fn)
+              withTerminal: chatUI
+                ? <T>(fn: () => Promise<T>) => chatUI.runWithTerminal(fn)
                 : undefined,
-              promptChoice: oceanUI
+              promptChoice: chatUI
                 ? (
                     prompt: string,
                     choices: Array<{ label: string; value: string }>,
                     defaultValue: string
-                  ) => oceanUI.promptChoice(prompt, choices, defaultValue)
+                  ) => chatUI.promptChoice(prompt, choices, defaultValue)
                 : undefined,
             });
 
@@ -1770,8 +1769,8 @@ export function createCLI(): Command {
           } catch (error) {
             const message =
               error instanceof Error ? error.message : String(error);
-            if (oceanUI) {
-              oceanUI.appendSystemMessage(`❌ ${message}`);
+            if (chatUI) {
+              chatUI.appendSystemMessage(`❌ ${message}`);
             } else {
               console.log(chalk.red("\n❌ Error:"), message);
             }
@@ -1779,7 +1778,7 @@ export function createCLI(): Command {
             timeline.close();
           }
 
-          if (!oceanUI) {
+          if (!chatUI) {
             console.log("\n");
           }
         }
@@ -1789,8 +1788,8 @@ export function createCLI(): Command {
 
         const finalStats = await sessionTracker.endSession();
 
-        if (oceanUI) {
-          oceanUI.destroy();
+        if (chatUI) {
+          chatUI.destroy();
         }
 
         if (!restarting) {

@@ -2,14 +2,6 @@ import chalk from "chalk";
 import ora, { type Ora } from "ora";
 import inquirer from "inquirer";
 import { CallbackManager } from "@langchain/core/callbacks/manager";
-import {
-  ChatPromptTemplate,
-  MessagesPlaceholder,
-} from "@langchain/core/prompts";
-import {
-  AgentExecutor,
-  createStructuredChatAgent,
-} from "langchain/agents";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
   AIMessage,
@@ -20,6 +12,7 @@ import {
 import type { Provider, ChatMessage } from "../providers/base.js";
 import { createMeerLangChainTools } from "./tools/langchain.js";
 import { ProviderChatModel } from "./langchain/providerChatModel.js";
+import { ManualAgent } from "./langchain/manualAgent.js";
 import { buildLangChainSystemPrompt } from "./prompts/langchainSystemPrompt.js";
 import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
@@ -183,7 +176,7 @@ export class LangChainAgentWorkflow {
   private contextLimit?: number;
   private chatTimeout: number;
   private messages: ChatMessage[] = [];
-  private executor?: AgentExecutor;
+  private agent?: ManualAgent;
   private tools: StructuredToolInterface[] = [];
   private toolMap = new Map<string, StructuredToolInterface>();
   private mcpManager = MCPManager.getInstance();
@@ -260,40 +253,13 @@ export class LangChainAgentWorkflow {
       this.tools.map((tool) => [tool.name, tool] as const)
     );
 
-    // Build prompt for StructuredChatAgent
-    // The system prompt must be escaped and properly formatted for the agent
-    const escapedPrompt = fullPrompt
-      .replaceAll("{", "{{")
-      .replaceAll("}", "}}");
-
-    const systemMessage = [
-      escapedPrompt,
-      "You have access to the following tools:\n{tools}",
-      "When you invoke a tool, reference its name exactly as listed in {tool_names}.",
-    ].join("\n\n");
-
-    const prompt = ChatPromptTemplate.fromMessages([
-      ["system", systemMessage],
-      new MessagesPlaceholder({ variableName: "chat_history", optional: true }),
-      ["human", "{input}"],
-      new MessagesPlaceholder({
-        variableName: "agent_scratchpad",
-        optional: true,
-      }),
-    ]);
-
-    const agent = await createStructuredChatAgent({
+    // Create manual agent with provider-agnostic tool calling
+    this.agent = new ManualAgent({
       llm: chatModel,
       tools: this.tools,
-      prompt,
-    });
-
-    this.executor = new AgentExecutor({
-      agent,
-      tools: this.tools,
+      systemPrompt: fullPrompt,
       maxIterations: this.maxIterations,
       verbose: false,
-      returnIntermediateSteps: false,
     });
   }
 
@@ -312,7 +278,7 @@ export class LangChainAgentWorkflow {
       ) => Promise<string>;
     }
   ): Promise<string> {
-    if (!this.executor) {
+    if (!this.agent) {
       throw new Error("Agent not initialized");
     }
 
@@ -431,15 +397,10 @@ export class LangChainAgentWorkflow {
 
     try {
       const result = await this.withTimeout(
-        this.executor.invoke(
-          {
-            input: userMessage,
-            chat_history: historyMessages,
-          },
-          {
-            callbacks: [callbackManager],
-          }
-        ),
+        this.agent.invoke({
+          input: userMessage,
+          chat_history: historyMessages,
+        }),
         this.chatTimeout,
         "LangChain agent"
       );
