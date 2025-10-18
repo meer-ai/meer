@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { spawn, type ChildProcess } from 'child_process';
 import chalk from 'chalk';
 import type {
@@ -54,9 +55,22 @@ export class MCPClient {
       },
       {
         capabilities: {
-          roots: {},
+          roots: {
+            listChanged: true,
+          },
           sampling: {},
         },
+      }
+    );
+
+    // Set up request handlers for server-initiated requests
+    this.client.setRequestHandler(
+      ListRootsRequestSchema,
+      async () => {
+        // Return empty roots list - the server will use its configured roots
+        return {
+          roots: [],
+        };
       }
     );
 
@@ -266,9 +280,21 @@ export class MCPClient {
         },
         {
           capabilities: {
-            roots: {},
+            roots: {
+              listChanged: true,
+            },
             sampling: {},
           },
+        }
+      );
+
+      // Re-setup request handlers
+      this.client.setRequestHandler(
+        ListRootsRequestSchema,
+        async () => {
+          return {
+            roots: [],
+          };
         }
       );
 

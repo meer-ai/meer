@@ -820,7 +820,9 @@ async function handleModelCommand(config: any) {
           };
         });
 
-        const { selectedModel } = await inquirer.prompt([
+        // Create a new prompt module to avoid conflicts with Ink
+        const promptModule = inquirer.createPromptModule();
+        const { selectedModel } = await promptModule([
           {
             type: "list",
             name: "selectedModel",
@@ -955,7 +957,9 @@ async function handleProviderCommand() {
       };
     });
 
-    const { selectedProvider } = await inquirer.prompt([
+    // Create a new prompt module to avoid conflicts with Ink
+    const promptModule = inquirer.createPromptModule();
+    const { selectedProvider } = await promptModule([
       {
         type: "list",
         name: "selectedProvider",

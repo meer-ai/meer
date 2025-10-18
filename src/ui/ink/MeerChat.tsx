@@ -158,9 +158,9 @@ const Header: React.FC<{
   const getModeLabel = () => mode === 'plan' ? 'PLAN' : 'EDIT';
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} marginBottom={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
       <Box justifyContent="center">
-        <Gradient name="rainbow">
+        <Gradient name="cristal">
           <Text bold>🌊 Meer AI</Text>
         </Gradient>
       </Box>

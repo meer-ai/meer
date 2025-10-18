@@ -42,6 +42,7 @@ export function createLoginCommand(): Command {
         console.log('');
         console.log(chalk.white('  1. Visit: ') + chalk.blue.underline(deviceCodeResponse.verification_uri));
         console.log(chalk.white('  2. Enter code: ') + chalk.bold.yellow(deviceCodeResponse.user_code));
+        console.log(chalk.gray('  3. Sign in with Google or GitHub to authorize MeerAI'));
         console.log('');
         console.log(chalk.gray(`  Code expires in ${Math.floor(deviceCodeResponse.expires_in / 60)} minutes`));
         console.log(chalk.bold.cyan('━'.repeat(60)));

@@ -5,7 +5,7 @@ A beautiful, modern Terminal User Interface built with [Ink](https://github.com/
 ## Features
 
 ✨ **Beautiful Design**
-- Gradient headers with rainbow colors
+- Gradient headers with ocean colors (cyan to blue) 🌊
 - Syntax-highlighted code blocks
 - Clean message bubbles with role indicators
 - Smooth scrolling and animations

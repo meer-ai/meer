@@ -6,7 +6,15 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { MCPManager } from '../mcp/manager.js';
-import { loadMCPConfig, toggleServer, mcpConfigExists } from '../mcp/config.js';
+import {
+  loadMCPConfig,
+  toggleServer,
+  mcpConfigExists,
+  saveMCPConfig,
+  checkUvxInstalled,
+  displayUvxWarning,
+  getUvxRequiredServers,
+} from '../mcp/config.js';
 
 export function createMCPCommand(): Command {
   const command = new Command('mcp');
@@ -20,7 +28,9 @@ export function createMCPCommand(): Command {
     .addCommand(createDisconnectCommand())
     .addCommand(createEnableCommand())
     .addCommand(createDisableCommand())
-    .addCommand(createStatusCommand());
+    .addCommand(createStatusCommand())
+    .addCommand(createSetupCommand())
+    .addCommand(createResetCommand());
 
   return command;
 }
@@ -213,6 +223,16 @@ function createConnectCommand(): Command {
     .argument('<server>', 'Server name to connect to')
     .action(async (serverName: string) => {
       try {
+        // Check if this server requires uvx
+        const config = loadMCPConfig();
+        const serverConfig = config.mcpServers[serverName];
+
+        if (serverConfig && serverConfig.command === 'uvx' && !checkUvxInstalled()) {
+          console.log(chalk.yellow(`\n⚠️  Server "${serverName}" requires uvx which is not installed\n`));
+          displayUvxWarning();
+          return;
+        }
+
         const spinner = ora(chalk.blue(`Connecting to ${serverName}...`)).start();
 
         const manager = MCPManager.getInstance();
@@ -328,6 +348,17 @@ function createStatusCommand(): Command {
     .description('Show status of MCP servers')
     .action(async () => {
       try {
+        // Check for uvx before trying to connect
+        const uvxInstalled = checkUvxInstalled();
+        const config = loadMCPConfig();
+        const uvxRequiredServers = getUvxRequiredServers(config);
+
+        if (!uvxInstalled && uvxRequiredServers.length > 0) {
+          console.log(chalk.yellow('\n⚠️  uvx is not installed'));
+          console.log(chalk.gray(`The following enabled servers require uvx: ${uvxRequiredServers.join(', ')}\n`));
+          console.log(chalk.gray('Run `meer mcp setup` for installation instructions.\n'));
+        }
+
         const spinner = ora(chalk.blue('Checking MCP server status...')).start();
 
         const manager = MCPManager.getInstance();
@@ -341,6 +372,9 @@ function createStatusCommand(): Command {
         if (servers.length === 0) {
           console.log(chalk.yellow('  ⚠️  No servers connected'));
           console.log(chalk.gray('  Enable servers with `meer mcp enable <server>`\n'));
+          console.log(chalk.cyan('  💡 Quick start:'));
+          console.log(chalk.gray('     • Run `meer mcp setup` for guided configuration'));
+          console.log(chalk.gray('     • Or run `meer mcp list` to see available servers\n'));
           return;
         }
 
@@ -360,6 +394,210 @@ function createStatusCommand(): Command {
         }
 
         await manager.disconnectAll();
+      } catch (error) {
+        console.error(
+          chalk.red('Error:'),
+          error instanceof Error ? error.message : String(error)
+        );
+        process.exit(1);
+      }
+    });
+
+  return command;
+}
+
+/**
+ * Interactive MCP setup wizard
+ */
+function createSetupCommand(): Command {
+  const command = new Command('setup');
+
+  command
+    .description('Interactive setup wizard for MCP servers')
+    .action(async () => {
+      try {
+        const inquirer = (await import('inquirer')).default;
+
+        console.log(chalk.bold.cyan('\n🔧 MCP Setup Wizard\n'));
+        console.log(chalk.gray('This wizard will help you configure Model Context Protocol servers.\n'));
+
+        // Check for uvx installation
+        const uvxInstalled = checkUvxInstalled();
+        const config = loadMCPConfig();
+        const uvxRequiredServers = getUvxRequiredServers(config);
+
+        if (!uvxInstalled && uvxRequiredServers.length > 0) {
+          displayUvxWarning();
+          console.log(chalk.yellow(`⚠️  The following enabled servers require uvx: ${uvxRequiredServers.join(', ')}\n`));
+
+          const { continueWithout } = await inquirer.prompt([
+            {
+              type: 'confirm',
+              name: 'continueWithout',
+              message: 'Do you want to continue setup without uvx? (You can install it later)',
+              default: false,
+            },
+          ]);
+
+          if (!continueWithout) {
+            console.log(chalk.gray('\nSetup cancelled. Please install uvx and try again.\n'));
+            return;
+          }
+        }
+
+        const servers = Object.entries(config.mcpServers);
+
+        // Categorize servers
+        const categories = {
+          'Core Development': ['filesystem', 'git', 'github'],
+          'Knowledge & Memory': ['memory'],
+          'Web & Content': ['fetch', 'brave', 'puppeteer'],
+          'Collaboration': ['slack', 'google-drive'],
+          'Database': ['postgres', 'sqlite'],
+          'Utilities': ['time', 'sequential_thinking'],
+        };
+
+        console.log(chalk.bold.blue('📦 Available MCP Servers by Category:\n'));
+
+        for (const [category, serverNames] of Object.entries(categories)) {
+          console.log(chalk.bold.yellow(`  ${category}:`));
+          for (const serverName of serverNames) {
+            const serverConfig = config.mcpServers[serverName];
+            if (serverConfig) {
+              const status = serverConfig.enabled
+                ? chalk.green('✓ enabled')
+                : chalk.gray('○ disabled');
+              console.log(`    ${status}  ${chalk.white(serverName)} - ${chalk.gray(serverConfig.description)}`);
+            }
+          }
+          console.log('');
+        }
+
+        const { action } = await inquirer.prompt([
+          {
+            type: 'list',
+            name: 'action',
+            message: 'What would you like to do?',
+            choices: [
+              { name: '✓ Enable recommended servers (filesystem, git, memory, fetch, time)', value: 'enable-recommended' },
+              { name: '⚙️  Choose servers to enable/disable', value: 'custom' },
+              { name: '🔑 Configure API keys and credentials', value: 'configure' },
+              { name: '❌ Cancel', value: 'cancel' },
+            ],
+          },
+        ]);
+
+        if (action === 'cancel') {
+          console.log(chalk.gray('\nSetup cancelled.\n'));
+          return;
+        }
+
+        if (action === 'enable-recommended') {
+          const recommended = ['filesystem', 'git', 'memory', 'fetch', 'time'];
+          for (const serverName of recommended) {
+            if (config.mcpServers[serverName]) {
+              config.mcpServers[serverName].enabled = true;
+            }
+          }
+          saveMCPConfig(config);
+          console.log(chalk.green('\n✅ Enabled recommended servers successfully!\n'));
+          console.log(chalk.cyan('💡 Tip: Run `meer mcp status` to verify connections\n'));
+          return;
+        }
+
+        if (action === 'custom') {
+          const { selectedServers } = await inquirer.prompt([
+            {
+              type: 'checkbox',
+              name: 'selectedServers',
+              message: 'Select servers to enable (use space to select):',
+              choices: servers.map(([name, serverConfig]) => ({
+                name: `${name} - ${serverConfig.description}`,
+                value: name,
+                checked: serverConfig.enabled,
+              })),
+            },
+          ]);
+
+          // Update enabled status
+          for (const [name] of servers) {
+            config.mcpServers[name].enabled = selectedServers.includes(name);
+          }
+
+          saveMCPConfig(config);
+          console.log(chalk.green(`\n✅ Updated ${selectedServers.length} server(s) successfully!\n`));
+        }
+
+        if (action === 'configure') {
+          console.log(chalk.yellow('\n⚠️  API Key Configuration\n'));
+          console.log(chalk.gray('Some MCP servers require API keys or credentials.'));
+          console.log(chalk.gray('Set these as environment variables in your shell:\n'));
+
+          console.log(chalk.cyan('  GitHub:'));
+          console.log(chalk.gray('    export GITHUB_TOKEN="your_github_token"\n'));
+
+          console.log(chalk.cyan('  Brave Search:'));
+          console.log(chalk.gray('    export BRAVE_API_KEY="your_brave_api_key"\n'));
+
+          console.log(chalk.cyan('  Slack:'));
+          console.log(chalk.gray('    export SLACK_BOT_TOKEN="xoxb-your-token"'));
+          console.log(chalk.gray('    export SLACK_TEAM_ID="T01234567"\n'));
+
+          console.log(chalk.cyan('  Google Drive:'));
+          console.log(chalk.gray('    export GDRIVE_CLIENT_ID="your_client_id"'));
+          console.log(chalk.gray('    export GDRIVE_CLIENT_SECRET="your_client_secret"'));
+          console.log(chalk.gray('    export GDRIVE_REDIRECT_URI="http://localhost:8080"\n'));
+
+          console.log(chalk.cyan('  PostgreSQL:'));
+          console.log(chalk.gray('    export POSTGRES_CONNECTION_STRING="postgresql://user:pass@localhost/db"\n'));
+        }
+      } catch (error) {
+        console.error(
+          chalk.red('Error:'),
+          error instanceof Error ? error.message : String(error)
+        );
+        process.exit(1);
+      }
+    });
+
+  return command;
+}
+
+/**
+ * Reset MCP configuration to defaults
+ */
+function createResetCommand(): Command {
+  const command = new Command('reset');
+
+  command
+    .description('Reset MCP configuration to default settings')
+    .option('-f, --force', 'Skip confirmation prompt')
+    .action(async (options) => {
+      try {
+        const inquirer = (await import('inquirer')).default;
+
+        if (!options.force) {
+          const { confirm } = await inquirer.prompt([
+            {
+              type: 'confirm',
+              name: 'confirm',
+              message: 'Are you sure you want to reset MCP configuration to defaults?',
+              default: false,
+            },
+          ]);
+
+          if (!confirm) {
+            console.log(chalk.gray('\nReset cancelled.\n'));
+            return;
+          }
+        }
+
+        const { getDefaultConfig, saveMCPConfig } = await import('../mcp/config.js');
+        const defaultConfig = getDefaultConfig();
+        saveMCPConfig(defaultConfig);
+
+        console.log(chalk.green('\n✅ MCP configuration reset to defaults successfully!\n'));
+        console.log(chalk.cyan('💡 Run `meer mcp setup` to configure servers again\n'));
       } catch (error) {
         console.error(
           chalk.red('Error:'),
