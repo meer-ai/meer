@@ -187,6 +187,8 @@ export class LangChainAgentWorkflow {
     choices: Array<{ label: string; value: string }>,
     defaultValue: string
   ) => Promise<string>;
+  private lastPromptTokens = 0;
+  private basePromptTokens = 0;
 
   constructor(config: LangChainAgentConfig) {
     this.provider = config.provider;
@@ -230,6 +232,8 @@ export class LangChainAgentWorkflow {
       : systemPrompt;
 
     this.messages = [{ role: "system", content: fullPrompt }];
+    this.basePromptTokens = countMessageTokens(this.model, this.messages);
+    this.lastPromptTokens = 0;
 
     const chatModel = new ProviderChatModel(this.provider, {
       model: this.model,
@@ -307,10 +311,12 @@ export class LangChainAgentWorkflow {
       .slice(1, -1)
       .map(toLangChainMessage);
 
+    const previousPromptTokens = this.lastPromptTokens;
     const promptTokens = countMessageTokens(this.model, this.messages);
     this.sessionTracker?.trackPromptTokens(promptTokens);
     this.sessionTracker?.trackContextUsage(promptTokens);
     this.warnIfContextHigh(promptTokens);
+    this.lastPromptTokens = promptTokens;
 
     let spinner: Ora | null = null;
     let thinkingTaskId: string | undefined;
@@ -488,18 +494,28 @@ export class LangChainAgentWorkflow {
           metadata: { provider: this.providerType, model: this.model },
         });
       }
-
       if (this.sessionTracker) {
+        const promptDelta = Math.max(promptTokens - previousPromptTokens, 0);
+        const firstTurn = previousPromptTokens === 0;
+        const conversationalPromptTokens = firstTurn
+          ? Math.max(promptTokens - this.basePromptTokens, 0)
+          : promptDelta;
         const tokenUsage = this.sessionTracker.getTokenUsage();
         const costUsage = this.sessionTracker.getCostUsage();
+        const headline = `Tokens: ${conversationalPromptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out (this turn)`;
+        const totals = `Session total: ${tokenUsage.prompt.toLocaleString()} in + ${tokenUsage.completion.toLocaleString()} out`;
+        const systemPromptNote =
+          firstTurn && this.basePromptTokens > 0
+            ? ` • System prompt adds ${this.basePromptTokens.toLocaleString()} tokens upfront`
+            : "";
         const summary =
           costUsage.total > 0
-            ? `Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out | Cost: ${costUsage.formatted.total} (session total)`
-            : `Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out`;
+            ? `${headline} | Cost: ${costUsage.formatted.total} • ${totals}${systemPromptNote}`
+            : `${headline} • ${totals}${systemPromptNote}`;
         if (timeline) {
-          timeline.note(`💰 ${summary}`);
+          timeline.note(`?? ${summary}`);
         } else {
-          console.log(chalk.dim(`\n💰 ${summary}`));
+          console.log(chalk.dim(`\n?? ${summary}`));
         }
       }
 

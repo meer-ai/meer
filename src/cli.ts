@@ -133,8 +133,12 @@ async function showWelcomeScreen() {
         ? "🌐 OpenRouter"
         : config.providerType === "meer"
         ? "🌊 Meer Managed"
+        : config.providerType === "zaiCodingPlan"
+        ? "⚡ Z.ai Coding Plan"
+        : config.providerType === "zaiCredit"
+        ? "⚡ Z.ai Credit"
         : config.providerType === "zai"
-        ? "⚡ Z.ai"
+        ? "⚡ Z.ai (legacy)"
         : config.providerType;
 
     console.log(chalk.bold.blue("📋 Configuration:"));
@@ -933,7 +937,8 @@ async function handleProviderCommand() {
       { name: "gemini", icon: "✨", label: "Google Gemini" },
       { name: "anthropic", icon: "🧠", label: "Anthropic Claude" },
       { name: "openrouter", icon: "🌐", label: "OpenRouter" },
-      { name: "zai", icon: "⚡", label: "Z.ai" },
+      { name: "zaiCodingPlan", icon: "⚡", label: "Z.ai Coding Plan" },
+      { name: "zaiCredit", icon: "⚡", label: "Z.ai Credit (PAYG)" },
     ];
 
     console.log(chalk.bold.blue("\n🔌 Available Providers:\n"));
@@ -980,13 +985,19 @@ async function handleProviderCommand() {
           config.model = "anthropic/claude-3.5-sonnet";
         } else if (selectedProvider === "meer") {
           config.model = "auto";
-        } else if (selectedProvider === "zai") {
+        } else if (selectedProvider === "zaiCodingPlan" || selectedProvider === "zaiCredit" || selectedProvider === "zai") {
           config.model = "glm-4";
         }
 
         if (selectedProvider === "meer") {
           config.meer = config.meer || {};
           config.meer.apiKey = config.meer.apiKey || "";
+        } else if (selectedProvider === "zaiCodingPlan") {
+          config.zaiCodingPlan = config.zaiCodingPlan || {};
+          config.zaiCodingPlan.apiKey = config.zaiCodingPlan.apiKey || "";
+        } else if (selectedProvider === "zaiCredit") {
+          config.zaiCredit = config.zaiCredit || {};
+          config.zaiCredit.apiKey = config.zaiCredit.apiKey || "";
         } else if (selectedProvider === "zai") {
           config.zai = config.zai || {};
           config.zai.apiKey = config.zai.apiKey || "";
@@ -1704,9 +1715,19 @@ export function createCLI(): Command {
 
             const runSlash = () =>
               handleSlashCommand(userInput, config, sessionTracker);
-            const result = chatUI
-              ? await chatUI.runWithTerminal(runSlash)
-              : await runSlash();
+            let result: string;
+            if (chatUI) {
+              const { result: slashResult, stdout, stderr } =
+                await chatUI.runWithTerminalCapture(runSlash);
+              result = slashResult;
+
+              const combinedOutput = `${stdout}${stderr}`.trim();
+              if (combinedOutput.length > 0) {
+                chatUI.appendSystemMessage(combinedOutput);
+              }
+            } else {
+              result = await runSlash();
+            }
 
             if (result === "exit") {
               exitRequested = true;

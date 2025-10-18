@@ -47,7 +47,7 @@ export class AgentWorkflowV2 {
     message: string,
     choices: Array<{ label: string; value: string }>,
     defaultValue: string
-  ) => Promise<string>;
+      ) => Promise<string>;
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -64,6 +64,8 @@ export class AgentWorkflowV2 {
       this.sessionTracker?.setContextLimit(this.contextLimit);
     }
   }
+  private lastPromptTokens = 0;
+  private basePromptTokens = 0;
 
   private getDefaultChatTimeout(providerType?: string): number {
     switch (providerType?.toLowerCase()) {
@@ -97,6 +99,8 @@ export class AgentWorkflowV2 {
       : systemPrompt;
 
     this.messages = [{ role: "system", content: fullPrompt }];
+    this.basePromptTokens = countMessageTokens(this.model, this.messages);
+    this.lastPromptTokens = 0;
   }
 
   /**
@@ -153,10 +157,12 @@ export class AgentWorkflowV2 {
       }
 
       // Get LLM response
+      const previousPromptTokens = this.lastPromptTokens;
       const promptTokens = countMessageTokens(this.model, this.messages);
       this.sessionTracker?.trackPromptTokens(promptTokens);
       this.sessionTracker?.trackContextUsage(promptTokens);
       this.warnIfContextHigh(promptTokens);
+      this.lastPromptTokens = promptTokens;
 
       let spinner: Ora | null = null;
       let thinkingTaskId: string | undefined;
@@ -239,32 +245,41 @@ export class AgentWorkflowV2 {
         } else {
           console.log("\n");
         }
-
         const completionTokens = countTokens(this.model, response);
         this.sessionTracker?.trackCompletionTokens(completionTokens);
 
         // Display token and cost info for this response
         if (this.sessionTracker) {
+          const promptDelta = Math.max(promptTokens - previousPromptTokens, 0);
+          const firstTurn = previousPromptTokens === 0;
+          const conversationalPromptTokens = firstTurn
+            ? Math.max(promptTokens - this.basePromptTokens, 0)
+            : promptDelta;
           const tokenUsage = this.sessionTracker.getTokenUsage();
           const costUsage = this.sessionTracker.getCostUsage();
+          const headline = `Tokens: ${conversationalPromptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out (this turn)`;
+          const totals = `Session total: ${tokenUsage.prompt.toLocaleString()} in + ${tokenUsage.completion.toLocaleString()} out`;
+          const systemPromptNote =
+            firstTurn && this.basePromptTokens > 0
+              ? ` • System prompt adds ${this.basePromptTokens.toLocaleString()} tokens upfront`
+              : "";
 
           if (costUsage.total > 0) {
-            const summary = `Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out | Cost: ${costUsage.formatted.total} (session total)`;
+            const summary = `${headline} | Cost: ${costUsage.formatted.total} • ${totals}${systemPromptNote}`;
             if (timeline) {
-              timeline.note(`💰 ${summary}`);
+              timeline.note(`?? ${summary}`);
             } else {
-              console.log(chalk.dim(`\n💰 ${summary}`));
+              console.log(chalk.dim(`\n?? ${summary}`));
             }
           } else {
-            const summary = `Tokens: ${promptTokens.toLocaleString()} in + ${completionTokens.toLocaleString()} out`;
+            const summary = `${headline} • ${totals}${systemPromptNote}`;
             if (timeline) {
-              timeline.note(`💰 ${summary}`);
+              timeline.note(`?? ${summary}`);
             } else {
-              console.log(chalk.dim(`\n💰 ${summary}`));
+              console.log(chalk.dim(`\n?? ${summary}`));
             }
           }
         }
-
       } catch (error) {
         if (spinner) {
           spinner.stop();
@@ -964,3 +979,4 @@ export class AgentWorkflowV2 {
   }
 
 }
+

@@ -341,12 +341,28 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
   const updateSlashSuggestions = useCallback(
     (value: string) => {
-      if (!value || !value.startsWith('/')) {
+      const trimmedLeading = value.trimStart();
+
+      if (!trimmedLeading.startsWith('/')) {
         clearSlashSuggestions();
         return;
       }
 
-      const commandToken = value.split(/\s+/)[0] ?? '';
+      const firstSpace = trimmedLeading.indexOf(' ');
+      const commandToken =
+        firstSpace === -1 ? trimmedLeading : trimmedLeading.slice(0, firstSpace);
+      const hasArguments =
+        firstSpace !== -1 &&
+        trimmedLeading
+          .slice(firstSpace + 1)
+          .trim()
+          .length > 0;
+
+      if (hasArguments) {
+        clearSlashSuggestions();
+        return;
+      }
+
       const normalized = commandToken.toLowerCase();
       const options =
         commandToken === '/'
@@ -376,12 +392,45 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     [updateSlashSuggestions]
   );
 
-  const applySlashSuggestion = useCallback(() => {
-    if (slashSuggestions.length === 0) return;
-    const suggestion = slashSuggestions[selectedSuggestion];
-    setInput(`${suggestion.command} `);
-    clearSlashSuggestions();
-  }, [clearSlashSuggestions, selectedSuggestion, slashSuggestions]);
+  const sendMessage = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      if (isThinking) {
+        setMessageQueue((prev) => [...prev, trimmed]);
+      } else {
+        onMessage(trimmed);
+      }
+    },
+    [isThinking, onMessage]
+  );
+
+  const applySlashSuggestion = useCallback(
+    (mode: 'insert' | 'send' = 'insert') => {
+      if (slashSuggestions.length === 0) return;
+      const suggestion = slashSuggestions[selectedSuggestion];
+
+      if (mode === 'send') {
+        clearSlashSuggestions();
+        handleInputChange('');
+        sendMessage(suggestion.command);
+        return;
+      }
+
+      setInput(`${suggestion.command} `);
+      clearSlashSuggestions();
+    },
+    [
+      clearSlashSuggestions,
+      handleInputChange,
+      selectedSuggestion,
+      sendMessage,
+      slashSuggestions,
+    ]
+  );
 
   const hasSlashSuggestions = slashSuggestions.length > 0;
 
@@ -414,7 +463,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
     if (hasSlashSuggestions) {
       if (key.tab) {
-        applySlashSuggestion();
+        applySlashSuggestion('insert');
         return;
       }
       if (key.upArrow) {
@@ -440,8 +489,17 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
 
-    if (hasSlashSuggestions && trimmed === '/') {
-      applySlashSuggestion();
+    const commandToken = trimmed.split(/\s+/)[0] ?? '';
+    const suggestion = slashSuggestions[selectedSuggestion];
+    const shouldApplySlash =
+      hasSlashSuggestions &&
+      commandToken.startsWith('/') &&
+      trimmed === commandToken &&
+      suggestion &&
+      suggestion.command.toLowerCase().startsWith(commandToken.toLowerCase());
+
+    if (shouldApplySlash) {
+      applySlashSuggestion('send');
       return;
     }
 
@@ -450,20 +508,22 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     }
 
     if (isThinking) {
-      setMessageQueue((prev) => [...prev, trimmed]);
       handleInputChange('');
+      sendMessage(trimmed);
       return;
     }
 
-    onMessage(trimmed);
+    sendMessage(trimmed);
     handleInputChange('');
   }, [
     applySlashSuggestion,
     handleInputChange,
-    hasSlashSuggestions,
     input,
     isThinking,
-    onMessage,
+    hasSlashSuggestions,
+    sendMessage,
+    selectedSuggestion,
+    slashSuggestions,
   ]);
 
   // Process queued messages when agent finishes

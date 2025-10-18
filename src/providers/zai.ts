@@ -7,26 +7,6 @@ import type {
   ProviderMetadata,
 } from "./base.js";
 
-/**
- * Z.ai Provider - GLM (General Language Model) Family
- *
- * Z.ai (formerly Zhipu AI) provides the GLM model family:
- * - GLM-4: Flagship model, 200K context (recommended)
- * - GLM-4-Plus: Enhanced capability tier
- * - GLM-4-Air / GLM-4-AirX: Cost-effective, fast options
- * - GLM-4-Flash: Free tier, fast performance
- * - GLM-4V: Vision multimodal capabilities
- *
- * API Endpoints:
- * - Coding Plan (subscription): https://api.z.ai/api/coding/paas/v4 (default)
- * - Standard API (pay-as-you-go): https://api.z.ai/api/paas/v4
- *
- * API Pricing: ~$0.2 per 1M input tokens, $1.1 per 1M output tokens
- * Context: 128K-200K tokens, Max output: 96K tokens
- *
- * Capabilities: Reasoning, coding, agentic tasks, function calling
- * Compatible with: Cline, Claude Code, OpenCode, and other OpenAI-compatible tools
- */
 export interface ZaiConfig {
   apiKey: string;
   baseURL?: string;
@@ -36,6 +16,21 @@ export interface ZaiConfig {
 }
 
 export const DEFAULT_ZAI_MODEL = "glm-4";
+
+const DEFAULT_CAPABILITIES = ["chat", "stream", "embeddings"];
+const DEFAULT_STANDARD_BASE_URL = "https://api.z.ai/api/paas/v4";
+const DEFAULT_CODING_PLAN_BASE_URL = "https://api.z.ai/api/coding/paas/v4";
+
+type ZaiProviderVariant = "coding-plan" | "credit";
+
+interface ZaiProviderOptions {
+  defaultBaseURL: string;
+  defaultEmbeddingBaseURL: string;
+  metadata: ProviderMetadata;
+  envBaseURLVar?: string;
+  envApiKeyVar?: string;
+}
+
 const EMBEDDING_MODEL_FALLBACKS = [
   "embedding-3",
   "embeddings-3",
@@ -45,6 +40,7 @@ const EMBEDDING_MODEL_FALLBACKS = [
   "embeddings-2",
   "text-embedding-ada-002",
 ];
+
 const LEGACY_MODEL_MAP: Record<string, string> = {
   "glm-4.6": "glm-4",
   "glm-4.5": "glm-4-plus",
@@ -58,33 +54,45 @@ const LEGACY_MODEL_MAP: Record<string, string> = {
 const isUnknownModelError = (error: unknown): boolean =>
   error instanceof Error && error.message.toLowerCase().includes("unknown model");
 
-export class ZaiProvider implements Provider {
-  private config: ZaiConfig;
-  private availableModelsCache?: string[];
-  private embeddingBaseURL: string;
+class ZaiProviderBase implements Provider {
+  protected config: ZaiConfig;
+  protected availableModelsCache?: string[];
+  protected embeddingBaseURL: string;
+  private readonly metadataInfo: ProviderMetadata;
 
-  constructor(config: ZaiConfig) {
-    const model = ZaiProvider.normalizeModel(config.model);
-    const baseURL =
-      config.baseURL || process.env.ZAI_BASE_URL || "https://api.z.ai/api/coding/paas/v4";
+  constructor(config: ZaiConfig, options: ZaiProviderOptions) {
+    const model = ZaiProviderBase.normalizeModel(config.model);
+    const envApiKey =
+      (options.envApiKeyVar && process.env[options.envApiKeyVar]) ?? process.env.ZAI_API_KEY;
+    const resolvedApiKey = config.apiKey || envApiKey || "";
 
-    this.config = {
-      apiKey: config.apiKey || process.env.ZAI_API_KEY || "",
-      // Default to Coding Plan API (supports Cline/Claude Code/etc.)
-      baseURL,
-      model,
-      temperature: config.temperature ?? 0.7,
-    };
-    this.embeddingBaseURL =
-      config.embeddingBaseURL ||
-      this.resolveEmbeddingBaseURL(baseURL) ||
-      "https://api.z.ai/api/paas/v4";
-
-    if (!this.config.apiKey) {
+    if (!resolvedApiKey) {
       throw new Error(
         "Z.ai API key is required. Set ZAI_API_KEY environment variable or provide it in config."
       );
     }
+
+    const envBaseURL =
+      (options.envBaseURLVar && process.env[options.envBaseURLVar]) ?? process.env.ZAI_BASE_URL;
+    const resolvedBaseURL = config.baseURL || envBaseURL || options.defaultBaseURL;
+
+    this.config = {
+      apiKey: resolvedApiKey,
+      baseURL: resolvedBaseURL,
+      model,
+      temperature: config.temperature ?? 0.7,
+    };
+
+    const resolvedEmbedding =
+      config.embeddingBaseURL ||
+      this.resolveEmbeddingBaseURL(resolvedBaseURL) ||
+      options.defaultEmbeddingBaseURL;
+
+    this.embeddingBaseURL = resolvedEmbedding;
+    this.metadataInfo = {
+      ...options.metadata,
+      capabilities: options.metadata.capabilities ?? DEFAULT_CAPABILITIES,
+    };
   }
 
   static normalizeModel(model?: string): string {
@@ -111,10 +119,7 @@ export class ZaiProvider implements Provider {
     return response.choices?.[0]?.message?.content || "";
   }
 
-  async *stream(
-    messages: ChatMessage[],
-    options?: ChatOptions
-  ): AsyncIterable<string> {
+  async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string> {
     const response = await this.executeWithChatModels(async (model) => {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -127,94 +132,81 @@ export class ZaiProvider implements Provider {
         body: JSON.stringify({
           model,
           messages,
+          stream: true,
           temperature: options?.temperature ?? this.config.temperature,
           max_tokens: options?.maxTokens,
           top_p: options?.topP,
-          stream: true,
         }),
       });
 
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
         const error = await res.text();
-        throw new Error(`Z.ai API error: ${res.status} ${error}`);
+        throw new Error(`Z.ai streaming API error: ${res.status} ${error}`);
       }
 
-      return res;
-    });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
 
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error("Failed to get response reader");
-    }
+      return async function* (): AsyncIterable<string> {
+        let buffer = "";
 
-    const decoder = new TextDecoder();
-    let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+          buffer += decoder.decode(value, { stream: true });
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
+          let newlineIndex: number;
+          while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === "data: [DONE]") continue;
+            if (!line || !line.startsWith("data:")) continue;
 
-          if (trimmed.startsWith("data: ")) {
+            const data = line.slice(5).trim();
+            if (data === "[DONE]") {
+              return;
+            }
+
             try {
-              const data = JSON.parse(trimmed.slice(6));
-              const content = data.choices?.[0]?.delta?.content;
-              if (content) {
-                yield content;
+              const json = JSON.parse(data);
+              const delta = json.choices?.[0]?.delta?.content;
+              if (typeof delta === "string") {
+                yield delta;
+              } else if (Array.isArray(delta)) {
+                for (const item of delta) {
+                  if (item.type === "text" && typeof item.text === "string") {
+                    yield item.text;
+                  }
+                }
               }
-            } catch (e) {
-              // Skip invalid JSON
-              continue;
+            } catch {
+              // ignore malformed chunk and continue streaming
             }
           }
         }
-      }
-    } finally {
-      reader.releaseLock();
+      };
+    });
+
+    if (typeof response === "function") {
+      yield* response();
     }
   }
 
   async embed(texts: string[], options?: EmbedOptions): Promise<number[][]> {
-    // Z.ai has a maximum batch size of 64 texts per request
-    // Callers should batch requests to stay under this limit
-    if (texts.length > 64) {
-      throw new Error(
-        `Z.ai embedding API supports maximum 64 texts per batch. Received ${texts.length} texts. Please batch your requests.`
-      );
-    }
+    const model = options?.model || EMBEDDING_MODEL_FALLBACKS[0];
 
-    // Z.ai embedding models: embedding-2, embedding-3 (supports dimensions parameter)
-    const requestedModel = options?.model?.trim();
-    const candidateModels = requestedModel
-      ? [requestedModel, ...EMBEDDING_MODEL_FALLBACKS]
-      : EMBEDDING_MODEL_FALLBACKS;
-    const triedLowercase: string[] = [];
-    const triedDisplay: string[] = [];
-
+    const tried: string[] = [];
     let lastUnknownModelError: Error | null = null;
 
-    for (const candidate of candidateModels) {
-      const trimmedCandidate = candidate.trim();
-      if (!trimmedCandidate) continue;
-
-      const lower = trimmedCandidate.toLowerCase();
-      if (triedLowercase.includes(lower)) continue;
-      triedLowercase.push(lower);
-      triedDisplay.push(trimmedCandidate);
+    for (const embeddingModel of EMBEDDING_MODEL_FALLBACKS) {
+      tried.push(embeddingModel);
 
       try {
         const response = await this.makeRequest(
           "/embeddings",
           {
-            model: trimmedCandidate,
+            model: embeddingModel,
             input: texts,
           },
           "POST",
@@ -237,7 +229,7 @@ export class ZaiProvider implements Provider {
 
     if (lastUnknownModelError) {
       throw new Error(
-        `Failed to find a supported Z.ai embedding model (tried: ${triedDisplay.join(
+        `Failed to find a supported Z.ai embedding model (tried: ${tried.join(
           ", "
         )}). Last error: ${lastUnknownModelError.message}`
       );
@@ -248,9 +240,7 @@ export class ZaiProvider implements Provider {
 
   async metadata(): Promise<ProviderMetadata> {
     return {
-      name: "Z.ai",
-      version: "1.0.0",
-      capabilities: ["chat", "stream", "embeddings"],
+      ...this.metadataInfo,
       currentModel: this.config.model,
     };
   }
@@ -260,9 +250,8 @@ export class ZaiProvider implements Provider {
       const response = await this.makeRequest("/models", {}, "GET");
       const models = response.data || [];
 
-      // Filter to GLM models (Z.ai's primary model family)
       const glmModels = models
-        .filter((m: any) => m.id.toLowerCase().includes("glm"))
+        .filter((m: any) => typeof m.id === "string" && m.id.toLowerCase().includes("glm"))
         .map((m: any) => ({
           name: m.id,
           id: m.id,
@@ -271,24 +260,20 @@ export class ZaiProvider implements Provider {
       return glmModels;
     } catch (error) {
       throw new Error(
-        `Failed to fetch Z.ai models: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+        `Failed to fetch Z.ai models: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
 
   switchModel(modelName: string): void {
-    this.config.model = ZaiProvider.normalizeModel(modelName);
+    this.config.model = ZaiProviderBase.normalizeModel(modelName);
   }
 
   getCurrentModel(): string {
     return this.config.model;
   }
 
-  private async executeWithChatModels<T>(
-    executor: (model: string) => Promise<T>
-  ): Promise<T> {
+  private async executeWithChatModels<T>(executor: (model: string) => Promise<T>): Promise<T> {
     const candidateModels = await this.getChatModelCandidates(this.config.model);
     const tried: string[] = [];
     let lastUnknownModelError: Error | null = null;
@@ -391,7 +376,7 @@ export class ZaiProvider implements Provider {
       return baseURL.replace("/coding", "");
     }
 
-    return baseURL;
+    return undefined;
   }
 
   private async makeRequest(
@@ -424,4 +409,52 @@ export class ZaiProvider implements Provider {
 
     return await response.json();
   }
+}
+
+const BASE_METADATA: ProviderMetadata = {
+  name: "Z.ai",
+  version: "1.0.0",
+  capabilities: DEFAULT_CAPABILITIES,
+};
+
+export class ZaiCodingPlanProvider extends ZaiProviderBase {
+  constructor(config: ZaiConfig) {
+    super(config, {
+      defaultBaseURL: DEFAULT_CODING_PLAN_BASE_URL,
+      defaultEmbeddingBaseURL: DEFAULT_STANDARD_BASE_URL,
+      metadata: {
+        ...BASE_METADATA,
+        name: "Z.ai Coding Plan",
+        plan: "coding-plan",
+      },
+      envBaseURLVar: "ZAI_CODING_BASE_URL",
+    });
+  }
+}
+
+export class ZaiCreditProvider extends ZaiProviderBase {
+  constructor(config: ZaiConfig) {
+    super(config, {
+      defaultBaseURL: DEFAULT_STANDARD_BASE_URL,
+      defaultEmbeddingBaseURL: DEFAULT_STANDARD_BASE_URL,
+      metadata: {
+        ...BASE_METADATA,
+        name: "Z.ai Credit",
+        plan: "credit",
+      },
+      envBaseURLVar: "ZAI_CREDIT_BASE_URL",
+    });
+  }
+}
+
+/**
+ * Legacy export for backward compatibility. Historically the CLI only exposed
+ * the coding-plan endpoint, so we keep this alias to avoid breaking imports.
+ */
+export const ZaiProvider = ZaiCodingPlanProvider;
+
+export const normalizeZaiModel = ZaiProviderBase.normalizeModel;
+
+export function getZaiDefaultBaseURL(variant: ZaiProviderVariant): string {
+  return variant === "credit" ? DEFAULT_STANDARD_BASE_URL : DEFAULT_CODING_PLAN_BASE_URL;
 }

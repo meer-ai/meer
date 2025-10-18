@@ -10,6 +10,8 @@ export function getDefaultEmbeddingModel(providerType: string): string {
     case 'openrouter':
       return 'text-embedding-ada-002';
     case 'zai':
+    case 'zaiCodingPlan':
+    case 'zaiCredit':
       return 'embedding-3'; // Z.ai (ZhiPu AI) embedding model
     case 'gemini':
       return 'text-embedding-004'; // Gemini embedding model

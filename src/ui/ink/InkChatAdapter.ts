@@ -250,18 +250,83 @@ export class InkChatAdapter {
     // Ink handles console output automatically
   }
 
-  async runWithTerminal<T>(task: () => Promise<T>): Promise<T> {
+  private async executeWithTerminal<T>(
+    task: () => Promise<T>,
+    options: { capture?: boolean } = {}
+  ): Promise<{ result: T; stdout: string; stderr: string }> {
+    const capture = Boolean(options.capture);
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+
     // Temporarily unmount UI for terminal access
     if (this.instance) {
       this.instance.unmount();
     }
 
+    const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+    const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+    const wrapWriter =
+      <TWriter extends typeof process.stdout.write>(
+        writer: TWriter,
+        collector: (chunk: string) => void
+      ): TWriter =>
+      ((chunk: any, encoding?: any, callback?: any) => {
+        const normalizedEncoding =
+          typeof encoding === 'string' ? (encoding as BufferEncoding) : undefined;
+        const normalized =
+          typeof chunk === 'string'
+            ? chunk
+            : Buffer.isBuffer(chunk)
+            ? chunk.toString(
+                normalizedEncoding ?? 'utf8'
+              )
+            : String(chunk);
+
+        collector(normalized);
+        return (writer as unknown as (...args: any[]) => boolean)(
+          chunk,
+          normalizedEncoding,
+          callback
+        );
+      }) as TWriter;
+
+    if (capture) {
+      process.stdout.write = wrapWriter(
+        originalStdoutWrite,
+        (chunk) => (stdoutBuffer += chunk)
+      );
+      process.stderr.write = wrapWriter(
+        originalStderrWrite,
+        (chunk) => (stderrBuffer += chunk)
+      );
+    }
+
     try {
-      return await task();
+      const result = await task();
+      return { result, stdout: stdoutBuffer, stderr: stderrBuffer };
     } finally {
+      if (capture) {
+        process.stdout.write = originalStdoutWrite;
+        process.stderr.write = originalStderrWrite;
+        if (typeof console.clear === 'function') {
+          console.clear();
+        }
+      }
       // Remount UI
       this.renderUI();
     }
+  }
+
+  async runWithTerminal<T>(task: () => Promise<T>): Promise<T> {
+    const { result } = await this.executeWithTerminal(task);
+    return result;
+  }
+
+  async runWithTerminalCapture<T>(
+    task: () => Promise<T>
+  ): Promise<{ result: T; stdout: string; stderr: string }> {
+    return this.executeWithTerminal(task, { capture: true });
   }
 
   getTimelineAdapter(): Timeline {

@@ -9,11 +9,26 @@ import { GeminiProvider } from './providers/gemini.js';
 import { AnthropicProvider } from './providers/anthropic.js';
 import { OpenRouterProvider } from './providers/openrouter.js';
 import { MeerProvider } from './providers/meer.js';
-import { ZaiProvider, DEFAULT_ZAI_MODEL } from './providers/zai.js';
+import {
+  ZaiCodingPlanProvider,
+  ZaiCreditProvider,
+  DEFAULT_ZAI_MODEL,
+  normalizeZaiModel,
+} from './providers/zai.js';
 import type { Provider } from './providers/base.js';
 
 const ConfigSchema = z.object({
-  provider: z.enum(['ollama', 'openai', 'gemini', 'anthropic', 'openrouter', 'meer', 'zai']),
+  provider: z.enum([
+    'ollama',
+    'openai',
+    'gemini',
+    'anthropic',
+    'openrouter',
+    'meer',
+    'zai',
+    'zaiCodingPlan',
+    'zaiCredit',
+  ]),
   model: z.string().optional(),
   temperature: z.number().optional(),
   maxIterations: z.number().optional(),
@@ -50,10 +65,21 @@ const ConfigSchema = z.object({
     apiKey: z.string().optional(),
     apiUrl: z.string().optional()
   }).optional(),
-  // Z.ai-specific
+  // Z.ai legacy (coding plan)
   zai: z.object({
     apiKey: z.string().optional(),
-    baseURL: z.string().optional()
+    baseURL: z.string().optional(),
+    embeddingBaseURL: z.string().optional()
+  }).optional(),
+  zaiCodingPlan: z.object({
+    apiKey: z.string().optional(),
+    baseURL: z.string().optional(),
+    embeddingBaseURL: z.string().optional()
+  }).optional(),
+  zaiCredit: z.object({
+    apiKey: z.string().optional(),
+    baseURL: z.string().optional(),
+    embeddingBaseURL: z.string().optional()
   }).optional(),
   context: z.object({
     autoCollect: z.boolean().optional(),
@@ -138,8 +164,19 @@ export function loadConfig(): LoadedConfig {
         apiUrl: process.env.MEERAI_API_URL || 'https://api.meerai.dev'
       },
       zai: {
+        apiKey: '', // Legacy support for older configs
+        baseURL: 'https://api.z.ai/api/coding/paas/v4',
+        embeddingBaseURL: 'https://api.z.ai/api/paas/v4'
+      },
+      zaiCodingPlan: {
         apiKey: '', // Set via ZAI_API_KEY env var
-        baseURL: 'https://api.z.ai/api/coding/paas/v4' // Coding Plan API (for Cline/Claude Code compatibility)
+        baseURL: 'https://api.z.ai/api/coding/paas/v4',
+        embeddingBaseURL: 'https://api.z.ai/api/paas/v4'
+      },
+      zaiCredit: {
+        apiKey: '',
+        baseURL: 'https://api.z.ai/api/paas/v4',
+        embeddingBaseURL: 'https://api.z.ai/api/paas/v4'
       },
       context: {
         autoCollect: false,
@@ -161,10 +198,20 @@ export function loadConfig(): LoadedConfig {
     }
   }
 
+  // Backward compatibility handling for legacy Z.ai configuration
+  if (config.zai && !config.zaiCodingPlan) {
+    config.zaiCodingPlan = {
+      apiKey: config.zai.apiKey,
+      baseURL: config.zai.baseURL,
+      embeddingBaseURL: config.zai.embeddingBaseURL,
+    };
+  }
+
   let provider: Provider;
   let defaultModel: string;
+  let providerKey = config.provider === 'zai' ? 'zaiCodingPlan' : config.provider;
 
-  switch (config.provider) {
+  switch (providerKey) {
     case 'ollama':
       defaultModel = config.model || 'mistral:7b-instruct';
       provider = new OllamaProvider({
@@ -228,17 +275,38 @@ export function loadConfig(): LoadedConfig {
       });
       break;
 
-    case 'zai':
-      defaultModel = config.model
-        ? ZaiProvider.normalizeModel(config.model)
-        : DEFAULT_ZAI_MODEL;
-      provider = new ZaiProvider({
-        apiKey: config.zai?.apiKey || process.env.ZAI_API_KEY || '',
-        baseURL: config.zai?.baseURL,
+    case 'zaiCodingPlan': {
+      defaultModel = config.model ? normalizeZaiModel(config.model) : DEFAULT_ZAI_MODEL;
+      const apiKey =
+        config.zaiCodingPlan?.apiKey ??
+        config.zai?.apiKey ??
+        process.env.ZAI_API_KEY ??
+        '';
+      provider = new ZaiCodingPlanProvider({
+        apiKey,
+        baseURL: config.zaiCodingPlan?.baseURL ?? config.zai?.baseURL,
+        embeddingBaseURL: config.zaiCodingPlan?.embeddingBaseURL ?? config.zai?.embeddingBaseURL,
         model: defaultModel,
-        temperature: config.temperature
+        temperature: config.temperature,
       });
       break;
+    }
+    case 'zaiCredit': {
+      defaultModel = config.model ? normalizeZaiModel(config.model) : DEFAULT_ZAI_MODEL;
+      const apiKey =
+        config.zaiCredit?.apiKey ??
+        process.env.ZAI_CREDIT_API_KEY ??
+        process.env.ZAI_API_KEY ??
+        '';
+      provider = new ZaiCreditProvider({
+        apiKey,
+        baseURL: config.zaiCredit?.baseURL,
+        embeddingBaseURL: config.zaiCredit?.embeddingBaseURL,
+        model: defaultModel,
+        temperature: config.temperature,
+      });
+      break;
+    }
 
     default:
       throw new Error(`Unsupported provider: ${config.provider}`);
@@ -246,7 +314,7 @@ export function loadConfig(): LoadedConfig {
 
   return {
     provider,
-    providerType: config.provider,
+    providerType: providerKey,
     model: defaultModel,
     maxIterations: config.maxIterations ?? 25,
     retry: {

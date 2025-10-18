@@ -10,7 +10,11 @@ import { AnthropicProvider } from '../providers/anthropic.js';
 import { OpenRouterProvider } from '../providers/openrouter.js';
 import { OpenAIProvider } from '../providers/openai.js';
 import { GeminiProvider } from '../providers/gemini.js';
-import { ZaiProvider } from '../providers/zai.js';
+import {
+  ZaiCodingPlanProvider,
+  ZaiCreditProvider,
+  normalizeZaiModel,
+} from '../providers/zai.js';
 
 export function createSetupCommand(): Command {
   return new Command('setup')
@@ -113,23 +117,71 @@ async function fetchOpenRouterModels(apiKey: string): Promise<string[]> {
   }
 }
 
-async function fetchZaiModels(apiKey: string): Promise<string[]> {
-  const fallbackModels = [
-    'glm-4',
-    'glm-4-plus',
-    'glm-4-air',
-    'glm-4-airx',
-    'glm-4-flash',
-    'glm-4v'
-  ];
+type ZaiVariant = 'coding-plan' | 'credit';
+
+const ZAI_CODING_PLAN_SUPPORTED_MODELS = [
+  'glm-4.6',
+  'glm-4.5',
+  'glm-4.5-air',
+  'glm-4.5-flash',
+  'glm-4.5v'
+] as const;
+
+const ZAI_CODING_PLAN_MODEL_SET = new Set(
+  ZAI_CODING_PLAN_SUPPORTED_MODELS.map(model => model.toLowerCase())
+);
+
+const ZAI_CODING_PLAN_DESCRIPTIONS: Record<string, string> = {
+  'glm-4.6': ' (flagship, 200K context, recommended)',
+  'glm-4.5': ' (balanced, general coding)',
+  'glm-4.5-air': ' (cost-effective Air tier)',
+  'glm-4.5-flash': ' (flash tier, fastest responses)',
+  'glm-4.5v': ' (vision enabled)',
+};
+
+const ZAI_CREDIT_FALLBACK_MODELS = [
+  'glm-4',
+  'glm-4-plus',
+  'glm-4-air',
+  'glm-4-airx',
+  'glm-4-flash',
+  'glm-4v'
+] as const;
+
+const ZAI_CREDIT_DESCRIPTIONS: Record<string, string> = {
+  'glm-4': ' (flagship, 200K context, recommended)',
+  'glm-4-plus': ' (enhanced capability tier)',
+  'glm-4-airx': ' (high performance AirX tier)',
+  'glm-4-air': ' (cost-effective Air tier)',
+  'glm-4-flash': ' (free tier, fast)',
+  'glm-4v': ' (vision model)',
+};
+
+async function fetchZaiModels(apiKey: string, variant: ZaiVariant): Promise<string[]> {
+  const fallbackModels =
+    variant === 'coding-plan'
+      ? Array.from(ZAI_CODING_PLAN_SUPPORTED_MODELS)
+      : Array.from(ZAI_CREDIT_FALLBACK_MODELS);
 
   try {
     if (!apiKey) throw new Error('No API key');
-    const provider = new ZaiProvider({ apiKey, model: 'temp' });
+    const provider =
+      variant === 'credit'
+        ? new ZaiCreditProvider({ apiKey, model: 'temp' })
+        : new ZaiCodingPlanProvider({ apiKey, model: 'temp' });
     const models = await provider.listModels();
-    return models.length > 0
-      ? Array.from(new Set(models.map(m => ZaiProvider.normalizeModel(m.id))))
-      : fallbackModels;
+    if (models.length === 0) {
+      return fallbackModels;
+    }
+
+    const normalized = Array.from(new Set(models.map(m => normalizeZaiModel(m.id))));
+
+    if (variant === 'coding-plan') {
+      const filtered = normalized.filter(model => ZAI_CODING_PLAN_MODEL_SET.has(model.toLowerCase()));
+      return filtered.length > 0 ? filtered : fallbackModels;
+    }
+
+    return normalized;
   } catch {
     return fallbackModels;
   }
@@ -199,8 +251,12 @@ async function runSetupWizard(): Promise<void> {
           value: 'openrouter'
         },
         {
-          name: chalk.cyan('⚡ Z.ai') + chalk.gray(' - GLM models (GLM-4, GLM-4-Air) - Chinese AI leader (requires API key)'),
-          value: 'zai'
+          name: chalk.cyan('⚡ Z.ai Coding Plan') + chalk.gray(' - DevPack subscription (coding bundle, integrates with Cline/Claude Code)'),
+          value: 'zaiCodingPlan'
+        },
+        {
+          name: chalk.cyan('⚡ Z.ai Credit (PAYG)') + chalk.gray(' - Standard pay-as-you-go API for GLM models'),
+          value: 'zaiCredit'
         }
       ]
     }
@@ -237,7 +293,18 @@ async function runSetupWizard(): Promise<void> {
     },
     zai: {
       apiKey: '',
-      baseURL: 'https://api.z.ai/api/coding/paas/v4'
+      baseURL: 'https://api.z.ai/api/coding/paas/v4',
+      embeddingBaseURL: 'https://api.z.ai/api/paas/v4'
+    },
+    zaiCodingPlan: {
+      apiKey: '',
+      baseURL: 'https://api.z.ai/api/coding/paas/v4',
+      embeddingBaseURL: 'https://api.z.ai/api/paas/v4'
+    },
+    zaiCredit: {
+      apiKey: '',
+      baseURL: 'https://api.z.ai/api/paas/v4',
+      embeddingBaseURL: 'https://api.z.ai/api/paas/v4'
     },
     context: {
       embedding: {
@@ -591,38 +658,44 @@ async function runSetupWizard(): Promise<void> {
     }
     console.log(chalk.blue('\n🌐 OpenRouter gives you access to many AI models through one API!'));
 
-  } else if (provider === 'zai') {
+  } else if (provider === 'zaiCodingPlan' || provider === 'zaiCredit') {
+    const isCodingPlan = provider === 'zaiCodingPlan';
+    const providerLabel = isCodingPlan ? 'Z.ai Coding Plan' : 'Z.ai Credit (PAYG)';
+    const targetConfig = isCodingPlan ? config.zaiCodingPlan : config.zaiCredit;
+    const variant: ZaiVariant = isCodingPlan ? 'coding-plan' : 'credit';
+
     const { apiKey } = await inquirer.prompt([
       {
         type: 'password',
         name: 'apiKey',
-        message: 'Enter your Z.ai API key (or press Enter to set via ZAI_API_KEY env var):',
+        message: `Enter your ${providerLabel} API key (or press Enter to use ZAI_API_KEY env var):`,
         mask: '*'
       }
     ]);
 
-    config.zai.apiKey = apiKey || '';
+    targetConfig.apiKey = apiKey || '';
 
     // Fetch available models dynamically if API key is provided
     let availableModels: string[] = [];
     if (apiKey) {
-      console.log(chalk.gray('🔍 Fetching available models from Z.ai...'));
-      availableModels = await fetchZaiModels(apiKey);
+      console.log(chalk.gray(`🔍 Fetching available models from ${providerLabel}...`));
+      availableModels = await fetchZaiModels(apiKey, variant);
     } else {
-      availableModels = await fetchZaiModels('');
+      availableModels = await fetchZaiModels('', variant);
     }
 
     // Add annotations to popular models
-    const normalizedModels = Array.from(new Set(availableModels.map(model => ZaiProvider.normalizeModel(model))));
+    const normalizedModels = Array.from(new Set(availableModels.map(model => normalizeZaiModel(model))));
     const modelChoices = normalizedModels.map(model => {
       const lower = model.toLowerCase();
       let name = model;
-      if (lower === 'glm-4') name += ' (flagship, 200K context, recommended)';
-      else if (lower === 'glm-4-plus') name += ' (enhanced capability tier)';
-      else if (lower.includes('glm-4-airx')) name += ' (high performance AirX tier)';
-      else if (lower.includes('glm-4-air')) name += ' (cost-effective Air tier)';
-      else if (lower.includes('glm-4-flash')) name += ' (free tier, fast)';
-      else if (lower.includes('glm-4v')) name += ' (vision model)';
+      if (variant === 'coding-plan') {
+        const description = ZAI_CODING_PLAN_DESCRIPTIONS[lower];
+        if (description) name += description;
+      } else {
+        const description = ZAI_CREDIT_DESCRIPTIONS[lower];
+        if (description) name += description;
+      }
       return { name, value: model };
     });
     modelChoices.push({ name: 'Custom model...', value: 'custom' });
@@ -641,7 +714,10 @@ async function runSetupWizard(): Promise<void> {
         {
           type: 'input',
           name: 'customModel',
-          message: 'Enter model name (e.g., glm-4, glm-4-air):'
+          message:
+            variant === 'coding-plan'
+              ? 'Enter model name (e.g., glm-4.6, glm-4.5-air):'
+              : 'Enter model name (e.g., glm-4, glm-4-air):'
         }
       ]);
       config.model = customModel;
@@ -649,13 +725,15 @@ async function runSetupWizard(): Promise<void> {
       config.model = model;
     }
 
-    console.log(chalk.green('\n✅ Z.ai configured!'));
+    console.log(chalk.green(`
+✅ ${providerLabel} configured!`));
     console.log(chalk.gray(`   Model: ${config.model}`));
     if (!apiKey) {
       console.log(chalk.yellow('\n💡 Remember to set your API key:'));
       console.log(chalk.cyan('   export ZAI_API_KEY=...\n'));
     }
-    console.log(chalk.blue('\n⚡ Z.ai GLM models: Advanced reasoning, coding, and agentic capabilities!'));
+    console.log(chalk.blue(`
+⚡ ${providerLabel}: Advanced reasoning, coding, and agentic capabilities with GLM models!`));
     console.log(chalk.gray('   Context: 128K-200K tokens | Pricing: ~$0.2/$1.1 per 1M tokens'));
   }
 
