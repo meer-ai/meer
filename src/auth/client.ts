@@ -3,7 +3,8 @@
  */
 
 import { fetch } from 'undici';
-import type { DeviceCodeResponse, TokenResponse, User } from './types.js';
+import type { Response } from 'undici';
+import type { DeviceCodeResponse, TokenResponse } from './types.js';
 
 export class AuthClient {
   private apiUrl: string;
@@ -23,12 +24,13 @@ export class AuthClient {
       },
     });
 
+    const payload = await parseJsonResponse(response);
+
     if (!response.ok) {
-      const error = await response.json() as any;
-      throw new Error(error.message || 'Failed to initialize device code');
+      throw new Error(payload?.message || formatUnexpected(payload));
     }
 
-    return await response.json() as DeviceCodeResponse;
+    return payload as DeviceCodeResponse;
   }
 
   /**
@@ -43,20 +45,20 @@ export class AuthClient {
       body: JSON.stringify({ device_code: deviceCode }),
     });
 
+    const payload = await parseJsonResponse(response);
+
     if (response.status === 400) {
-      const error = await response.json() as any;
-      if (error.error === 'authorization_pending') {
+      if (payload?.error === 'authorization_pending') {
         return null; // Still pending
       }
-      throw new Error(error.message || 'Device code error');
+      throw new Error(payload?.message || formatUnexpected(payload));
     }
 
     if (!response.ok) {
-      const error = await response.json() as any;
-      throw new Error(error.message || 'Failed to poll device code');
+      throw new Error(payload?.message || 'Failed to poll device code');
     }
 
-    return await response.json() as TokenResponse;
+    return payload as TokenResponse;
   }
 
   /**
@@ -71,11 +73,46 @@ export class AuthClient {
       body: JSON.stringify({ refresh_token: refreshToken }),
     });
 
+    const payload = await parseJsonResponse(response);
+
     if (!response.ok) {
-      const error = await response.json() as any;
-      throw new Error(error.message || 'Failed to refresh token');
+      throw new Error(payload?.message || 'Failed to refresh token');
     }
 
-    return await response.json() as TokenResponse;
+    return payload as TokenResponse;
+  }
+}
+
+async function parseJsonResponse(response: Response): Promise<any | null> {
+  const text = await response.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(
+      `Unexpected response from server${
+        response.url ? ` (${response.url})` : ''
+      }: ${text}`,
+    );
+  }
+}
+
+function formatUnexpected(payload: unknown): string {
+  if (!payload) {
+    return 'Unexpected response from authentication service';
+  }
+
+  if (typeof payload === 'string') {
+    return payload;
+  }
+
+  try {
+    return JSON.stringify(payload);
+  } catch {
+    return String(payload);
   }
 }
