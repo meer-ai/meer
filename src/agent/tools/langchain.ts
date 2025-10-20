@@ -209,10 +209,25 @@ async function ensureCommandApproval(
   command: string
 ): Promise<boolean> {
   if (!context.confirmCommand) {
-    return true;
+    throw new Error(
+      "confirmCommand callback is required to execute shell commands safely."
+    );
   }
   return context.confirmCommand(command);
 }
+
+async function ensureToolActionApproval(
+  context: MeerLangChainToolContext,
+  action: string
+): Promise<boolean> {
+  if (!context.confirmCommand) {
+    throw new Error(
+      `confirmCommand callback is required to execute dangerous operations safely (${action}).`
+    );
+  }
+  return context.confirmCommand(action);
+}
+
 async function callMeerTool(
   name: string,
   input: Record<string, unknown>,
@@ -580,19 +595,35 @@ async function callMeerTool(
     case "write_file": {
       const path = String(input.path);
       const contents = String(input.contents ?? input.content ?? "");
-      return unwrap(tools.writeFile(path, contents, context.cwd));
+      const description = typeof input.description === "string"
+        ? input.description
+        : "Write file";
+      const edit = tools.proposeEdit(path, contents, description, context.cwd);
+      if (!(await ensureEditApproval(context, edit))) {
+        return `⏭️ Write skipped for ${edit.path}`;
+      }
+      return unwrap(tools.applyEdit(edit, context.cwd));
     }
     case "delete_file": {
       const path = String(input.path);
+      if (!(await ensureToolActionApproval(context, `Delete file ${path}?`))) {
+        return `⚠️ Delete cancelled: ${path}`;
+      }
       return unwrap(tools.deleteFile(path, context.cwd));
     }
     case "move_file": {
       const source = String(input.source);
       const dest = String(input.dest);
+      if (!(await ensureToolActionApproval(context, `Move ${source} → ${dest}?`))) {
+        return `⚠️ Move cancelled: ${source} → ${dest}`;
+      }
       return unwrap(tools.moveFile(source, dest, context.cwd));
     }
     case "create_directory": {
       const path = String(input.path);
+      if (!(await ensureToolActionApproval(context, `Create directory ${path}?`))) {
+        return `⚠️ Directory creation cancelled: ${path}`;
+      }
       return unwrap(tools.createDirectory(path, context.cwd));
     }
     case "package_install": {
@@ -611,6 +642,11 @@ async function callMeerTool(
         input.dev !== undefined ? Boolean(input.dev) : undefined;
       const globalInstall =
         input.global !== undefined ? Boolean(input.global) : undefined;
+      const scopeLabel = globalInstall ? "globally" : "locally";
+      const packageLabel = packages.join(", ");
+      if (!(await ensureToolActionApproval(context, `Install ${packageLabel} ${scopeLabel}?`))) {
+        return `⚠️ Package install cancelled: ${packageLabel}`;
+      }
       return unwrap(
         tools.packageInstall(packages, context.cwd, {
           manager,
@@ -647,6 +683,9 @@ async function callMeerTool(
     case "set_env": {
       const key = String(input.key);
       const value = String(input.value ?? "");
+      if (!(await ensureToolActionApproval(context, `Set environment variable ${key}=${value}?`))) {
+        return `⚠️ Environment variable modification cancelled: ${key}`;
+      }
       return unwrap(tools.setEnv(key, value, context.cwd));
     }
     case "list_env": {

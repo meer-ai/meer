@@ -2,7 +2,7 @@ import chalk from "chalk";
 import ora, { type Ora } from "ora";
 import inquirer from "inquirer";
 import type { Provider, ChatMessage } from "../providers/base.js";
-import { parseToolCalls, type FileEdit, applyEdit, generateDiff } from "../tools/index.js";
+import { parseToolCalls, type FileEdit, generateDiff } from "../tools/index.js";
 import { memory } from "../memory/index.js";
 import { logVerbose } from "../logger.js";
 import { MCPManager } from "../mcp/manager.js";
@@ -428,47 +428,13 @@ export class AgentWorkflowV2 {
       console.log(chalk.green("   No textual diff (new or identical file)\n"));
     }
 
-    let action: string;
-    if (this.promptChoice) {
-      action = await this.promptChoice(
-        `Apply changes to ${edit.path}?`,
-        [
-          { label: "Apply", value: "apply" },
-          { label: "Skip", value: "skip" },
-        ],
-        "apply"
-      );
-    } else {
-      const result = await this.runInteractivePrompt(() =>
-        inquirer.prompt([
-          {
-            type: "list",
-            name: "action",
-            message: `Apply changes to ${edit.path}?`,
-            choices: [
-              { name: "Apply", value: "apply" },
-              { name: "Skip", value: "skip" },
-            ],
-            default: "apply",
-          },
-        ])
-      );
-      action = result.action;
-    }
+    console.log(
+      chalk.yellow(
+        "⚠️ Automatic file application is disabled. Apply these changes manually if you approve them.\n"
+      )
+    );
 
-    if (action === "apply") {
-      const result = applyEdit(edit, this.cwd);
-      if (result.error) {
-        console.log(chalk.red(`\n❌ ${result.error}\n`));
-        return false;
-      } else {
-        console.log(chalk.green(`\n✅ ${result.result}\n`));
-        return true;
-      }
-    } else {
-      console.log(chalk.yellow(`\n⏭️  Skipped ${edit.path}\n`));
-      return false;
-    }
+    return false;
   }
 
   private async executeTool(toolCall: any): Promise<string> {
@@ -614,31 +580,132 @@ export class AgentWorkflowV2 {
         return gitBranchRes.error ? gitBranchRes.error : gitBranchRes.result;
 
       // File operation tools
-      case "write_file":
-        const writeRes = tools.writeFile(params.path || "", toolCall.content || "", this.cwd);
-        return writeRes.error ? writeRes.error : writeRes.result;
+      case "write_file": {
+        const targetPath =
+          typeof params.path === "string" ? params.path.trim() : "";
+        if (!targetPath) {
+          return "write_file requires a path.";
+        }
 
-      case "delete_file":
-        const deleteRes = tools.deleteFile(params.path || "", this.cwd);
+        const content =
+          typeof toolCall.content === "string" ? toolCall.content : "";
+        if (!content) {
+          return "write_file requires content in the tool call.";
+        }
+
+        try {
+          const edit = tools.proposeEdit(
+            targetPath,
+            content,
+            params.description || "Write file",
+            this.cwd
+          );
+
+          const approved = await this.reviewSingleEdit(edit);
+
+          if (approved) {
+            return `✅ File write applied to ${edit.path}`;
+          }
+          return `⏭️ File write skipped for ${edit.path}. You can apply it manually later if needed.`;
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      case "delete_file": {
+        const targetPath =
+          typeof params.path === "string" ? params.path.trim() : "";
+        if (!targetPath) {
+          return "delete_file requires a path.";
+        }
+
+        if (!(await this.confirmToolAction(`Delete file ${targetPath}?`))) {
+          return `⚠️ Delete cancelled: ${targetPath}`;
+        }
+
+        const deleteRes = tools.deleteFile(targetPath, this.cwd);
         return deleteRes.error ? deleteRes.error : deleteRes.result;
+      }
 
-      case "move_file":
-        const moveRes = tools.moveFile(params.source || "", params.dest || "", this.cwd);
+      case "move_file": {
+        const source =
+          typeof params.source === "string" ? params.source.trim() : "";
+        const dest =
+          typeof params.dest === "string" ? params.dest.trim() : "";
+
+        if (!source || !dest) {
+          return "move_file requires both source and dest paths.";
+        }
+
+        if (
+          !(await this.confirmToolAction(`Move ${source} → ${dest}?`))
+        ) {
+          return `⚠️ Move cancelled: ${source} → ${dest}`;
+        }
+
+        const moveRes = tools.moveFile(source, dest, this.cwd);
         return moveRes.error ? moveRes.error : moveRes.result;
+      }
 
-      case "create_directory":
-        const mkdirRes = tools.createDirectory(params.path || "", this.cwd);
+      case "create_directory": {
+        const dirPath =
+          typeof params.path === "string" ? params.path.trim() : "";
+        if (!dirPath) {
+          return "create_directory requires a path.";
+        }
+
+        if (
+          !(await this.confirmToolAction(`Create directory ${dirPath}?`))
+        ) {
+          return `⚠️ Directory creation cancelled: ${dirPath}`;
+        }
+
+        const mkdirRes = tools.createDirectory(dirPath, this.cwd);
         return mkdirRes.error ? mkdirRes.error : mkdirRes.result;
+      }
 
       // Package manager tools
-      case "package_install":
-        const packages = params.packages?.split(",").map((p: string) => p.trim()) || [];
+      case "package_install": {
+        const packages =
+          params.packages
+            ?.split(",")
+            .map((p: string) => p.trim())
+            .filter(Boolean) || [];
+
+        if (packages.length === 0) {
+          return "package_install requires one or more packages.";
+        }
+
+        const scopeLabel = params.global ? "globally" : "locally";
+        const packageLabel = packages.join(", ");
+        if (
+          !(await this.confirmToolAction(
+            `Install ${packageLabel} ${scopeLabel}?`
+          ))
+        ) {
+          return `⚠️ Package install cancelled: ${packageLabel}`;
+        }
+
         const pkgInstallRes = tools.packageInstall(packages, this.cwd, params);
         return pkgInstallRes.error ? pkgInstallRes.error : pkgInstallRes.result;
+      }
 
-      case "package_run_script":
-        const pkgRunRes = tools.packageRunScript(params.script || "", this.cwd, params);
+      case "package_run_script": {
+        const script =
+          typeof params.script === "string" ? params.script.trim() : "";
+        if (!script) {
+          return "package_run_script requires a script name.";
+        }
+
+        if (
+          !(await this.confirmToolAction(`Run package script "${script}"?`))
+        ) {
+          return `⚠️ Package script cancelled: ${script}`;
+        }
+
+        const pkgRunRes = tools.packageRunScript(script, this.cwd, params);
         return pkgRunRes.error ? pkgRunRes.error : pkgRunRes.result;
+      }
 
       case "package_list":
         const pkgListRes = tools.packageList(this.cwd, params);
@@ -649,9 +716,20 @@ export class AgentWorkflowV2 {
         const getEnvRes = tools.getEnv(params.key || "", this.cwd);
         return getEnvRes.error ? getEnvRes.error : getEnvRes.result;
 
-      case "set_env":
-        const setEnvRes = tools.setEnv(params.key || "", params.value || "", this.cwd);
+      case "set_env": {
+        const key = params.key || "";
+        const value = params.value || "";
+        if (!key) {
+          return "set_env requires a key.";
+        }
+
+        if (!(await this.confirmToolAction(`Set environment variable ${key}=${value}?`))) {
+          return `⚠️ Environment variable modification cancelled: ${key}`;
+        }
+
+        const setEnvRes = tools.setEnv(key, value, this.cwd);
         return setEnvRes.error ? setEnvRes.error : setEnvRes.result;
+      }
 
       case "list_env":
         const listEnvRes = tools.listEnv(this.cwd);
@@ -715,9 +793,19 @@ export class AgentWorkflowV2 {
         return docstringRes.error ? docstringRes.error : docstringRes.result;
 
       // Code quality and testing tools
-      case "format_code":
-        const formatRes = tools.formatCode(params.path || "", this.cwd, params);
+      case "format_code": {
+        const path = params.path || "";
+        if (!path) {
+          return "format_code requires a path.";
+        }
+
+        if (!(await this.confirmToolAction(`Format code in ${path}?`))) {
+          return `⚠️ Code formatting cancelled: ${path}`;
+        }
+
+        const formatRes = tools.formatCode(path, this.cwd, params);
         return formatRes.error ? formatRes.error : formatRes.result;
+      }
 
       case "dependency_audit":
         const auditRes = tools.dependencyAudit(this.cwd, params);
@@ -743,13 +831,33 @@ export class AgentWorkflowV2 {
         const readmeRes = tools.generateReadme(this.cwd, params);
         return readmeRes.error ? readmeRes.error : readmeRes.result;
 
-      case "fix_lint":
-        const fixLintRes = tools.fixLint(params.path || "", this.cwd, params);
-        return fixLintRes.error ? fixLintRes.error : fixLintRes.result;
+      case "fix_lint": {
+        const path = params.path || "";
+        if (!path) {
+          return "fix_lint requires a path.";
+        }
 
-      case "organize_imports":
-        const organizeRes = tools.organizeImports(params.path || "", this.cwd, params);
+        if (!(await this.confirmToolAction(`Auto-fix lint issues in ${path}?`))) {
+          return `⚠️ Lint fix cancelled: ${path}`;
+        }
+
+        const fixLintRes = tools.fixLint(path, this.cwd, params);
+        return fixLintRes.error ? fixLintRes.error : fixLintRes.result;
+      }
+
+      case "organize_imports": {
+        const path = params.path || "";
+        if (!path) {
+          return "organize_imports requires a path.";
+        }
+
+        if (!(await this.confirmToolAction(`Organize imports in ${path}?`))) {
+          return `⚠️ Import organization cancelled: ${path}`;
+        }
+
+        const organizeRes = tools.organizeImports(path, this.cwd, params);
         return organizeRes.error ? organizeRes.error : organizeRes.result;
+      }
 
       case "check_complexity":
         const complexityRes = tools.checkComplexity(params.path || "", this.cwd, params);
@@ -783,59 +891,135 @@ export class AgentWorkflowV2 {
         const blameRes = tools.gitBlame(params.path || "", this.cwd, params);
         return blameRes.error ? blameRes.error : blameRes.result;
 
-      case "rename_symbol":
-        const renameRes = tools.renameSymbol(params.oldName || "", params.newName || "", this.cwd, params);
-        return renameRes.error ? renameRes.error : renameRes.result;
+      case "rename_symbol": {
+        const oldName = params.oldName || "";
+        const newName = params.newName || "";
+        if (!oldName || !newName) {
+          return "rename_symbol requires both oldName and newName.";
+        }
 
-      case "extract_function":
+        if (!(await this.confirmToolAction(`Rename symbol ${oldName} → ${newName} across codebase?`))) {
+          return `⚠️ Symbol rename cancelled: ${oldName} → ${newName}`;
+        }
+
+        const renameRes = tools.renameSymbol(oldName, newName, this.cwd, params);
+        return renameRes.error ? renameRes.error : renameRes.result;
+      }
+
+      case "extract_function": {
+        const filePath = params.filePath || "";
+        const functionName = params.functionName || "";
+        const startLine = parseInt(params.startLine || "0");
+        const endLine = parseInt(params.endLine || "0");
+
+        if (!filePath || !functionName || !startLine || !endLine) {
+          return "extract_function requires filePath, startLine, endLine, and functionName.";
+        }
+
+        if (!(await this.confirmToolAction(`Extract function "${functionName}" from ${filePath} (lines ${startLine}-${endLine})?`))) {
+          return `⚠️ Function extraction cancelled: ${functionName}`;
+        }
+
         const extractFnRes = tools.extractFunction(
-          params.filePath || "",
-          parseInt(params.startLine || "0"),
-          parseInt(params.endLine || "0"),
-          params.functionName || "",
+          filePath,
+          startLine,
+          endLine,
+          functionName,
           this.cwd,
           params
         );
         return extractFnRes.error ? extractFnRes.error : extractFnRes.result;
+      }
 
-      case "extract_variable":
+      case "extract_variable": {
+        const filePath = params.filePath || "";
+        const variableName = params.variableName || "";
+        const expression = params.expression || "";
+        const lineNumber = parseInt(params.lineNumber || "0");
+
+        if (!filePath || !variableName || !expression || !lineNumber) {
+          return "extract_variable requires filePath, lineNumber, expression, and variableName.";
+        }
+
+        if (!(await this.confirmToolAction(`Extract variable "${variableName}" from ${filePath}:${lineNumber}?`))) {
+          return `⚠️ Variable extraction cancelled: ${variableName}`;
+        }
+
         const extractVarRes = tools.extractVariable(
-          params.filePath || "",
-          parseInt(params.lineNumber || "0"),
-          params.expression || "",
-          params.variableName || "",
+          filePath,
+          lineNumber,
+          expression,
+          variableName,
           this.cwd,
           params
         );
         return extractVarRes.error ? extractVarRes.error : extractVarRes.result;
+      }
 
-      case "inline_variable":
+      case "inline_variable": {
+        const filePath = params.filePath || "";
+        const variableName = params.variableName || "";
+
+        if (!filePath || !variableName) {
+          return "inline_variable requires filePath and variableName.";
+        }
+
+        if (!(await this.confirmToolAction(`Inline variable "${variableName}" in ${filePath}?`))) {
+          return `⚠️ Variable inlining cancelled: ${variableName}`;
+        }
+
         const inlineVarRes = tools.inlineVariable(
-          params.filePath || "",
-          params.variableName || "",
+          filePath,
+          variableName,
           this.cwd,
           params
         );
         return inlineVarRes.error ? inlineVarRes.error : inlineVarRes.result;
+      }
 
-      case "move_symbol":
+      case "move_symbol": {
+        const symbolName = params.symbolName || "";
+        const fromFile = params.fromFile || "";
+        const toFile = params.toFile || "";
+
+        if (!symbolName || !fromFile || !toFile) {
+          return "move_symbol requires symbolName, fromFile, and toFile.";
+        }
+
+        if (!(await this.confirmToolAction(`Move symbol "${symbolName}" from ${fromFile} → ${toFile}?`))) {
+          return `⚠️ Symbol move cancelled: ${symbolName}`;
+        }
+
         const moveSymbolRes = tools.moveSymbol(
-          params.symbolName || "",
-          params.fromFile || "",
-          params.toFile || "",
+          symbolName,
+          fromFile,
+          toFile,
           this.cwd,
           params
         );
         return moveSymbolRes.error ? moveSymbolRes.error : moveSymbolRes.result;
+      }
 
-      case "convert_to_async":
+      case "convert_to_async": {
+        const filePath = params.filePath || "";
+        const functionName = params.functionName || "";
+
+        if (!filePath || !functionName) {
+          return "convert_to_async requires filePath and functionName.";
+        }
+
+        if (!(await this.confirmToolAction(`Convert function "${functionName}" to async in ${filePath}?`))) {
+          return `⚠️ Async conversion cancelled: ${functionName}`;
+        }
+
         const convertAsyncRes = tools.convertToAsync(
-          params.filePath || "",
-          params.functionName || "",
+          filePath,
+          functionName,
           this.cwd,
           params
         );
         return convertAsyncRes.error ? convertAsyncRes.error : convertAsyncRes.result;
+      }
 
       default:
         // Try MCP tools
@@ -939,6 +1123,40 @@ export class AgentWorkflowV2 {
       return this.runWithTerminal(task);
     }
     return task();
+  }
+
+  private async confirmToolAction(
+    message: string,
+    defaultChoice: "confirm" | "cancel" = "cancel"
+  ): Promise<boolean> {
+    if (this.promptChoice) {
+      const choice = await this.promptChoice(
+        message,
+        [
+          { label: "Confirm", value: "confirm" },
+          { label: "Cancel", value: "cancel" },
+        ],
+        defaultChoice
+      );
+      return choice === "confirm";
+    }
+
+    const result = await this.runInteractivePrompt(() =>
+      inquirer.prompt([
+        {
+          type: "list",
+          name: "action",
+          message,
+          choices: [
+            { name: "Confirm", value: "confirm" },
+            { name: "Cancel", value: "cancel" },
+          ],
+          default: defaultChoice,
+        },
+      ])
+    );
+
+    return result.action === "confirm";
   }
 
   private async confirmCommand(command: string): Promise<boolean> {
