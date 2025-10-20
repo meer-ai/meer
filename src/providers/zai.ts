@@ -15,7 +15,7 @@ export interface ZaiConfig {
   temperature?: number;
 }
 
-export const DEFAULT_ZAI_MODEL = "glm-4";
+export const DEFAULT_ZAI_MODEL = "glm-4.6";  // Changed to glm-4.6 for Coding Plan
 
 const DEFAULT_CAPABILITIES = ["chat", "stream", "embeddings"];
 const DEFAULT_STANDARD_BASE_URL = "https://api.z.ai/api/paas/v4";
@@ -29,6 +29,7 @@ interface ZaiProviderOptions {
   metadata: ProviderMetadata;
   envBaseURLVar?: string;
   envApiKeyVar?: string;
+  variant?: ZaiProviderVariant;
 }
 
 const EMBEDDING_MODEL_FALLBACKS = [
@@ -41,7 +42,17 @@ const EMBEDDING_MODEL_FALLBACKS = [
   "text-embedding-ada-002",
 ];
 
-const LEGACY_MODEL_MAP: Record<string, string> = {
+// Model name mappings for the Coding Plan API
+// The Coding Plan uses direct model names like "glm-4.6"
+const CODING_PLAN_MODEL_MAP: Record<string, string> = {
+  "glm-4": "glm-4.6",        // Upgrade old glm-4 to glm-4.6
+  "glm-4-plus": "glm-4.6",   // Map glm-4-plus to glm-4.6
+  "glm-4.5": "glm-4.6",      // Upgrade 4.5 to 4.6
+};
+
+// Model name mappings for the Credit/Standard API
+// The Credit API uses different naming like "glm-4-plus", "glm-4-air"
+const CREDIT_MODEL_MAP: Record<string, string> = {
   "glm-4.6": "glm-4",
   "glm-4.5": "glm-4-plus",
   "glm-4.5-air": "glm-4-air",
@@ -59,9 +70,11 @@ class ZaiProviderBase implements Provider {
   protected availableModelsCache?: string[];
   protected embeddingBaseURL: string;
   private readonly metadataInfo: ProviderMetadata;
+  private readonly variant: ZaiProviderVariant;
 
   constructor(config: ZaiConfig, options: ZaiProviderOptions) {
-    const model = ZaiProviderBase.normalizeModel(config.model);
+    this.variant = options.variant || 'coding-plan';
+    const model = this.normalizeModel(config.model);
     const envApiKey =
       (options.envApiKeyVar && process.env[options.envApiKeyVar]) ?? process.env.ZAI_API_KEY;
     const resolvedApiKey = config.apiKey || envApiKey || "";
@@ -95,14 +108,35 @@ class ZaiProviderBase implements Provider {
     };
   }
 
-  static normalizeModel(model?: string): string {
+  private normalizeModel(model?: string): string {
     const trimmed = model?.trim();
     if (!trimmed) {
       return DEFAULT_ZAI_MODEL;
     }
 
     const lower = trimmed.toLowerCase();
-    return LEGACY_MODEL_MAP[lower] ?? trimmed;
+
+    // Use different mappings based on variant
+    if (this.variant === 'coding-plan') {
+      return CODING_PLAN_MODEL_MAP[lower] ?? trimmed;
+    } else {
+      return CREDIT_MODEL_MAP[lower] ?? trimmed;
+    }
+  }
+
+  static normalizeModel(model?: string, variant: ZaiProviderVariant = 'coding-plan'): string {
+    const trimmed = model?.trim();
+    if (!trimmed) {
+      return DEFAULT_ZAI_MODEL;
+    }
+
+    const lower = trimmed.toLowerCase();
+
+    if (variant === 'coding-plan') {
+      return CODING_PLAN_MODEL_MAP[lower] ?? trimmed;
+    } else {
+      return CREDIT_MODEL_MAP[lower] ?? trimmed;
+    }
   }
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
@@ -141,6 +175,28 @@ class ZaiProviderBase implements Provider {
 
       if (!res.ok || !res.body) {
         const error = await res.text();
+
+        // Provide helpful error messages for common issues
+        if (res.status === 429) {
+          let errorDetails = error;
+          try {
+            const errorJson = JSON.parse(error);
+            if (errorJson.error?.code === "1113") {
+              throw new Error(
+                `Z.ai account has insufficient balance. Please recharge your account at https://z.ai/manage-apikey/rate-limits\n` +
+                `Coding Plan: $3/month subscription available at https://z.ai/subscribe`
+              );
+            }
+            errorDetails = errorJson.error?.message || error;
+          } catch {
+            // If JSON parsing fails, use raw error
+          }
+          throw new Error(
+            `Z.ai rate limit or insufficient balance: ${errorDetails}\n` +
+            `Check your account at https://z.ai/manage-apikey/rate-limits`
+          );
+        }
+
         throw new Error(`Z.ai streaming API error: ${res.status} ${error}`);
       }
 
@@ -266,7 +322,7 @@ class ZaiProviderBase implements Provider {
   }
 
   switchModel(modelName: string): void {
-    this.config.model = ZaiProviderBase.normalizeModel(modelName);
+    this.config.model = this.normalizeModel(modelName);
   }
 
   getCurrentModel(): string {
@@ -307,11 +363,17 @@ class ZaiProviderBase implements Provider {
   }
 
   private async getChatModelCandidates(requestedModel?: string): Promise<string[]> {
+    // Use variant-specific model mapping
+    const modelMap = this.variant === 'coding-plan' ? CODING_PLAN_MODEL_MAP : CREDIT_MODEL_MAP;
+
     const manualCandidates = [
       requestedModel,
-      requestedModel ? LEGACY_MODEL_MAP[requestedModel.trim().toLowerCase()] : undefined,
+      requestedModel ? modelMap[requestedModel.trim().toLowerCase()] : undefined,
       DEFAULT_ZAI_MODEL,
-      ...Object.values(LEGACY_MODEL_MAP),
+      ...Object.values(modelMap),
+      // Add common fallback models
+      "glm-4.6",
+      "glm-4",
       "glm-4-air",
       "glm-4-airx",
       "glm-4-plus",
@@ -404,6 +466,28 @@ class ZaiProviderBase implements Provider {
 
     if (!response.ok) {
       const error = await response.text();
+
+      // Provide helpful error messages for common issues
+      if (response.status === 429) {
+        let errorDetails = error;
+        try {
+          const errorJson = JSON.parse(error);
+          if (errorJson.error?.code === "1113") {
+            throw new Error(
+              `Z.ai account has insufficient balance. Please recharge your account at https://z.ai/manage-apikey/rate-limits\n` +
+              `Coding Plan: $3/month subscription available at https://z.ai/subscribe`
+            );
+          }
+          errorDetails = errorJson.error?.message || error;
+        } catch {
+          // If JSON parsing fails, use raw error
+        }
+        throw new Error(
+          `Z.ai rate limit or insufficient balance: ${errorDetails}\n` +
+          `Check your account at https://z.ai/manage-apikey/rate-limits`
+        );
+      }
+
       throw new Error(`Z.ai API error: ${response.status} ${error}`);
     }
 
@@ -428,6 +512,7 @@ export class ZaiCodingPlanProvider extends ZaiProviderBase {
         plan: "coding-plan",
       },
       envBaseURLVar: "ZAI_CODING_BASE_URL",
+      variant: "coding-plan",  // Coding Plan uses glm-4.6 directly
     });
   }
 }
@@ -443,6 +528,7 @@ export class ZaiCreditProvider extends ZaiProviderBase {
         plan: "credit",
       },
       envBaseURLVar: "ZAI_CREDIT_BASE_URL",
+      variant: "credit",  // Credit API uses different model naming
     });
   }
 }
