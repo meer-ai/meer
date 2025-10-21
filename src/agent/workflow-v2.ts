@@ -11,6 +11,9 @@ import type { SessionTracker } from "../session/tracker.js";
 import { countTokens, countMessageTokens, getContextLimit } from "../token/utils.js";
 import { OCEAN_SPINNER, type Timeline } from "../ui/workflowTimeline.js";
 import { buildAgentSystemPrompt } from "./prompts/systemPrompt.js";
+import { ContextPreprocessor } from "./context-preprocessor.js";
+import { TransactionManager } from "./transaction-manager.js";
+import { TestDetector } from "./test-detector.js";
 
 export interface AgentConfig {
   provider: Provider;
@@ -48,6 +51,10 @@ export class AgentWorkflowV2 {
     choices: Array<{ label: string; value: string }>,
     defaultValue: string
       ) => Promise<string>;
+  private contextPreprocessor: ContextPreprocessor;
+  private transactionManager: TransactionManager;
+  private testDetector: TestDetector;
+  private editedFiles: Set<string> = new Set();
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -59,6 +66,9 @@ export class AgentWorkflowV2 {
     this.sessionTracker = config.sessionTracker;
     this.contextLimit = getContextLimit(this.model);
     this.chatTimeout = config.timeouts?.chat || this.getDefaultChatTimeout(config.providerType);
+    this.contextPreprocessor = new ContextPreprocessor(this.cwd);
+    this.transactionManager = new TransactionManager(this.cwd);
+    this.testDetector = new TestDetector(this.cwd);
 
     if (this.contextLimit) {
       this.sessionTracker?.setContextLimit(this.contextLimit);
@@ -119,15 +129,53 @@ export class AgentWorkflowV2 {
         choices: Array<{ label: string; value: string }>,
         defaultValue: string
       ) => Promise<string>;
+      disableAutoContext?: boolean;
+      autoRunTests?: boolean;
     }
   ): Promise<string> {
     const timeline = options?.timeline;
+    const autoRunTests = options?.autoRunTests ?? false; // Default: disabled
+
+    // Clear edited files tracking at the start of each message
+    this.editedFiles.clear();
     const onAssistantStart = options?.onAssistantStart;
     const onAssistantChunk = options?.onAssistantChunk;
     const onAssistantEnd = options?.onAssistantEnd;
     const useUI = Boolean(onAssistantChunk);
     this.runWithTerminal = options?.withTerminal;
     this.promptChoice = options?.promptChoice;
+
+    // Auto-gather relevant context BEFORE adding user message (unless disabled)
+    if (!options?.disableAutoContext) {
+      try {
+        const relevantFiles = await this.contextPreprocessor.gatherContext(userMessage);
+
+        if (relevantFiles.length > 0) {
+          const contextPrompt = this.contextPreprocessor.buildContextPrompt(relevantFiles);
+
+          // Add context as a system message
+          this.messages.push({
+            role: 'system',
+            content: contextPrompt,
+          });
+
+          // Notify user about auto-loaded files
+          const fileList = relevantFiles
+            .map(f => `  • ${f.path} (${f.reason})`)
+            .join('\n');
+
+          if (timeline) {
+            timeline.note(`📁 Auto-loaded ${relevantFiles.length} relevant file(s):\n${fileList}`);
+          } else {
+            console.log(chalk.blue(`\n📁 Auto-loaded ${relevantFiles.length} relevant file(s):`));
+            console.log(chalk.gray(fileList));
+          }
+        }
+      } catch (error) {
+        // Context gathering is best-effort, don't fail the entire request
+        logVerbose(chalk.yellow('⚠️ Auto-context gathering failed:'), error);
+      }
+    }
 
     // Add user message
     this.messages.push({ role: "user", content: userMessage });
@@ -362,33 +410,143 @@ export class AgentWorkflowV2 {
         console.log(chalk.blue(`\n🔧 Executing ${toolCalls.length} tool(s)...`));
       }
 
+      // Categorize tools into parallelizable and sequential
+      const { parallelizable, sequential } = this.categorizeTools(toolCalls);
       const toolResults: string[] = [];
-      for (const toolCall of toolCalls) {
-        let toolTaskId: string | undefined;
+
+      // Track execution time for performance metrics
+      const executionStartTime = Date.now();
+
+      // Execute read operations in parallel
+      if (parallelizable.length > 0) {
         if (timeline) {
-          toolTaskId = timeline.startTask(toolCall.tool, {
-            detail: "running",
+          timeline.info(`Executing ${parallelizable.length} read operation(s) in parallel`, {
+            icon: "⚡",
           });
-        } else {
-          console.log(chalk.cyan(`\n  → ${toolCall.tool}`));
+        } else if (parallelizable.length > 1) {
+          console.log(chalk.blue(`\n⚡ Executing ${parallelizable.length} read operations in parallel...`));
+        }
+
+        const parallelPromises = parallelizable.map(async (toolCall) => {
+          let toolTaskId: string | undefined;
+          if (timeline) {
+            toolTaskId = timeline.startTask(toolCall.tool, {
+              detail: "parallel",
+            });
+          } else {
+            console.log(chalk.cyan(`\n  → ${toolCall.tool}`));
+          }
+
+          try {
+            const result = await this.executeTool(toolCall);
+            if (timeline && toolTaskId) {
+              timeline.succeed(toolTaskId, "Done");
+            } else {
+              console.log(chalk.green(`  ✓ Done`));
+            }
+            return `Tool: ${toolCall.tool}\nResult: ${result}`;
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            if (timeline && toolTaskId) {
+              timeline.fail(toolTaskId, errorMsg);
+            } else {
+              console.log(chalk.red(`  ✗ Failed: ${errorMsg}`));
+            }
+            return `Tool: ${toolCall.tool}\nError: ${errorMsg}`;
+          }
+        });
+
+        const parallelResults = await Promise.all(parallelPromises);
+        toolResults.push(...parallelResults);
+      }
+
+      // Execute write operations sequentially (for safety)
+      if (sequential.length > 0) {
+        if (timeline && sequential.length > 0) {
+          timeline.info(`Executing ${sequential.length} write operation(s) sequentially`, {
+            icon: "🔒",
+          });
+        }
+
+        // Check if any of these are destructive operations that need a checkpoint
+        const destructiveTools = new Set([
+          'propose_edit', 'edit_section', 'edit_line', 'write_file',
+          'delete_file', 'move_file', 'format_code', 'fix_lint',
+          'organize_imports', 'rename_symbol', 'extract_function',
+          'extract_variable', 'inline_variable', 'move_symbol',
+          'convert_to_async'
+        ]);
+
+        const hasDestructiveOps = sequential.some(tc => destructiveTools.has(tc.tool));
+        let checkpointCreated = false;
+
+        // Create checkpoint before destructive operations
+        if (hasDestructiveOps) {
+          await this.transactionManager.createCheckpoint(`batch-edit-${Date.now()}`);
+          checkpointCreated = this.transactionManager.hasActiveCheckpoint();
         }
 
         try {
-          const result = await this.executeTool(toolCall);
-          toolResults.push(`Tool: ${toolCall.tool}\nResult: ${result}`);
-          if (timeline && toolTaskId) {
-            timeline.succeed(toolTaskId, "Done");
-          } else {
-            console.log(chalk.green(`  ✓ Done`));
+          for (const toolCall of sequential) {
+            let toolTaskId: string | undefined;
+            if (timeline) {
+              toolTaskId = timeline.startTask(toolCall.tool, {
+                detail: "sequential",
+              });
+            } else {
+              console.log(chalk.cyan(`\n  → ${toolCall.tool}`));
+            }
+
+            try {
+              const result = await this.executeTool(toolCall);
+              toolResults.push(`Tool: ${toolCall.tool}\nResult: ${result}`);
+              if (timeline && toolTaskId) {
+                timeline.succeed(toolTaskId, "Done");
+              } else {
+                console.log(chalk.green(`  ✓ Done`));
+              }
+            } catch (error) {
+              const errorMsg = error instanceof Error ? error.message : String(error);
+              toolResults.push(`Tool: ${toolCall.tool}\nError: ${errorMsg}`);
+              if (timeline && toolTaskId) {
+                timeline.fail(toolTaskId, errorMsg);
+              } else {
+                console.log(chalk.red(`  ✗ Failed: ${errorMsg}`));
+              }
+
+              // On critical error in destructive operation, rollback
+              if (checkpointCreated && destructiveTools.has(toolCall.tool)) {
+                const rolled = await this.transactionManager.rollback();
+                if (rolled && timeline) {
+                  timeline.warn('Rolled back changes due to error');
+                }
+                checkpointCreated = false; // Checkpoint consumed by rollback
+                break; // Stop executing more tools after rollback
+              }
+            }
+          }
+
+          // Commit checkpoint if all operations succeeded
+          if (checkpointCreated) {
+            await this.transactionManager.commit();
           }
         } catch (error) {
-          const errorMsg = error instanceof Error ? error.message : String(error);
-          toolResults.push(`Tool: ${toolCall.tool}\nError: ${errorMsg}`);
-          if (timeline && toolTaskId) {
-            timeline.fail(toolTaskId, errorMsg);
-          } else {
-            console.log(chalk.red(`  ✗ Failed: ${errorMsg}`));
+          // Rollback on unexpected error
+          if (checkpointCreated) {
+            await this.transactionManager.rollback();
           }
+          throw error;
+        }
+      }
+
+      // Show performance metrics
+      const executionDuration = Date.now() - executionStartTime;
+      if (toolCalls.length > 1) {
+        const metricsMsg = `⏱️ Tools executed in ${executionDuration}ms (${parallelizable.length} parallel, ${sequential.length} sequential)`;
+        if (timeline) {
+          timeline.note(metricsMsg);
+        } else {
+          console.log(chalk.dim(`\n${metricsMsg}`));
         }
       }
 
@@ -408,9 +566,112 @@ export class AgentWorkflowV2 {
       }
     }
 
+    // Run related tests if autoRunTests is enabled and files were edited
+    if (autoRunTests && this.editedFiles.size > 0) {
+      await this.runRelatedTests(timeline);
+    }
+
     this.runWithTerminal = undefined;
     this.promptChoice = undefined;
     return fullResponse;
+  }
+
+  /**
+   * Categorize tools into parallelizable (read operations) and sequential (write operations)
+   */
+  private categorizeTools(toolCalls: any[]): {
+    parallelizable: any[];
+    sequential: any[];
+  } {
+    // Tools that can run in parallel (read-only operations)
+    const READ_TOOLS = new Set([
+      'read_file',
+      'list_files',
+      'find_files',
+      'grep',
+      'search_text',
+      'read_many_files',
+      'read_folder',
+      'git_status',
+      'git_diff',
+      'git_log',
+      'git_blame',
+      'analyze_project',
+      'get_file_outline',
+      'find_symbol_definition',
+      'check_syntax',
+      'explain_code',
+      'check_complexity',
+      'detect_smells',
+      'find_references',
+      'google_search',
+      'web_fetch',
+      'load_memory',
+      'get_env',
+      'list_env',
+      'package_list',
+      'show_plan',
+      'validate_project',  // Can run in parallel with other reads
+      'http_request',      // GET requests are safe to parallelize
+    ]);
+
+    // Tools that must run sequentially (write/destructive operations)
+    const WRITE_TOOLS = new Set([
+      'propose_edit',
+      'edit_section',
+      'edit_line',
+      'write_file',
+      'delete_file',
+      'move_file',
+      'create_directory',
+      'git_commit',
+      'git_branch',
+      'run_command',
+      'package_install',
+      'package_run_script',
+      'save_memory',
+      'set_env',
+      'format_code',
+      'fix_lint',
+      'organize_imports',
+      'set_plan',
+      'update_plan_task',
+      'clear_plan',
+      'rename_symbol',
+      'extract_function',
+      'extract_variable',
+      'inline_variable',
+      'move_symbol',
+      'convert_to_async',
+      'generate_tests',
+      'generate_test_suite',
+      'generate_mocks',
+      'generate_api_docs',
+      'generate_readme',
+      'generate_docstring',
+      'security_scan',
+      'code_review',
+      'dependency_audit',
+      'run_tests',
+      'analyze_coverage',
+    ]);
+
+    const parallelizable: any[] = [];
+    const sequential: any[] = [];
+
+    for (const toolCall of toolCalls) {
+      // MCP tools are treated as sequential by default (safer)
+      if (toolCall.tool.includes('.')) {
+        sequential.push(toolCall);
+      } else if (READ_TOOLS.has(toolCall.tool)) {
+        parallelizable.push(toolCall);
+      } else {
+        // If not explicitly categorized, treat as sequential (safer)
+        sequential.push(toolCall);
+      }
+    }
+
+    return { parallelizable, sequential };
   }
 
   /**
@@ -468,10 +729,52 @@ export class AgentWorkflowV2 {
         const approved = await this.reviewSingleEdit(edit);
 
         if (approved) {
+          // Track edited file for test awareness
+          this.editedFiles.add(params.path);
           return `✅ Edit applied successfully to ${edit.path}`;
         } else {
           return `⏭️ Edit skipped for ${edit.path}. You can apply it manually later if needed.`;
         }
+
+      case "edit_section": {
+        // Preferred tool for editing existing files (avoids placeholders)
+        const oldText = params.oldText || params.old_text || "";
+        const newText = params.newText || params.new_text || "";
+        const path = params.path || "";
+
+        if (!path) {
+          return "edit_section requires a path parameter.";
+        }
+
+        if (!oldText || !newText) {
+          return "edit_section requires both oldText and newText parameters.\n\n" +
+                 "Usage: edit_section(path='file.ts', oldText='exact match', newText='replacement')\n" +
+                 "Hint: Use read_file first to get the exact text to replace.";
+        }
+
+        try {
+          const sectionEdit = tools.editSection(
+            path,
+            oldText,
+            newText,
+            this.cwd,
+            { validateSyntax: true }
+          );
+
+          // Show diff and prompt for approval
+          const sectionApproved = await this.reviewSingleEdit(sectionEdit);
+
+          if (sectionApproved) {
+            // Track edited file for test awareness
+            this.editedFiles.add(path);
+            return `✅ Section edited successfully in ${sectionEdit.path}`;
+          } else {
+            return `⏭️ Edit skipped for ${sectionEdit.path}. You can apply it manually later if needed.`;
+          }
+        } catch (error) {
+          return error instanceof Error ? error.message : String(error);
+        }
+      }
 
       case "run_command": {
         const command =
@@ -550,6 +853,8 @@ export class AgentWorkflowV2 {
           const lineApproved = await this.reviewSingleEdit(editLineResult);
 
           if (lineApproved) {
+            // Track edited file for test awareness
+            this.editedFiles.add(params.path || "");
             return `✅ Line edit applied successfully to ${editLineResult.path}`;
           } else {
             return `⏭️ Line edit skipped for ${editLineResult.path}. You can apply it manually later if needed.`;
@@ -604,6 +909,8 @@ export class AgentWorkflowV2 {
           const approved = await this.reviewSingleEdit(edit);
 
           if (approved) {
+            // Track edited file for test awareness
+            this.editedFiles.add(targetPath);
             return `✅ File write applied to ${edit.path}`;
           }
           return `⏭️ File write skipped for ${edit.path}. You can apply it manually later if needed.`;
@@ -1194,6 +1501,107 @@ export class AgentWorkflowV2 {
 
     console.log(chalk.yellow(`\n[Command] cancelled: ${command}\n`));
     return false;
+  }
+
+  /**
+   * Run related tests for all edited files
+   */
+  private async runRelatedTests(timeline?: Timeline): Promise<void> {
+    const testFiles = new Set<string>();
+
+    // Collect all test files related to edited source files
+    for (const file of this.editedFiles) {
+      // Skip if edited file is itself a test file
+      if (this.testDetector.isTestFile(file)) {
+        continue;
+      }
+
+      const related = this.testDetector.findRelatedTests(file);
+      related.forEach(t => testFiles.add(t));
+    }
+
+    if (testFiles.size === 0) {
+      if (timeline) {
+        timeline.note('ℹ️ No related tests found for edited files');
+      } else {
+        console.log(chalk.gray('\nℹ️ No related tests found for edited files'));
+      }
+      return;
+    }
+
+    const testCount = testFiles.size;
+    const testLabel = testCount === 1 ? 'test' : 'tests';
+
+    if (timeline) {
+      timeline.info(`Running ${testCount} related ${testLabel}`, { icon: '🧪' });
+    } else {
+      console.log(chalk.blue(`\n🧪 Running ${testCount} related ${testLabel}...`));
+    }
+
+    // Detect test framework
+    const framework = this.testDetector.detectFramework();
+    if (!framework) {
+      if (timeline) {
+        timeline.warn('No test framework detected');
+      } else {
+        console.log(chalk.yellow('⚠️ No test framework detected'));
+      }
+      return;
+    }
+
+    // Build test command
+    const testCommand = this.testDetector.getTestCommand(
+      framework,
+      Array.from(testFiles)
+    );
+
+    if (!testCommand) {
+      if (timeline) {
+        timeline.warn(`Unable to build test command for framework: ${framework}`);
+      } else {
+        console.log(chalk.yellow(`⚠️ Unable to build test command for framework: ${framework}`));
+      }
+      return;
+    }
+
+    // Run tests with timeout
+    let testTaskId: string | undefined;
+    if (timeline) {
+      testTaskId = timeline.startTask('Running tests', {
+        detail: framework,
+      });
+    }
+
+    try {
+      const tools = await import('../tools/index.js');
+      const result = await tools.runCommand(testCommand, this.cwd, { timeoutMs: 30000 });
+
+      if (result.error) {
+        if (timeline && testTaskId) {
+          timeline.fail(testTaskId, 'Tests failed');
+          timeline.error(`❌ Tests failed:\n${result.error}`);
+        } else {
+          console.log(chalk.red('\n❌ Tests failed:'));
+          console.log(result.error);
+        }
+      } else {
+        if (timeline && testTaskId) {
+          timeline.succeed(testTaskId, 'Tests passed');
+        } else {
+          console.log(chalk.green('\n✅ Tests passed'));
+          if (result.result) {
+            console.log(chalk.gray(result.result));
+          }
+        }
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (timeline && testTaskId) {
+        timeline.fail(testTaskId, errorMsg);
+      } else {
+        console.log(chalk.yellow('\n⚠️ Could not run tests:'), errorMsg);
+      }
+    }
   }
 
 }

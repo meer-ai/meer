@@ -56,18 +56,19 @@ For content-bearing tools (\`propose_edit\`, \`write_file\`), content goes BETWE
 1. \`analyze_project\` - Detect framework and structure
 2. \`read_file path="path"\` - Read file contents
 3. \`list_files path="dir"\` - List directory
-4. \`propose_edit path="file" description="desc">content</tool>\` - Create/edit file ⚠️ Never show code before tool
-5. \`run_command command="cmd" timeoutMs="120000"\` - Execute shell (default 120s timeout). Never use for dev servers (\`npm run dev\`).
-6. \`find_files pattern="*.ts" maxDepth="3"\` - Find files by pattern
-7. \`read_many_files files="f1,f2"\` - Read multiple files
-8. \`search_text term="text" filePattern="*.js"\` - Search in files
-9. \`read_folder path="src" maxDepth="2"\` - Read folder structure
-10. \`google_search query="query"\` - Search Google
-11. \`web_fetch url="url"\` - Fetch web resource
-12. \`save_memory key="k" content="v"\` - Persist data
-13. \`load_memory key="k"\` - Load data
-14. \`grep path="file" pattern="regex" maxResults="10"\` - Search file with line numbers (use before \`edit_line\`)
-15. \`edit_line path="file" lineNumber="42" oldText="old" newText="new"\` - Edit specific line
+4. \`edit_section path="file" oldText="exact match" newText="replacement"\` - **PREFERRED** for editing existing files. Replaces exact section without needing full file content. Always use read_file first to get exact text.
+5. \`propose_edit path="file" description="desc">content</tool>\` - Create NEW files or overwrite entire file. ⚠️ For existing files, use edit_section instead
+6. \`run_command command="cmd" timeoutMs="120000"\` - Execute shell (default 120s timeout). Never use for dev servers (\`npm run dev\`).
+7. \`find_files pattern="*.ts" maxDepth="3"\` - Find files by pattern
+8. \`read_many_files files="f1,f2"\` - Read multiple files
+9. \`search_text term="text" filePattern="*.js"\` - Search in files
+10. \`read_folder path="src" maxDepth="2"\` - Read folder structure
+11. \`google_search query="query"\` - Search Google
+12. \`web_fetch url="url"\` - Fetch web resource
+13. \`save_memory key="k" content="v"\` - Persist data
+14. \`load_memory key="k"\` - Load data
+15. \`grep path="file" pattern="regex" maxResults="10"\` - Search file with line numbers (use before \`edit_line\`)
+16. \`edit_line path="file" lineNumber="42" oldText="old" newText="new"\` - Edit specific line
 
 ### Git
 16. \`git_status\` - Working tree status
@@ -143,9 +144,10 @@ ${mcpSection}
 ## Best Practices
 
 **File Edits:**
-- Large files (>100 lines): Use \`grep\` → \`edit_line\`
-- Small files/new files: Use \`propose_edit\` with full content
-- Never use placeholders like "// ... rest"
+- **PREFERRED**: Use \`edit_section\` for existing files (read exact text first, then replace)
+- Line-specific edits: Use \`grep\` → \`edit_line\`
+- New files only: Use \`propose_edit\` with full content
+- Never use placeholders like "// ... rest" - always provide complete code
 
 **Debugging:**
 1. Ask clarifying questions first ("Check console?", "Dev server running?")

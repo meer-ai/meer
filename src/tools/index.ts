@@ -1422,6 +1422,164 @@ export function editLine(
 }
 
 /**
+ * Helper: Check if a file is a code file that supports syntax validation
+ */
+function isCodeFile(filepath: string): boolean {
+  const ext = filepath.toLowerCase();
+  return ext.endsWith('.ts') || ext.endsWith('.tsx') ||
+         ext.endsWith('.js') || ext.endsWith('.jsx') ||
+         ext.endsWith('.py') || ext.endsWith('.go') ||
+         ext.endsWith('.rs');
+}
+
+/**
+ * Helper: Validate syntax of code content (without writing to file)
+ * Uses advanced LSP-based validation for TypeScript/JavaScript
+ */
+function validateSyntaxInternal(
+  filepath: string,
+  content: string,
+  cwd: string
+): { valid: boolean; errors: string[] } {
+  // Use the advanced LSP diagnostics module for better validation
+  try {
+    const { validateSyntax } = require('../lsp/diagnostics.js');
+    return validateSyntax(filepath, content, cwd);
+  } catch (error) {
+    // Fallback to basic Babel validation if LSP module fails
+    const ext = filepath.toLowerCase();
+
+    if (ext.endsWith('.ts') || ext.endsWith('.tsx') ||
+        ext.endsWith('.js') || ext.endsWith('.jsx')) {
+      try {
+        const parser = require('@babel/parser');
+        parser.parse(content, {
+          sourceType: 'module',
+          plugins: ['typescript', 'jsx', 'decorators-legacy'],
+        });
+        return { valid: true, errors: [] };
+      } catch (parseError: any) {
+        const loc = parseError.loc || {};
+        const line = loc.line || '?';
+        const column = loc.column || '?';
+        return {
+          valid: false,
+          errors: [`Line ${line}:${column} - ${parseError.message}`],
+        };
+      }
+    }
+
+    // Python basic validation
+    if (ext.endsWith('.py')) {
+      const invalidPatterns = [
+        { pattern: /^\s*(def|class)\s*$/, message: 'Incomplete function/class definition' },
+        { pattern: /^\s*if\s*:/, message: 'Empty if condition' },
+        { pattern: /^\s*(return|yield)\s*\n\s*(return|yield)/, message: 'Unreachable code' },
+      ];
+
+      const errors: string[] = [];
+      for (const check of invalidPatterns) {
+        if (check.pattern.test(content)) {
+          errors.push(check.message);
+        }
+      }
+
+      return { valid: errors.length === 0, errors };
+    }
+
+    // Other languages - no validation
+    return { valid: true, errors: [] };
+  }
+}
+
+/**
+ * Tool: Edit a specific section of a file (preferred over propose_edit for existing files)
+ *
+ * This tool allows precise editing of file sections without needing to provide the entire file content.
+ * It uses exact string matching to find and replace a specific section of code.
+ *
+ * @param filepath - Path to the file to edit
+ * @param oldText - The exact text to find and replace (must match exactly, including whitespace)
+ * @param newText - The replacement text
+ * @param cwd - Current working directory
+ * @param options - Optional settings (validateSyntax: boolean)
+ * @returns FileEdit object for review and application
+ */
+export function editSection(
+  filepath: string,
+  oldText: string,
+  newText: string,
+  cwd: string,
+  options: { validateSyntax?: boolean } = {}
+): FileEdit {
+  const fullPath = resolvePath(filepath, cwd);
+
+  // File must exist for section editing
+  if (!existsSync(fullPath)) {
+    throw new Error(
+      `File not found: ${filepath}. ` +
+      `edit_section only works on existing files. ` +
+      `Use write_file or propose_edit to create new files.`
+    );
+  }
+
+  const content = readFileSync(fullPath, 'utf-8');
+
+  // Validate that old text exists in the file
+  if (!content.includes(oldText)) {
+    // Provide helpful error with context
+    const lines = content.split('\n');
+    const preview = lines.slice(0, 5).join('\n');
+    throw new Error(
+      `Exact match not found in ${filepath}.\n\n` +
+      `The old_text must match exactly (including whitespace and indentation).\n\n` +
+      `File preview (first 5 lines):\n${preview}\n\n` +
+      `Hint: Use read_file or grep to get the exact text before using edit_section.`
+    );
+  }
+
+  // Count occurrences to ensure uniqueness
+  const occurrences = content.split(oldText).length - 1;
+  if (occurrences > 1) {
+    throw new Error(
+      `Found ${occurrences} matches for the old_text in ${filepath}. ` +
+      `The old_text must be unique. ` +
+      `Please provide more surrounding context to make it unique.`
+    );
+  }
+
+  // Replace the section
+  const newContent = content.replace(oldText, newText);
+
+  // Optional syntax validation (enabled by default for code files)
+  const shouldValidate = options.validateSyntax !== false && isCodeFile(fullPath);
+  if (shouldValidate) {
+    const validation = validateSyntaxInternal(fullPath, newContent, cwd);
+    if (!validation.valid) {
+      throw new Error(
+        `Syntax validation failed for ${filepath}:\n` +
+        validation.errors.map(e => `  • ${e}`).join('\n') + '\n\n' +
+        `The proposed changes would introduce syntax errors. Please fix them before applying.`
+      );
+    }
+  }
+
+  // Calculate what changed for description
+  const oldLines = oldText.split('\n').length;
+  const newLines = newText.split('\n').length;
+  const changeDesc = oldLines === newLines
+    ? `${oldLines} line(s)`
+    : `${oldLines} → ${newLines} line(s)`;
+
+  return {
+    path: filepath,
+    oldContent: content,
+    newContent,
+    description: `Edit section in ${filepath} (${changeDesc})`,
+  };
+}
+
+/**
  * Tool: Read folder contents recursively with analysis
  */
 export function readFolder(
