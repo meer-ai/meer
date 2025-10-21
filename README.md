@@ -110,6 +110,15 @@ MEER_AGENT=classic meer ask "Summarize the CLI bootstrap"
 MEER_AGENT=langchain meer ask "Refactor the provider registry"
 ```
 
+### Web search via Brave
+```bash
+export BRAVE_API_KEY="your_brave_search_api_key"
+meer ask "Research the latest Node.js LTS dates"
+```
+- The `google_search` tool now calls the Brave Search API when the key is present.
+- Missing keys fall back to a copyable search URL so you can still continue manually.
+- Combine with the LangChain agent for structured research workflows.
+
 ---
 
 ## Tracing with LangSmith

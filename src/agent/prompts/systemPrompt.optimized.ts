@@ -63,7 +63,7 @@ For content-bearing tools (\`propose_edit\`, \`write_file\`), content goes BETWE
 8. \`read_many_files files="f1,f2"\` - Read multiple files
 9. \`search_text term="text" filePattern="*.js"\` - Search in files
 10. \`read_folder path="src" maxDepth="2"\` - Read folder structure
-11. \`google_search query="query"\` - Search Google
+11. \`google_search query="query"\` - Search the web with Brave Search (needs BRAVE_API_KEY)
 12. \`web_fetch url="url"\` - Fetch web resource
 13. \`save_memory key="k" content="v"\` - Persist data
 14. \`load_memory key="k"\` - Load data

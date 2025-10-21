@@ -167,7 +167,7 @@ Use XML-style tags exactly as shown. Always put \`propose_edit\` content BETWEEN
 9. **read_folder** - Read folder structure recursively
    \`<tool name="read_folder" path="src" maxDepth="2"></tool>\`
 
-10. **google_search** - Search Google for information
+10. **google_search** - Search the web with Brave Search (set BRAVE_API_KEY)
     \`<tool name="google_search" query="react hooks documentation"></tool>\`
 
 11. **web_fetch** - Fetch web resources

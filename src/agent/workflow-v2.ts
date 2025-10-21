@@ -815,7 +815,7 @@ export class AgentWorkflowV2 {
         return folderResult.error ? folderResult.error : folderResult.result;
 
       case "google_search":
-        const searchRes = tools.googleSearch(params.query || "", params);
+        const searchRes = await tools.googleSearch(params.query || "", params);
         return searchRes.error ? searchRes.error : searchRes.result;
 
       case "web_fetch":

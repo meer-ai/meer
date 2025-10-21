@@ -369,12 +369,11 @@ async function callMeerTool(
         input.maxResults !== undefined ? Number(input.maxResults) : undefined;
       const site =
         typeof input.site === "string" ? input.site : undefined;
-      return unwrap(
-        tools.googleSearch(query, {
-          maxResults,
-          site,
-        })
-      );
+      const result = await tools.googleSearch(query, {
+        maxResults,
+        site,
+      });
+      return unwrap(result);
     }
     case "web_fetch": {
       const url = String(input.url);
@@ -1083,7 +1082,8 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "google_search",
-    description: "Perform a Google search (placeholder implementation).",
+    description:
+      "Search the web using Brave Search (requires BRAVE_API_KEY) with a manual fallback link.",
     schema: z.object({
       query: z.string().min(1, "query is required"),
       maxResults: z.coerce.number().int().positive().optional(),

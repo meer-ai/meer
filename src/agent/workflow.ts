@@ -1307,7 +1307,7 @@ export class AgentWorkflow {
           site: params.site,
         };
 
-        console.log(chalk.gray(`  🔍 Searching: "${query}"`));
+        console.log(chalk.gray(`  🔍 Web searching: "${query}"`));
         console.log(
           chalk.gray(`  ⏱️  Timeout: ${this.timeouts.webSearch / 1000}s`)
         );
@@ -1321,10 +1321,10 @@ export class AgentWorkflow {
 
           if (result.error) {
             console.log(chalk.red(`  ❌ ${result.error}`));
-            return `Error searching Google: ${result.error}`;
+            return `Error during web search: ${result.error}`;
           }
 
-          console.log(chalk.green(`  ✓ Google search completed`));
+          console.log(chalk.green(`  ✓ Web search completed`));
           return result.result;
         } catch (error) {
           const errorMsg =

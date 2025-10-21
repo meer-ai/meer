@@ -32,6 +32,10 @@ import { glob } from "glob";
 import { ProjectContextManager } from "../context/manager.js";
 import { diffLines } from "diff";
 
+const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
+const BRAVE_SEARCH_PORTAL_URL = "https://search.brave.com/search";
+const MAX_BRAVE_RESULTS = 20;
+
 export interface ToolResult {
   tool: string;
   result: string;
@@ -1673,37 +1677,109 @@ export function readFolder(
 }
 
 /**
- * Tool: Google Search for research and documentation
+ * Tool: Web Search (Brave Search API) for research and documentation
  */
-export function googleSearch(
+export async function googleSearch(
   query: string,
   options: {
     maxResults?: number;
     site?: string;
   } = {}
-): ToolResult {
+): Promise<ToolResult> {
+  const siteFilter = options.site ? `site:${options.site} ` : "";
+  const searchTerm = `${siteFilter}${query}`.trim();
+  const fallbackUrl = `${BRAVE_SEARCH_PORTAL_URL}?q=${encodeURIComponent(
+    searchTerm
+  )}`;
+
   try {
-    console.log(chalk.gray(`  🌐 Searching Google for: "${query}"`));
+    console.log(chalk.gray(`  🌐 Searching the web for: "${query}"`));
 
-    // Note: This is a placeholder implementation
-    // In a real implementation, you would use Google's Custom Search API
-    // or a web scraping approach (with proper rate limiting and respect for robots.txt)
+    const apiKey = process.env.BRAVE_API_KEY;
 
-    const searchUrl = options.site
-      ? `https://www.google.com/search?q=site:${
-          options.site
-        } ${encodeURIComponent(query)}`
-      : `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+    if (!apiKey) {
+      return {
+        tool: "google_search",
+        result: `Brave Search requires a BRAVE_API_KEY environment variable.\n\nShowing manual search link instead:\n🔗 ${fallbackUrl}`,
+      };
+    }
+
+    const count = Math.min(
+      Math.max(options.maxResults ?? 5, 1),
+      MAX_BRAVE_RESULTS
+    );
+
+    const requestUrl = new URL(BRAVE_SEARCH_ENDPOINT);
+    requestUrl.searchParams.set("q", searchTerm);
+    requestUrl.searchParams.set("count", String(count));
+
+    const response = await fetch(requestUrl, {
+      headers: {
+        Accept: "application/json",
+        "X-Subscription-Token": apiKey,
+        "User-Agent": "MeerAI CLI",
+      },
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.log(
+        chalk.red(
+          `  ❌ Brave Search request failed (${response.status} ${response.statusText})`
+        )
+      );
+      return {
+        tool: "google_search",
+        result: `Unable to fetch Brave Search results (${response.status} ${response.statusText}).\n\nResponse: ${errorBody}\n\nYou can open the results manually:\n🔗 ${fallbackUrl}`,
+      };
+    }
+
+    const data: {
+      web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
+      query?: { original?: string; corrected?: string };
+    } = await response.json();
+
+    const results = data.web?.results ?? [];
+
+    if (results.length === 0) {
+      return {
+        tool: "google_search",
+        result: `No web results found for "${query}".\n\nTry refining your query or open the manual search:\n🔗 ${fallbackUrl}`,
+      };
+    }
+
+    const formattedResults = results
+      .slice(0, count)
+      .map((result, index) => {
+        const title = result.title?.trim() || result.url || "Untitled result";
+        const url = result.url?.trim() || "";
+        const description = result.description?.trim();
+        const parts = [`${index + 1}. ${title}`];
+        if (url) {
+          parts.push(`   ${url}`);
+        }
+        if (description) {
+          parts.push(`   ${description}`);
+        }
+        return parts.join("\n");
+      })
+      .join("\n\n");
+
+    const corrected =
+      data.query?.corrected && data.query.corrected !== data.query.original
+        ? `\n\nDid you mean: ${data.query.corrected}`
+        : "";
 
     return {
       tool: "google_search",
-      result: `Google Search Results for "${query}":\n\n🔗 Search URL: ${searchUrl}\n\nNote: This is a placeholder implementation. In a real CLI, you would:\n1. Use Google Custom Search API with proper API key\n2. Parse and return actual search results\n3. Include snippets, titles, and URLs\n4. Handle rate limiting and API quotas\n\nFor now, you can manually visit the URL above to see results.`,
+      result: `Brave Search Results for "${query}"${options.site ? ` (site:${options.site})` : ""}:\n\n${formattedResults}${corrected}\n\nView more results:\n🔗 ${fallbackUrl}`,
     };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(chalk.red(`  ❌ Brave Search failed: ${message}`));
     return {
       tool: "google_search",
-      result: "",
-      error: error instanceof Error ? error.message : String(error),
+      result: `Brave Search failed: ${message}\n\nYou can open the results manually:\n🔗 ${fallbackUrl}`,
     };
   }
 }
