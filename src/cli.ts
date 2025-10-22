@@ -16,6 +16,7 @@ import { createLogoutCommand } from "./commands/logout.js";
 import { createWhoamiCommand } from "./commands/whoami.js";
 import { createIndexCommand } from "./commands/indexCmd.js";
 import { handleVersion } from "./commands/version.js";
+import { createAgentsCommand } from "./commands/agents.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { WorkflowTimeline, type Timeline } from "./ui/workflowTimeline.js";
@@ -1564,6 +1565,7 @@ export function createCLI(): Command {
   program.addCommand(createMemoryCommand());
   program.addCommand(createMCPCommand());
   program.addCommand(createIndexCommand());
+  program.addCommand(createAgentsCommand());
 
   // Show welcome screen and start chat when no command is provided
   program.action(async () => {
