@@ -1,9 +1,12 @@
-export interface SlashCommandDefinition {
+import type { SlashCommandDefinition } from "./schema.js";
+
+export interface BuiltInSlashCommand {
   command: string;
   description: string;
+  protected?: boolean;
 }
 
-export const slashCommands: SlashCommandDefinition[] = [
+export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
   {
     command: "/ask",
     description: "Ask the assistant a one-off question",
@@ -23,14 +26,17 @@ export const slashCommands: SlashCommandDefinition[] = [
   {
     command: "/init",
     description: "Create or refresh AGENTS.md for project tracking",
+    protected: true,
   },
   {
     command: "/login",
     description: "Authenticate with Meer AI cloud services",
+    protected: true,
   },
   {
     command: "/logout",
     description: "Sign out of the Meer AI cloud account",
+    protected: true,
   },
   {
     command: "/mcp",
@@ -43,6 +49,7 @@ export const slashCommands: SlashCommandDefinition[] = [
   {
     command: "/provider",
     description: "Switch AI provider (Ollama, OpenAI, Gemini, etc)",
+    protected: true,
   },
   {
     command: "/model",
@@ -55,6 +62,7 @@ export const slashCommands: SlashCommandDefinition[] = [
   {
     command: "/setup",
     description: "Open the setup wizard to configure providers",
+    protected: true,
   },
   {
     command: "/stats",
@@ -75,9 +83,17 @@ export const slashCommands: SlashCommandDefinition[] = [
   {
     command: "/help",
     description: "Show slash command help",
+    protected: true,
   },
   {
     command: "/exit",
     description: "Exit the chat session",
+    protected: true,
   },
 ];
+
+export type ResolvedSlashCommand = BuiltInSlashCommand & {
+  source: "built-in" | "custom";
+  custom?: SlashCommandDefinition;
+  isOverride?: boolean;
+};

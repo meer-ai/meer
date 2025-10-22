@@ -24,6 +24,13 @@ import { InkChatAdapter } from "./ui/ink/index.js";
 import { logVerbose, setVerboseLogging } from "./logger.js";
 import { showSlashHelp } from "./ui/slashHelp.js";
 import { ProjectContextManager } from "./context/manager.js";
+import { runCommand } from "./tools/index.js";
+import {
+  resolveCustomCommand,
+  getSlashCommandErrors,
+} from "./slash/registry.js";
+import type { SlashCommandDefinition } from "./slash/schema.js";
+import { renderSlashTemplate } from "./slash/template.js";
 
 // Get package.json path and read version
 const __filename = fileURLToPath(import.meta.url);
@@ -506,123 +513,379 @@ function extractFilePath(userInput: string): string | null {
   return null;
 }
 
-async function handleSlashCommand(
-  command: string,
-  config: any,
-  sessionTracker?: SessionTracker
-) {
-  const [cmd, ...args] = command.split(" ");
+type SlashCommandResult =
+  | { status: "continue" }
+  | { status: "restart" }
+  | { status: "exit" }
+  | { status: "send"; message: string };
 
-  switch (cmd) {
-    case "/ask":
-      if (args.length === 0) {
-        console.log(
-          chalk.gray("\nTip: use /ask <question>. Example: /ask What does main.ts do?\n")
-        );
-        return "continue";
-      }
-      await runStandaloneCommand(createAskCommand, args);
-      return "continue";
+interface SlashCommandContext {
+  args: string[];
+  argsText: string;
+  rawInput: string;
+  config: any;
+  sessionTracker?: SessionTracker;
+}
 
-    case "/commit-msg":
-      await runStandaloneCommand(createCommitMsgCommand, args);
-      return "continue";
+type SlashCommandHandler = (
+  context: SlashCommandContext,
+) => Promise<SlashCommandResult>;
 
-    case "/index":
-      await runStandaloneCommand(createIndexCommand, args);
-      return "continue";
+const SLASH_RESULT_CONTINUE: SlashCommandResult = { status: "continue" };
+const SLASH_RESULT_RESTART: SlashCommandResult = { status: "restart" };
+const SLASH_RESULT_EXIT: SlashCommandResult = { status: "exit" };
 
-    case "/init":
-      await handleInitCommand();
-      return "continue"; // Continue chat session
+const continueResult = () => SLASH_RESULT_CONTINUE;
+const restartResult = () => SLASH_RESULT_RESTART;
+const exitResult = () => SLASH_RESULT_EXIT;
 
-    case "/help":
-      showSlashHelp();
-      return "continue"; // Continue chat session
+function parseSlashInput(input: string): {
+  command: string;
+  args: string[];
+  argsText: string;
+} {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) {
+    return { command: trimmed, args: [], argsText: "" };
+  }
 
-    case "/history": {
-      const entries = ChatBoxUI.getHistoryEntries(10);
-      console.log(chalk.bold.blue("\n🕑 Recent Prompts:"));
-      if (entries.length === 0) {
-        console.log(chalk.gray("  (history is empty for this profile)"));
+  const firstSpace = trimmed.indexOf(" ");
+  if (firstSpace === -1) {
+    return { command: trimmed, args: [], argsText: "" };
+  }
+
+  const command = trimmed.slice(0, firstSpace);
+  const argsText = trimmed.slice(firstSpace + 1).trim();
+  const args = argsText.length > 0 ? argsText.split(/\s+/) : [];
+  return { command, args, argsText };
+}
+
+function tokenizeCommandLine(input: string): string[] {
+  const tokens: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else if (char === "\\" && quote === '"' && i + 1 < input.length) {
+        i += 1;
+        current += input[i];
       } else {
-        entries.forEach((entry, index) => {
-          console.log(
-            chalk.cyan(`${index + 1}. `) +
-              chalk.gray(
-                entry.length > 120 ? `${entry.slice(0, 117)}...` : entry
-              )
-          );
-        });
+        current += char;
       }
-      console.log("");
-      return "continue";
+      continue;
     }
 
-    case "/stats":
-      if (sessionTracker) {
-        ChatBoxUI.displayStats(sessionTracker.getCurrentStats());
-      } else {
-        console.log(chalk.yellow("⚠️  Session tracking not available"));
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current.length > 0) {
+        tokens.push(current);
+        current = "";
       }
-      return "continue"; // Continue chat session
+      continue;
+    }
 
-    case "/account":
-      await handleAccountCommand();
-      return "continue"; // Continue chat session
+    current += char;
+  }
 
-    case "/login":
-      await runStandaloneCommand(createLoginCommand, args);
-      return "continue";
+  if (current.length > 0) {
+    tokens.push(current);
+  }
 
-    case "/logout":
-      await runStandaloneCommand(createLogoutCommand, args);
-      return "continue";
+  return tokens;
+}
 
-    case "/mcp":
-      await runStandaloneCommand(createMCPCommand, args);
-      return "continue";
+const MEER_CLI_FACTORIES: Record<string, () => Command> = {
+  ask: createAskCommand,
+  "commit-msg": createCommitMsgCommand,
+  review: createReviewCommand,
+  memory: createMemoryCommand,
+  setup: createSetupCommand,
+  mcp: createMCPCommand,
+  login: createLoginCommand,
+  logout: createLogoutCommand,
+  whoami: createWhoamiCommand,
+  index: createIndexCommand,
+  agents: createAgentsCommand,
+};
 
-    case "/memory":
-      await runStandaloneCommand(createMemoryCommand, args);
-      return "continue";
+const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
+  "/ask": async ({ args }) => {
+    if (args.length === 0) {
+      console.log(
+        chalk.gray(
+          "\nTip: use /ask <question>. Example: /ask What does main.ts do?\n",
+        ),
+      );
+      return continueResult();
+    }
+    await runStandaloneCommand(createAskCommand, args);
+    return continueResult();
+  },
+  "/commit-msg": async ({ args }) => {
+    await runStandaloneCommand(createCommitMsgCommand, args);
+    return continueResult();
+  },
+  "/index": async ({ args }) => {
+    await runStandaloneCommand(createIndexCommand, args);
+    return continueResult();
+  },
+  "/init": async () => {
+    await handleInitCommand();
+    return continueResult();
+  },
+  "/help": async () => {
+    showSlashHelp();
+    return continueResult();
+  },
+  "/history": async () => {
+    const entries = ChatBoxUI.getHistoryEntries(10);
+    console.log(chalk.bold.blue("\n?? Recent Prompts:"));
+    if (entries.length === 0) {
+      console.log(chalk.gray("  (history is empty for this profile)"));
+    } else {
+      entries.forEach((entry, index) => {
+        console.log(
+          chalk.cyan(`${index + 1}. `) +
+            chalk.gray(entry.length > 120 ? `${entry.slice(0, 117)}...` : entry),
+        );
+      });
+    }
+    console.log("");
+    return continueResult();
+  },
+  "/stats": async ({ sessionTracker }) => {
+    if (sessionTracker) {
+      ChatBoxUI.displayStats(sessionTracker.getCurrentStats());
+    } else {
+      console.log(chalk.yellow("??  Session tracking not available"));
+    }
+    return continueResult();
+  },
+  "/account": async () => {
+    await handleAccountCommand();
+    return continueResult();
+  },
+  "/login": async ({ args }) => {
+    await runStandaloneCommand(createLoginCommand, args);
+    return continueResult();
+  },
+  "/logout": async ({ args }) => {
+    await runStandaloneCommand(createLogoutCommand, args);
+    return continueResult();
+  },
+  "/mcp": async ({ args }) => {
+    await runStandaloneCommand(createMCPCommand, args);
+    return continueResult();
+  },
+  "/memory": async ({ args }) => {
+    await runStandaloneCommand(createMemoryCommand, args);
+    return continueResult();
+  },
+  "/model": async ({ config }) => {
+    await handleModelCommand(config);
+    return continueResult();
+  },
+  "/provider": async () => {
+    await handleProviderCommand();
+    return restartResult();
+  },
+  "/review": async ({ args }) => {
+    await runStandaloneCommand(createReviewCommand, args);
+    return continueResult();
+  },
+  "/setup": async () => {
+    await handleSetupCommand();
+    return restartResult();
+  },
+  "/version": async () => {
+    await handleVersion();
+    return continueResult();
+  },
+  "/whoami": async ({ args }) => {
+    await runStandaloneCommand(createWhoamiCommand, args);
+    return continueResult();
+  },
+  "/exit": async () => {
+    console.log(chalk.gray("Exiting chat session..."));
+    return exitResult();
+  },
+};
 
-    case "/model":
-      await handleModelCommand(config);
-      return "continue"; // Continue chat session
+async function executePromptSlashCommand(
+  definition: SlashCommandDefinition,
+  context: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  const template = definition.template ?? "";
+  const variables: Record<string, string> = {
+    args: context.argsText,
+    input: context.argsText,
+    command: definition.command,
+    raw: context.rawInput,
+    cwd: process.cwd(),
+  };
 
-    case "/provider":
-      await handleProviderCommand();
-      return "restart"; // Need to restart to load new provider
+  context.args.forEach((value, index) => {
+    variables[`arg${index}`] = value;
+  });
 
-    case "/review":
-      await runStandaloneCommand(createReviewCommand, args);
-      return "continue";
+  const rendered = renderSlashTemplate(template, variables);
+  const trimmed = rendered.trim();
 
-    case "/setup":
-      await handleSetupCommand();
-      return "restart"; // Need to restart to load new configuration
+  if (!trimmed) {
+    console.log(
+      chalk.yellow(
+        "Generated prompt is empty. Update the template or provide arguments.",
+      ),
+    );
+    return continueResult();
+  }
 
-    case "/version":
-      await handleVersion();
-      return "continue";
+  return { status: "send", message: trimmed };
+}
 
-    case "/whoami":
-      await runStandaloneCommand(createWhoamiCommand, args);
-      return "continue";
+async function executeShellSlashCommand(
+  definition: SlashCommandDefinition,
+  context: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  const baseFragments = [
+    definition.action ?? "",
+    ...(definition.args ?? []),
+  ].filter((fragment) => fragment && fragment.length > 0);
 
-    case "/exit":
-      console.log(chalk.gray("Exiting chat session..."));
-      return "exit"; // Exit the chat loop
+  const baseCommand = baseFragments.join(" ").trim();
+  const fullCommand =
+    context.argsText.length > 0
+      ? `${baseCommand}${baseCommand ? " " : ""}${context.argsText}`
+      : baseCommand;
 
+  if (!fullCommand) {
+    console.log(
+      chalk.red("Shell command configuration is missing the action to run."),
+    );
+    return continueResult();
+  }
+
+  const result = await runCommand(fullCommand, process.cwd());
+  if (result.error) {
+    console.log(chalk.red(`? ${result.error}`));
+  }
+  return continueResult();
+}
+
+async function executeMeerCliSlashCommand(
+  definition: SlashCommandDefinition,
+  context: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  if (!definition.action) {
+    console.log(
+      chalk.red("Meer CLI command configuration requires an action string."),
+    );
+    return continueResult();
+  }
+
+  const baseTokens = tokenizeCommandLine(definition.action);
+  if (baseTokens.length === 0) {
+    console.log(
+      chalk.red("Meer CLI command configuration did not provide a sub-command."),
+    );
+    return continueResult();
+  }
+
+  const subCommand = baseTokens[0];
+  const factory = MEER_CLI_FACTORIES[subCommand];
+  if (!factory) {
+    console.log(
+      chalk.yellow(
+        `Unknown Meer CLI sub-command "${subCommand}". Update the action field.`,
+      ),
+    );
+    return continueResult();
+  }
+
+  const configuredArgs = baseTokens.slice(1);
+  const extraArgs = definition.args ?? [];
+  const combinedArgs = [...configuredArgs, ...extraArgs, ...context.args];
+
+  await runStandaloneCommand(factory, combinedArgs);
+  return continueResult();
+}
+
+async function executeCustomSlashCommand(
+  definition: SlashCommandDefinition,
+  context: SlashCommandContext,
+): Promise<SlashCommandResult> {
+  switch (definition.type) {
+    case "prompt":
+      return executePromptSlashCommand(definition, context);
+    case "shell":
+      return executeShellSlashCommand(definition, context);
+    case "meer-cli":
+      return executeMeerCliSlashCommand(definition, context);
     default:
-      console.log(chalk.red(`Unknown command: ${cmd}`));
-      console.log(chalk.gray("Type /help for available commands"));
-      return "continue"; // Continue chat session
+      console.log(
+        chalk.red(
+          `Unsupported slash command type "${definition.type}". Update your configuration.`,
+        ),
+      );
+      return continueResult();
   }
 }
 
+async function handleSlashCommand(
+  command: string,
+  config: any,
+  sessionTracker?: SessionTracker,
+): Promise<SlashCommandResult> {
+  const { command: name, args, argsText } = parseSlashInput(command);
+  const context: SlashCommandContext = {
+    args,
+    argsText,
+    rawInput: command,
+    config,
+    sessionTracker,
+  };
 
+  const handler = builtInSlashHandlers[name];
+  if (handler) {
+    return handler(context);
+  }
+
+  const resolved = resolveCustomCommand(name);
+  if (!resolved) {
+    console.log(chalk.red(`Unknown command: ${name}`));
+
+    const errors = getSlashCommandErrors();
+    if (errors.length > 0) {
+      console.log(chalk.gray("Custom slash commands failed to load:"));
+      errors.forEach((error) => {
+        console.log(chalk.gray(`  - ${error.file}: ${error.message}`));
+      });
+    } else {
+      console.log(chalk.gray("Type /help for available commands"));
+    }
+    return continueResult();
+  }
+
+  if (!resolved.overrideEnabled) {
+    console.log(
+      chalk.yellow(
+        `${name} is reserved by Meer. Set override: true in your configuration to replace the built-in command.`,
+      ),
+    );
+    return continueResult();
+  }
+
+  return executeCustomSlashCommand(resolved.definition, context);
+}
 async function runStandaloneCommand(
   factory: () => Command,
   args: string[] = []
@@ -1624,6 +1887,7 @@ export function createCLI(): Command {
           Boolean(process.stdout.isTTY && process.stdin.isTTY) &&
           process.env.MEER_NO_TUI !== "1";
         const pendingInputs: string[] = [];
+        let queuedMessage: string | null = null;
         let pendingResolver: ((value: string) => void) | null = null;
         const enqueueInput = (value: string) => {
           if (pendingResolver) {
@@ -1661,6 +1925,12 @@ export function createCLI(): Command {
         process.on("SIGTERM", handleExit);
 
         const askQuestion = async (): Promise<string> => {
+          if (queuedMessage !== null) {
+            const next = queuedMessage;
+            queuedMessage = null;
+            return next;
+          }
+
           if (chatUI) {
             if (pendingInputs.length > 0) {
               return pendingInputs.shift() as string;
@@ -1721,26 +1991,26 @@ export function createCLI(): Command {
 
             const runSlash = () =>
               handleSlashCommand(userInput, config, sessionTracker);
-            let result: string;
+            let slashResult: SlashCommandResult;
             if (chatUI) {
-              const { result: slashResult, stdout, stderr } =
+              const { result: capturedResult, stdout, stderr } =
                 await chatUI.runWithTerminalCapture(runSlash);
-              result = slashResult;
+              slashResult = capturedResult;
 
               const combinedOutput = `${stdout}${stderr}`.trim();
               if (combinedOutput.length > 0) {
                 chatUI.appendSystemMessage(combinedOutput);
               }
             } else {
-              result = await runSlash();
+              slashResult = await runSlash();
             }
 
-            if (result === "exit") {
+            if (slashResult.status === "exit") {
               exitRequested = true;
               break;
             }
 
-            if (result === "restart") {
+            if (slashResult.status === "restart") {
               restarting = true;
               if (chatUI) {
                 chatUI.appendSystemMessage("Reloading configuration...");
@@ -1748,6 +2018,14 @@ export function createCLI(): Command {
                 console.log(chalk.yellow("\n🔄 Reloading configuration...\n"));
               }
               break;
+            }
+
+            if (slashResult.status === "send") {
+              queuedMessage = slashResult.message;
+              if (!chatUI) {
+                console.log(chalk.gray(`\n> ${slashResult.message}\n`));
+              }
+              continue;
             }
 
             if (!chatUI) {

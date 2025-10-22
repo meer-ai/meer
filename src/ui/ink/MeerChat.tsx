@@ -3,14 +3,18 @@
  * Inspired by Claude Code, Cursor, and Bubble Tea
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Box, Text, useInput, useApp, render } from 'ink';
 import Spinner from 'ink-spinner';
 import TextInput from 'ink-text-input';
 import SelectInput from 'ink-select-input';
 import Gradient from 'ink-gradient';
 import BigText from 'ink-big-text';
-import { slashCommands, type SlashCommandDefinition } from '../slashCommands.js';
+import {
+  getAllCommands,
+  type SlashCommandListEntry,
+} from '../../slash/registry.js';
+import { getSlashCommandBadges } from '../../slash/utils.js';
 
 // Types
 interface Message {
@@ -205,7 +209,7 @@ const InputArea: React.FC<{
   isThinking: boolean;
   queuedMessages: number;
   mode?: Mode;
-  slashSuggestions: SlashCommandDefinition[];
+  slashSuggestions: SlashCommandListEntry[];
   selectedSuggestion: number;
 }> = ({
   value,
@@ -259,15 +263,21 @@ const InputArea: React.FC<{
       {slashSuggestions.length > 0 && (
         <Box flexDirection="column" marginTop={1}>
           <Text color="yellow">Slash commands:</Text>
-          {slashSuggestions.map((item, index) => (
-            <Box key={item.command}>
-              <Text color={index === selectedSuggestion ? 'cyan' : 'gray'}>
-                {index === selectedSuggestion ? '› ' : '  '}
-                {item.command}
-              </Text>
-              <Text color="gray"> - {item.description}</Text>
-            </Box>
-          ))}
+          {slashSuggestions.map((item, index) => {
+            const badges = getSlashCommandBadges(item);
+            return (
+              <Box key={item.command}>
+                <Text color={index === selectedSuggestion ? 'cyan' : 'gray'}>
+                  {index === selectedSuggestion ? '> ' : '  '}
+                  {item.command}
+                </Text>
+                {badges.length > 0 && (
+                  <Text color="gray"> [{badges.join(', ')}]</Text>
+                )}
+                <Text color="gray"> - {item.description}</Text>
+              </Box>
+            );
+          })}
           <Text color="gray" dimColor>
             Enter or Tab to insert · use ↑/↓ to pick
           </Text>
@@ -314,9 +324,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const [scrollOffset, setScrollOffset] = useState(0);
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const [internalMode, setInternalMode] = useState<Mode>('edit');
-  const [slashSuggestions, setSlashSuggestions] = useState<SlashCommandDefinition[]>([]);
+  const [slashSuggestions, setSlashSuggestions] = useState<SlashCommandListEntry[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const { exit } = useApp();
+  const slashCommandEntries = useMemo(() => getAllCommands(), []);
 
   // Use external mode if provided, otherwise use internal state
   const mode = externalMode !== undefined ? externalMode : internalMode;
@@ -366,8 +377,8 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       const normalized = commandToken.toLowerCase();
       const options =
         commandToken === '/'
-          ? slashCommands
-          : slashCommands.filter((entry) =>
+          ? slashCommandEntries
+          : slashCommandEntries.filter((entry) =>
               entry.command.toLowerCase().startsWith(normalized)
             );
 
@@ -381,7 +392,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         prev < options.length ? prev : 0
       );
     },
-    [clearSlashSuggestions]
+    [clearSlashSuggestions, slashCommandEntries]
   );
 
   const handleInputChange = useCallback(

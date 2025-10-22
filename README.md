@@ -37,7 +37,7 @@ MeerAI delivers intelligent assistance **inside your terminal** — no browser t
 | **One-shot Q&A (`meer ask`)** | Repo-aware answers, optional memory, slash command access, classic/LangChain modes |
 | **Reviews & commits** | `meer review`, `meer commit-msg`, inline suggestions, conventional commit support |
 | **Toolbox (LangChain)** | 60+ structured tools: read/write, git, run_command, semantic_search, scaffold_project, security_scan, generate_tests, etc. |
-| **Slash commands** | `/config`, `/plan`, `/history`, `/remember`, `/forget`, `/shell`, `/mcp` and more |
+| **Slash commands** | Built-in palette (`/model`, `/setup`, `/history`, …) plus [custom commands](docs/CUSTOM_SLASH_COMMANDS.md) powered by prompt, shell, or Meer CLI actions |
 | **Memory management** | Inspect stats, purge sessions, disable per command |
 | **Semantic search & embeddings** | Optional per-project embedding index with local cache or managed backend |
 | **MCP support** | Auto-load Model Context Protocol servers via `~/.meer/mcp.yaml` |

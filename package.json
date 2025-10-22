@@ -18,7 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build",
-    "test": "tsx scripts/verify-langchain-tools.ts",
+    "test": "tsx scripts/verify-langchain-tools.ts && tsx scripts/verify-slash-commands.ts",
     "release": "./scripts/release.sh"
   },
   "keywords": [

@@ -6,7 +6,40 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from
 import { homedir } from "os";
 import { join } from "path";
 import { showSlashHelp } from "./slashHelp.js";
-import { slashCommands } from "./slashCommands.js";
+import {
+  getAllCommands,
+  type SlashCommandListEntry,
+} from "../slash/registry.js";
+import { getSlashCommandBadges } from "../slash/utils.js";
+
+function formatBadgeLabel(badge: string): string {
+  switch (badge) {
+    case "custom":
+      return chalk.green("custom");
+    case "override":
+      return chalk.yellow("override");
+    case "custom metadata":
+      return chalk.magenta("custom metadata");
+    case "reserved":
+      return chalk.red("reserved");
+    default:
+      return badge;
+  }
+}
+
+function formatSlashCommandLabel(entry: SlashCommandListEntry): string {
+  const base = `${chalk.cyan(entry.command)} ${chalk.gray(`- ${entry.description}`)}`;
+  const badges = getSlashCommandBadges(entry);
+  if (badges.length === 0) {
+    return base;
+  }
+
+  const badgeText = badges
+    .map((badge) => formatBadgeLabel(badge))
+    .join(chalk.gray(", "));
+
+  return `${base} ${chalk.gray("[")}${badgeText}${chalk.gray("]")}`;
+}
 import { SessionStats, SessionTracker } from "../session/tracker.js";
 import { displayWave } from "./logo.js";
 import { DEFAULT_IGNORE_GLOBS } from "../tools/index.js";
@@ -345,11 +378,13 @@ export class ChatBoxUI {
 
     console.log("");
 
-    const choices: Array<{ name: string; value: string | null }> =
-      slashCommands.map((item) => ({
-        name: `${chalk.cyan(item.command)} ${chalk.gray(`- ${item.description}`)}`,
-        value: item.command,
-      }));
+    const entries = getAllCommands();
+    const choices: Array<{ name: string; value: string | null }> = entries.map(
+      (entry) => ({
+        name: formatSlashCommandLabel(entry),
+        value: entry.command,
+      }),
+    );
 
     choices.push({ name: chalk.gray("Cancel"), value: null });
 
