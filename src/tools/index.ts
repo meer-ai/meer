@@ -7441,3 +7441,15 @@ export async function semanticSearch(
     };
   }
 }
+
+/**
+ * Signal that the agent needs user input before continuing
+ * This is a special tool that stops iteration and waits for user response
+ */
+export function waitForUser(reason?: string): ToolResult {
+  const message = reason || "waiting for user response";
+  return {
+    tool: "wait_for_user",
+    result: `⏸️  Paused: ${message}`,
+  };
+}

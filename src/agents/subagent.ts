@@ -68,9 +68,8 @@ export class SubAgent {
       const taskMessage = this.buildTaskMessage(task, context);
 
       // Process the task (AgentWorkflowV2 handles the iteration loop)
-      const response = await this.workflow.processMessage(taskMessage, {
-        disableAutoContext: true, // We provide context explicitly
-      });
+      // Note: Auto-context is disabled by default; we provide context explicitly above
+      const response = await this.workflow.processMessage(taskMessage, {});
 
       // Mark as completed
       this.status = 'completed';

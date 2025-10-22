@@ -129,7 +129,7 @@ export class AgentWorkflowV2 {
         choices: Array<{ label: string; value: string }>,
         defaultValue: string
       ) => Promise<string>;
-      disableAutoContext?: boolean;
+      enableAutoContext?: boolean;
       autoRunTests?: boolean;
     }
   ): Promise<string> {
@@ -145,8 +145,8 @@ export class AgentWorkflowV2 {
     this.runWithTerminal = options?.withTerminal;
     this.promptChoice = options?.promptChoice;
 
-    // Auto-gather relevant context BEFORE adding user message (unless disabled)
-    if (!options?.disableAutoContext) {
+    // Auto-gather relevant context BEFORE adding user message (opt-in via enableAutoContext)
+    if (options?.enableAutoContext) {
       try {
         const relevantFiles = await this.contextPreprocessor.gatherContext(userMessage);
 
@@ -382,6 +382,29 @@ export class AgentWorkflowV2 {
 
       fullResponse += response;
 
+      // Check if AI is asking a question or indicating completion BEFORE checking tool calls
+      // This prevents the agent from executing tools when it should be waiting for user input
+      if (this.shouldStopAfterResponse(response)) {
+        this.messages.push({ role: "assistant", content: response });
+
+        if (this.enableMemory) {
+          memory.addToSession({
+            timestamp: Date.now(),
+            role: "assistant",
+            content: response,
+            metadata: { provider: this.providerType, model: this.model },
+          });
+        }
+
+        if (timeline) {
+          timeline.note("💬 Waiting for user response");
+        } else {
+          console.log(chalk.gray("\n💬 Waiting for your response..."));
+        }
+
+        break;
+      }
+
       // Parse tool calls
       const toolCalls = parseToolCalls(response);
 
@@ -548,6 +571,36 @@ export class AgentWorkflowV2 {
         } else {
           console.log(chalk.dim(`\n${metricsMsg}`));
         }
+      }
+
+      // Check if wait_for_user was called - if so, stop iteration and wait for user
+      const hasWaitForUser = toolCalls.some(tc => tc.tool === 'wait_for_user');
+      if (hasWaitForUser) {
+        // Add assistant response and tool results to conversation
+        this.messages.push({ role: "assistant", content: response });
+        this.messages.push({
+          role: "user",
+          content: `Tool Results:\n\n${toolResults.join("\n\n")}`
+        });
+
+        // Save to memory
+        if (this.enableMemory) {
+          memory.addToSession({
+            timestamp: Date.now(),
+            role: "assistant",
+            content: response,
+            metadata: { provider: this.providerType, model: this.model },
+          });
+        }
+
+        // Signal waiting for user and break iteration
+        if (timeline) {
+          timeline.note("💬 Waiting for user response");
+        } else {
+          console.log(chalk.gray("\n💬 Waiting for your response..."));
+        }
+
+        break;
       }
 
       // Add tool results to conversation
@@ -1328,6 +1381,13 @@ export class AgentWorkflowV2 {
         return convertAsyncRes.error ? convertAsyncRes.error : convertAsyncRes.result;
       }
 
+      case "wait_for_user": {
+        // Special tool that signals the agent needs user input
+        const reason = params.reason || "waiting for user response";
+        const waitResult = tools.waitForUser(reason);
+        return waitResult.error ? waitResult.error : waitResult.result;
+      }
+
       default:
         // Try MCP tools
         if (tool.includes(".")) {
@@ -1338,6 +1398,65 @@ export class AgentWorkflowV2 {
         }
         return `Unknown tool: ${tool}`;
     }
+  }
+
+  /**
+   * Detect if the AI's response indicates it should stop and wait for user input
+   */
+  private shouldStopAfterResponse(response: string): boolean {
+    // Question patterns that indicate the AI is asking for user input
+    const questionPatterns = [
+      /would you like/i,
+      /do you want/i,
+      /should i/i,
+      /can i help/i,
+      /what would you prefer/i,
+      /which (?:one|option)/i,
+      /are you sure/i,
+      /confirm/i,
+      /please (?:confirm|let me know|tell me)/i,
+      /could you clarify/i,
+      /could you (?:explain|provide|specify)/i,
+    ];
+
+    // Completion signals
+    const completionPatterns = [
+      /the (?:app|project|feature|task) is (?:ready|complete|done)/i,
+      /all (?:files|changes|tasks) (?:are|have been) (?:created|completed)/i,
+      /you can now/i,
+      /to get started/i,
+      /ready to (?:use|test|run)/i,
+    ];
+
+    // Check for question patterns
+    for (const pattern of questionPatterns) {
+      if (pattern.test(response)) {
+        return true;
+      }
+    }
+
+    // Check for completion patterns
+    for (const pattern of completionPatterns) {
+      if (pattern.test(response)) {
+        return true;
+      }
+    }
+
+    // Check if response contains question marks (check any line, not just last)
+    // Split by newlines and check if any line ends with a question mark
+    const lines = response.split('\n').map(line => line.trim());
+    for (const line of lines) {
+      // Check for numbered/bulleted questions like "1. What is X?" or "- What is Y?"
+      if (/^\s*[\d\-\*•]\s*\.?\s*.+\?/.test(line)) {
+        return true;
+      }
+      // Check if line ends with question mark
+      if (line.endsWith('?')) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private getSystemPrompt(): string {
