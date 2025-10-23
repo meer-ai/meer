@@ -1,0 +1,172 @@
+project:
+  name: Meer CLI — Production Readiness
+  description: >
+    Close the gaps to reach production-grade parity with CLIs like Cline / OpenCode.
+    This file is the single source of truth. The sync workflow will create/update
+    labels, milestones, and issues from this spec.
+  labels:
+    - meer
+    - cli
+    - production
+    - agent
+    - ux
+    - observability
+    - indexing
+    - testing
+    - release
+    - security
+    - mcp
+  statuses: [Backlog, In Progress, In Review, Done] # For your Project (v2) custom field (optional)
+
+milestones:
+  - title: v1.0.0-beta
+    description: "Fast wins: safety rails, budgets, health checks, minimal tests & telemetry."
+    due_on: 2025-11-15
+  - title: v1.0.0
+    description: "Medium moves: indexer, symbol graph, test-aware loop, polished TTY."
+    due_on: 2025-12-15
+  - title: v1.1.0
+    description: "Hardening: signed binaries, distribution channels, higher coverage."
+    due_on: 2026-01-15
+
+epics:
+  - key: SAFETY
+    title: Reliability & Safety Rails
+    labels: [meer, cli, production]
+    children:
+      - title: Enforce Preview → Approve → Apply for all write ops
+        body: |
+          Add a mandatory "plan → preview diff → user approval → atomic apply → summary" gate
+          for **all** mutating actions (file writes/deletes/refactors). Provide rollback if any
+          sub-apply fails. Include a side-by-side diff viewer in TTY and editor integrations.
+        labels: [agent, ux]
+        milestone: v1.0.0-beta
+      - title: Atomic multi-file patching + rollback on partial failure
+        body: |
+          Wrap multi-file changes in a transaction. If any write fails, roll back all writes.
+          Emit a concise failure summary and propose a re-plan with narrowed scope.
+        labels: [agent]
+        milestone: v1.0.0-beta
+      - title: Session budget guardrails (maxTokens, maxCost, context ceilings)
+        body: |
+          Enforce hard caps per session/model. Add soft warnings at 70/85%.
+          On nearing limits, auto-truncate with rationale and ask to continue.
+        labels: [agent]
+        milestone: v1.0.0-beta
+      - title: Provider rate-limit adapters + retry/backoff with jitter
+        body: |
+          Detect 429/5xx per provider; exponential backoff with jitter; circuit-breaker on repeated failures.
+        labels: [agent]
+        milestone: v1.0.0-beta
+      - title: Deterministic recovery loop
+        body: |
+          On failed tool run: auto-rollback → summarize cause → suggest re-plan. One guided retry max.
+        labels: [agent]
+        milestone: v1.0.0
+
+  - key: CONTEXT
+    title: Contexting & Code Understanding
+    labels: [indexing]
+    children:
+      - title: Background indexer with incremental updates
+        body: |
+          FS watcher builds embeddings store + symbol graph + cross-file refs.
+          Re-index changed files; invalidate caches deterministically.
+        labels: [indexing]
+        milestone: v1.0.0
+      - title: Smart query routing + context packing policy
+        body: |
+          Route prompts by language/symbol hits/recency/path proximity.
+          Pack top-k chunks with dedupe and token budgeting.
+        labels: [indexing, agent]
+        milestone: v1.0.0
+      - title: Test-aware edits with selective test run
+        body: |
+          After edits: detect related tests; run them; parse failures; attempt one constrained repair; summarize outcome.
+        labels: [testing, agent]
+        milestone: v1.0.0
+
+  - key: UX
+    title: CLI UX & Editor Integrations
+    labels: [ux]
+    children:
+      - title: Fix input double-char + add multiline input/history/scrollback
+        body: |
+          Polish TTY input handling; ensure stable streaming and copy-friendly output.
+        labels: [ux]
+        milestone: v1.0.0-beta
+      - title: Side-by-side diff viewer + collapsible tool traces
+        body: |
+          Conversation on left; tabs for Plan/Patch/Tests/Traces on right; progress bars for long runs.
+        labels: [ux]
+        milestone: v1.0.0
+      - title: Fuzzy slash-command search, categories, and inline help
+        body: |
+          Improve discoverability and learning curve for commands.
+        labels: [ux]
+        milestone: v1.0.0
+      - title: VS Code / Cursor extension bridge
+        body: |
+          Inline patch previews, apply/rollback within editor, highlight related tests, go-to-definition jumps.
+        labels: [ux]
+        milestone: v1.1.0
+
+  - key: OBS
+    title: Observability & Support
+    labels: [observability]
+    children:
+      - title: Prometheus metrics exporter + per-tool timings
+        body: |
+          Enable exporter; record latency, error taxonomies, provider stats; add MEER_TELEMETRY=off toggle.
+        labels: [observability]
+        milestone: v1.0.0-beta
+      - title: Sentry (or OpenTelemetry) with PII scrubbing
+        body: |
+          Error capture with breadcrumbs and opt-in/out in CLI config.
+        labels: [observability, security]
+        milestone: v1.0.0
+      - title: meer doctor environment & keys health-check
+        body: |
+          Verify Node, git, Python, MCP servers, provider keys; smoke-test flows; human-friendly fixes.
+        labels: [observability]
+        milestone: v1.0.0-beta
+
+  - key: ECOSYS
+    title: Extensibility & Ecosystem
+    labels: [mcp]
+    children:
+      - title: Curated MCP plugin pack + one-shot setup
+        body: |
+          Bundle FS, Git, Search, Tests, Linter, Formatter servers; add signed plugin registry.
+        labels: [mcp]
+        milestone: v1.0.0
+      - title: Sandbox/permission model for tools
+        body: |
+          Capabilities, timeouts, network/file scope; visible permission prompts.
+        labels: [mcp, security]
+        milestone: v1.0.0
+
+  - key: QA
+    title: QA & Release Engineering
+    labels: [testing, release, security]
+    children:
+      - title: Golden-file tests for "prompt → plan → diff"
+        body: |
+          Fixture repo with deterministic expectations; assert safe, minimal patches.
+        labels: [testing]
+        milestone: v1.0.0-beta
+      - title: Unit & integration tests (diff, token utils, parsers, MCP flows)
+        body: |
+          Target 80%+ coverage on core surfaces; add CLI snapshot tests.
+        labels: [testing]
+        milestone: v1.0.0
+      - title: Prebuilt binaries + signed releases
+        body: |
+          Build macOS/Linux/Windows via pkg/nexe; sign; Homebrew/Scoop/Winget taps; auto-update channel.
+        labels: [release, security]
+        milestone: v1.1.0
+      - title: SBOM + dependency and secret scanning in CI
+        body: |
+          Generate SBOM; run SCA; enforce secret detection; block on critical vulns.
+        labels: [security, release]
+        milestone: v1.0.0

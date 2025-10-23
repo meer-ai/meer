@@ -1,0 +1,145 @@
+name: Sync Meer Project (Issues/Milestones/Project v2)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - ".github/projects/meer-cli-production.yml"
+      - ".github/workflows/sync-meer-project.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  projects: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Convert YAML → JSON
+        id: yq
+        uses: mikefarah/yq@v4.44.3
+        with:
+          cmd: yq -o=json '. as $r | $r' .github/projects/meer-cli-production.yml
+
+      - name: Prepare JSON
+        id: prep
+        run: |
+          echo 'JSON<<EOF' >> $GITHUB_OUTPUT
+          echo "${{ steps.yq.outputs.result }}" >> $GITHUB_OUTPUT
+          echo 'EOF' >> $GITHUB_OUTPUT
+
+      - name: Ensure Labels & Milestones & Issues
+        uses: actions/github-script@v7
+        env:
+          SPEC_JSON: ${{ steps.prep.outputs.JSON }}
+          REPO_PROJECT_ID: ${{ secrets.REPO_PROJECT_ID }} # Optional: Project v2 node ID
+        with:
+          script: |
+            const spec = JSON.parse(process.env.SPEC_JSON);
+
+            // Helpers
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+
+            async function ensureLabel(name) {
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name });
+              } catch {
+                await github.rest.issues.createLabel({ owner, repo, name, color: "0ea5e9" });
+              }
+            }
+
+            async function ensureMilestone(title, description, due_on) {
+              const { data: milestones } = await github.rest.issues.listMilestones({ owner, repo, state: "open" });
+              let m = milestones.find(x => x.title === title);
+              if (!m) {
+                const res = await github.rest.issues.createMilestone({ owner, repo, title, description, due_on });
+                return res.data;
+              }
+              // Optionally update description/due date if changed
+              return m;
+            }
+
+            async function findIssueByTitle(title) {
+              // Search issues in repo (open/closed) by title
+              const q = `repo:${owner}/${repo} is:issue "${title.replace(/"/g, '\\"')}" in:title`;
+              const res = await github.rest.search.issuesAndPullRequests({ q });
+              return res.data.items.find(i => i.title === title && i.repository_url.endsWith(`${owner}/${repo}`));
+            }
+
+            async function addToProjectV2(contentId) {
+              const projectId = process.env.REPO_PROJECT_ID;
+              if (!projectId) return;
+              await github.graphql(`
+                mutation($projectId:ID!, $contentId:ID!){
+                  addProjectV2ItemById(input:{projectId:$projectId, contentId:$contentId}) {
+                    item { id }
+                  }
+                }`, { projectId, contentId });
+            }
+
+            // Ensure global labels
+            for (const label of (spec.project?.labels || [])) {
+              await ensureLabel(label);
+            }
+
+            // Ensure milestones
+            const milestoneMap = {};
+            for (const m of (spec.milestones || [])) {
+              const ms = await ensureMilestone(m.title, m.description || "", m.due_on || null);
+              milestoneMap[m.title] = ms.number;
+            }
+
+            // Create issues from epics & children
+            for (const epic of (spec.epics || [])) {
+              // Create an epic issue
+              const epicTitle = `[EPIC] ${epic.title}`;
+              let epicIssue = await findIssueByTitle(epicTitle);
+              const epicBody = `**Epic Key:** ${epic.key}\n\n${epic.description || epic.title}\n\nLabels: ${ (epic.labels||[]).map(l=>"`"+l+"`").join(", ") }`;
+              const epicLabels = Array.from(new Set([...(spec.project?.labels||[]), ...(epic.labels||[]), 'epic']));
+
+              if (!epicIssue) {
+                const created = await github.rest.issues.create({
+                  owner, repo,
+                  title: epicTitle,
+                  body: epicBody,
+                  labels: epicLabels
+                });
+                epicIssue = created.data;
+                await addToProjectV2(epicIssue.node_id);
+              }
+
+              // Children issues
+              for (const child of (epic.children || [])) {
+                const title = child.title;
+                const body = (child.body || "").trim() + `\n\n**Epic:** #${epicIssue.number}`;
+                const labels = Array.from(new Set([...(spec.project?.labels||[]), ...(epic.labels||[]), ...(child.labels||[])]));
+                const milestoneNumber = child.milestone ? milestoneMap[child.milestone] : undefined;
+
+                let existing = await findIssueByTitle(title);
+                if (!existing) {
+                  const created = await github.rest.issues.create({
+                    owner, repo,
+                    title,
+                    body,
+                    labels,
+                    milestone: milestoneNumber
+                  });
+                  existing = created.data;
+                  await addToProjectV2(existing.node_id);
+                } else {
+                  // Optional: update labels/milestone/body to match YAML
+                  await github.rest.issues.update({
+                    owner, repo, issue_number: existing.number,
+                    labels, milestone: milestoneNumber, body
+                  });
+                }
+              }
+            }
+
+            core.info("Sync complete ✔");
