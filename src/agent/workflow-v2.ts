@@ -61,6 +61,23 @@ export class AgentWorkflowV2 {
   private editedFiles: Set<string> = new Set();
   private maxTokensPerSession?: number;
   private maxCostPerSession?: number;
+  private toolCache = new Map<string, {
+    result: string;
+    timestamp: number;
+    hits: number;
+  }>();
+  private fileRegistry = new Map<string, {
+    hash: string;
+    content: string;
+    lastAccess: number;
+  }>();
+  private metrics = {
+    cacheHits: 0,
+    cacheMisses: 0,
+    messagesPruned: 0,
+    toolsExecuted: 0,
+    toolExecutionTime: new Map<string, number[]>(),
+  };
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -266,6 +283,9 @@ export class AgentWorkflowV2 {
 
       // Check session limits before making API call
       this.checkSessionLimits();
+
+      // Prune messages to keep context bounded
+      this.pruneMessages();
 
       // Get LLM response
       const previousPromptTokens = this.lastPromptTokens;
@@ -530,7 +550,7 @@ export class AgentWorkflowV2 {
             } else {
               console.log(chalk.green(`  ✓ Done`));
             }
-            return `Tool: ${toolCall.tool}\nResult: ${result}`;
+            return this.formatToolResult(toolCall.tool, result);
           } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
             if (timeline && toolTaskId) {
@@ -585,7 +605,7 @@ export class AgentWorkflowV2 {
 
             try {
               const result = await this.executeTool(toolCall);
-              toolResults.push(`Tool: ${toolCall.tool}\nResult: ${result}`);
+              toolResults.push(this.formatToolResult(toolCall.tool, result));
               if (timeline && toolTaskId) {
                 timeline.succeed(toolTaskId, "Done");
               } else {
@@ -855,21 +875,62 @@ export class AgentWorkflowV2 {
   private async executeTool(toolCall: any): Promise<string> {
     const { tool, params } = toolCall;
 
+    // Check cache for read-only operations
+    const READ_ONLY_TOOLS = new Set([
+      'read_file', 'list_files', 'find_files', 'grep', 'search_text',
+      'read_many_files', 'read_folder', 'git_status', 'git_log', 'git_diff',
+      'analyze_project', 'get_file_outline', 'find_symbol_definition',
+      'check_syntax', 'find_references', 'load_memory', 'get_env',
+      'list_env', 'package_list', 'show_plan'
+    ]);
+
+    if (READ_ONLY_TOOLS.has(tool)) {
+      const cached = this.getCachedResult(tool, params);
+      if (cached) return cached;
+    }
+
     // Import tools dynamically to avoid circular deps
     const tools = await import("../tools/index.js");
 
+    let result: string;
     switch (tool) {
       case "analyze_project":
         const analysis = tools.analyzeProject(this.cwd);
-        return analysis.error ? analysis.error : analysis.result;
+        result = analysis.error ? analysis.error : analysis.result;
+        if (!analysis.error) this.cacheResult(tool, params, result);
+        return result;
 
       case "read_file":
         const readResult = tools.readFile(params.path, this.cwd);
-        return readResult.error ? readResult.error : readResult.result;
+        if (readResult.error) return readResult.error;
+
+        // Check if file already in context
+        if (this.isFileInContext(params.path)) {
+          const entry = this.fileRegistry.get(params.path)!;
+          const newHash = this.hashContent(readResult.result);
+
+          if (entry.hash === newHash) {
+            entry.lastAccess = Date.now();
+            result = `File ${params.path} already in context (unchanged since last read)`;
+          } else {
+            // File changed, update registry
+            this.registerFile(params.path, readResult.result);
+            result = `File ${params.path} updated:\n${readResult.result}`;
+          }
+        } else {
+          // First time reading
+          this.registerFile(params.path, readResult.result);
+          result = readResult.result;
+        }
+
+        this.cacheResult(tool, params, result);
+        return result;
 
       case "list_files":
         const listResult = tools.listFiles(params.path || ".", this.cwd);
-        return listResult.error ? listResult.error : listResult.result;
+        result = listResult.error ? listResult.error : listResult.result;
+        if (!listResult.error) this.cacheResult(tool, params, result);
+        return result;
 
       case "propose_edit":
         const edit = tools.proposeEdit(
@@ -1621,6 +1682,122 @@ export class AgentWorkflowV2 {
       cwd: this.cwd,
       mcpTools: this.mcpTools,
     });
+  }
+
+  /**
+   * Prune messages to keep context bounded
+   * Implements sliding window to prevent unbounded growth
+   */
+  private pruneMessages(): void {
+    const MAX_MESSAGES = 12; // System + 5 conversation turns (user + assistant pairs)
+    const KEEP_RECENT = 6;   // Always keep last 3 turns
+
+    if (this.messages.length <= MAX_MESSAGES) return;
+
+    const pruned = this.messages.length - MAX_MESSAGES;
+    this.metrics.messagesPruned += pruned;
+    logVerbose(chalk.yellow(`Pruning messages: ${this.messages.length} → ${MAX_MESSAGES} (total pruned: ${this.metrics.messagesPruned})`));
+
+    // Keep system prompt + recent messages
+    const systemMessages = this.messages.filter(m => m.role === 'system');
+    const recentMessages = this.messages.slice(-KEEP_RECENT);
+
+    this.messages = [...systemMessages, ...recentMessages];
+  }
+
+  /**
+   * Format tool result with truncation for large outputs
+   */
+  private formatToolResult(toolName: string, result: string): string {
+    const MAX_LENGTH = 3000; // characters (~750 tokens)
+    const MAX_LINES = 100;
+
+    const lines = result.split('\n');
+
+    // For read operations, truncate intelligently
+    if (toolName === 'read_file' || toolName === 'list_files' || toolName === 'read_folder' || toolName === 'read_many_files') {
+      if (result.length > MAX_LENGTH || lines.length > MAX_LINES) {
+        const truncated = lines.slice(0, MAX_LINES).join('\n').slice(0, MAX_LENGTH);
+        const omittedLines = Math.max(lines.length - MAX_LINES, 0);
+        const omittedChars = Math.max(result.length - MAX_LENGTH, 0);
+
+        return `Tool: ${toolName}\nResult (truncated - ${result.length} chars, ${lines.length} lines):\n${truncated}\n\n[... ${omittedLines} more lines omitted (${omittedChars} chars). Use grep or read specific sections if needed]`;
+      }
+    }
+
+    return `Tool: ${toolName}\nResult:\n${result}`;
+  }
+
+  /**
+   * Get cached tool result if available and recent
+   */
+  private getCachedResult(tool: string, params: any): string | null {
+    const key = `${tool}:${JSON.stringify(params)}`;
+    const cached = this.toolCache.get(key);
+
+    const CACHE_TTL = 120000; // 2 minutes
+
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      cached.hits++;
+      this.metrics.cacheHits++;
+      const age = Math.round((Date.now() - cached.timestamp) / 1000);
+      logVerbose(chalk.blue(`Cache hit for ${tool} (${cached.hits} hits, ${age}s old, total cache hits: ${this.metrics.cacheHits})`));
+      return `[Cached from ${age}s ago]\n${cached.result}`;
+    }
+
+    this.metrics.cacheMisses++;
+    return null;
+  }
+
+  /**
+   * Cache tool result
+   */
+  private cacheResult(tool: string, params: any, result: string): void {
+    const key = `${tool}:${JSON.stringify(params)}`;
+    this.toolCache.set(key, {
+      result,
+      timestamp: Date.now(),
+      hits: 0
+    });
+
+    // Clean old cache entries (keep last 50)
+    if (this.toolCache.size > 50) {
+      const oldestKey = Array.from(this.toolCache.entries())
+        .sort((a, b) => a[1].timestamp - b[1].timestamp)[0][0];
+      this.toolCache.delete(oldestKey);
+    }
+  }
+
+  /**
+   * Simple hash function for content
+   */
+  private hashContent(content: string): string {
+    let hash = 0;
+    for (let i = 0; i < content.length; i++) {
+      hash = ((hash << 5) - hash) + content.charCodeAt(i);
+      hash = hash & hash;
+    }
+    return hash.toString(16);
+  }
+
+  /**
+   * Register a file in the registry
+   */
+  private registerFile(path: string, content: string): string {
+    const hash = this.hashContent(content);
+    this.fileRegistry.set(path, {
+      hash,
+      content,
+      lastAccess: Date.now()
+    });
+    return hash;
+  }
+
+  /**
+   * Check if file is in registry
+   */
+  private isFileInContext(path: string): boolean {
+    return this.fileRegistry.has(path);
   }
 
   private warnIfContextHigh(tokens: number) {
