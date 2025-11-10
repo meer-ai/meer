@@ -7,7 +7,8 @@
 import { Command } from 'commander';
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
-import { join, homedir } from 'path';
+import { join } from 'path';
+import { homedir } from 'os';
 import chalk from 'chalk';
 import { loadConfig, configExists } from '../config.js';
 import { MCPManager } from '../mcp/manager.js';
