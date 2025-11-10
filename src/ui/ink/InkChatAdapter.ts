@@ -7,6 +7,8 @@ import { render } from 'ink';
 import React from 'react';
 import { MeerChat } from './MeerChat.js';
 import type { Timeline } from '../workflowTimeline.js';
+import type { ToolCall } from './components/tools/index.js';
+import type { WorkflowStage } from './components/workflow/index.js';
 
 interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -37,6 +39,16 @@ export class InkChatAdapter {
   private onInterruptCallback?: () => void;
   private mode: Mode = 'edit';
   private onModeChangeCallback?: (mode: Mode) => void;
+
+  // Enhanced UI state
+  private tools: ToolCall[] = [];
+  private workflowStages: WorkflowStage[] = [];
+  private currentIteration?: number;
+  private maxIterations?: number;
+  private tokens = { used: 0, limit: undefined as number | undefined };
+  private cost = { current: 0, limit: undefined as number | undefined };
+  private messageCount = 0;
+  private sessionStartTime = Date.now();
 
   constructor(config: InkChatConfig) {
     this.config = config;
@@ -91,6 +103,8 @@ export class InkChatAdapter {
       }
     };
 
+    const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
+
     this.instance = render(
       React.createElement(MeerChat, {
         messages: this.messages,
@@ -104,6 +118,14 @@ export class InkChatAdapter {
         onInterrupt: handleInterrupt,
         mode: this.mode,
         onModeChange: handleModeChange,
+        tools: this.tools.length > 0 ? this.tools : undefined,
+        workflowStages: this.workflowStages.length > 0 ? this.workflowStages : undefined,
+        currentIteration: this.currentIteration,
+        maxIterations: this.maxIterations,
+        tokens: this.tokens.used > 0 ? this.tokens : undefined,
+        cost: this.cost.current > 0 ? this.cost : undefined,
+        messageCount: this.messageCount,
+        sessionUptime,
       })
     );
   }
@@ -135,6 +157,8 @@ export class InkChatAdapter {
       }
     };
 
+    const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
+
     // Force re-render by unmounting and remounting
     this.instance.rerender(
       React.createElement(MeerChat, {
@@ -149,6 +173,14 @@ export class InkChatAdapter {
         onInterrupt: handleInterrupt,
         mode: this.mode,
         onModeChange: handleModeChange,
+        tools: this.tools.length > 0 ? this.tools : undefined,
+        workflowStages: this.workflowStages.length > 0 ? this.workflowStages : undefined,
+        currentIteration: this.currentIteration,
+        maxIterations: this.maxIterations,
+        tokens: this.tokens.used > 0 ? this.tokens : undefined,
+        cost: this.cost.current > 0 ? this.cost : undefined,
+        messageCount: this.messageCount,
+        sessionUptime,
       })
     );
   }
@@ -158,6 +190,7 @@ export class InkChatAdapter {
   appendUserMessage(content: string): void {
     if (!content.trim()) return;
     this.messages.push({ role: 'user', content, timestamp: Date.now() });
+    this.messageCount++;
     this.updateUI();
   }
 
@@ -361,6 +394,114 @@ export class InkChatAdapter {
         this.setStatus('');
       },
     };
+  }
+
+  // Enhanced UI tracking methods
+
+  addTool(toolName: string): string {
+    const id = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    this.tools.push({
+      id,
+      name: toolName,
+      status: 'pending',
+    });
+    this.updateUI();
+    return id;
+  }
+
+  startTool(id: string): void {
+    const tool = this.tools.find(t => t.id === id);
+    if (tool) {
+      tool.status = 'running';
+      tool.startTime = Date.now();
+      this.updateUI();
+    }
+  }
+
+  completeTool(id: string, result?: string): void {
+    const tool = this.tools.find(t => t.id === id);
+    if (tool) {
+      tool.status = 'success';
+      tool.endTime = Date.now();
+      tool.result = result;
+      this.updateUI();
+    }
+  }
+
+  failTool(id: string, error: string): void {
+    const tool = this.tools.find(t => t.id === id);
+    if (tool) {
+      tool.status = 'error';
+      tool.endTime = Date.now();
+      tool.error = error;
+      this.updateUI();
+    }
+  }
+
+  clearTools(): void {
+    this.tools = [];
+    this.updateUI();
+  }
+
+  addWorkflowStage(name: string): void {
+    this.workflowStages.push({
+      name,
+      status: 'pending',
+    });
+    this.updateUI();
+  }
+
+  startWorkflowStage(name: string): void {
+    const stage = this.workflowStages.find(s => s.name === name);
+    if (stage) {
+      stage.status = 'running';
+      stage.startTime = Date.now();
+      this.updateUI();
+    }
+  }
+
+  completeWorkflowStage(name: string): void {
+    const stage = this.workflowStages.find(s => s.name === name);
+    if (stage) {
+      stage.status = 'complete';
+      stage.endTime = Date.now();
+      this.updateUI();
+    }
+  }
+
+  failWorkflowStage(name: string): void {
+    const stage = this.workflowStages.find(s => s.name === name);
+    if (stage) {
+      stage.status = 'error';
+      stage.endTime = Date.now();
+      this.updateUI();
+    }
+  }
+
+  clearWorkflowStages(): void {
+    this.workflowStages = [];
+    this.updateUI();
+  }
+
+  setIteration(current: number, max: number): void {
+    this.currentIteration = current;
+    this.maxIterations = max;
+    this.updateUI();
+  }
+
+  updateTokens(used: number, limit?: number): void {
+    this.tokens = { used, limit };
+    this.updateUI();
+  }
+
+  updateCost(current: number, limit?: number): void {
+    this.cost = { current, limit };
+    this.updateUI();
+  }
+
+  incrementMessageCount(): void {
+    this.messageCount++;
+    this.updateUI();
   }
 
   destroy(): void {
