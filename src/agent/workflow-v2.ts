@@ -26,6 +26,10 @@ export interface AgentConfig {
     chat?: number;
   };
   sessionTracker?: SessionTracker;
+  limits?: {
+    maxTokensPerSession?: number;
+    maxCostPerSession?: number;
+  };
 }
 
 /**
@@ -55,6 +59,8 @@ export class AgentWorkflowV2 {
   private transactionManager: TransactionManager;
   private testDetector: TestDetector;
   private editedFiles: Set<string> = new Set();
+  private maxTokensPerSession?: number;
+  private maxCostPerSession?: number;
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -69,6 +75,8 @@ export class AgentWorkflowV2 {
     this.contextPreprocessor = new ContextPreprocessor(this.cwd);
     this.transactionManager = new TransactionManager(this.cwd);
     this.testDetector = new TestDetector(this.cwd);
+    this.maxTokensPerSession = config.limits?.maxTokensPerSession;
+    this.maxCostPerSession = config.limits?.maxCostPerSession;
 
     if (this.contextLimit) {
       this.sessionTracker?.setContextLimit(this.contextLimit);
@@ -83,6 +91,58 @@ export class AgentWorkflowV2 {
       case "anthropic": return 90000; // 1.5 min for Claude
       case "gemini": return 60000; // 1 min for Gemini
       default: return 60000;
+    }
+  }
+
+  /**
+   * Check if session limits have been exceeded
+   * @throws Error if limits are exceeded
+   */
+  private checkSessionLimits(): void {
+    if (!this.sessionTracker) {
+      return;
+    }
+
+    const tokenUsage = this.sessionTracker.getTokenUsage();
+    const costUsage = this.sessionTracker.getCostUsage();
+
+    // Check token limit
+    if (this.maxTokensPerSession && tokenUsage.total >= this.maxTokensPerSession) {
+      throw new Error(
+        `Session token limit exceeded: ${tokenUsage.total.toLocaleString()} / ${this.maxTokensPerSession.toLocaleString()} tokens used.\n` +
+        `Consider increasing the limit in your config or starting a new session.`
+      );
+    }
+
+    // Check cost limit
+    if (this.maxCostPerSession && costUsage.total >= this.maxCostPerSession) {
+      throw new Error(
+        `Session cost limit exceeded: ${costUsage.formatted.total} / $${this.maxCostPerSession.toFixed(2)} spent.\n` +
+        `Consider increasing the limit in your config or starting a new session.`
+      );
+    }
+
+    // Warn if approaching limits (85% threshold)
+    if (this.maxTokensPerSession) {
+      const tokenPercent = (tokenUsage.total / this.maxTokensPerSession) * 100;
+      if (tokenPercent >= 85 && tokenPercent < 100) {
+        console.log(
+          chalk.yellow(
+            `\n⚠️  Warning: ${tokenPercent.toFixed(1)}% of session token limit used (${tokenUsage.total.toLocaleString()} / ${this.maxTokensPerSession.toLocaleString()})\n`
+          )
+        );
+      }
+    }
+
+    if (this.maxCostPerSession) {
+      const costPercent = (costUsage.total / this.maxCostPerSession) * 100;
+      if (costPercent >= 85 && costPercent < 100) {
+        console.log(
+          chalk.yellow(
+            `\n⚠️  Warning: ${costPercent.toFixed(1)}% of session cost limit used (${costUsage.formatted.total} / $${this.maxCostPerSession.toFixed(2)})\n`
+          )
+        );
+      }
     }
   }
 
@@ -203,6 +263,9 @@ export class AgentWorkflowV2 {
           console.log(chalk.gray(`\n🔄 ${iterationLabel}`));
         }
       }
+
+      // Check session limits before making API call
+      this.checkSessionLimits();
 
       // Get LLM response
       const previousPromptTokens = this.lastPromptTokens;
@@ -728,7 +791,7 @@ export class AgentWorkflowV2 {
   }
 
   /**
-   * Review and apply a single edit immediately
+   * Review and apply a single edit immediately with approval
    */
   private async reviewSingleEdit(edit: FileEdit): Promise<boolean> {
     console.log(chalk.bold.yellow(`\n📝 ${edit.path}`));
@@ -742,13 +805,51 @@ export class AgentWorkflowV2 {
       console.log(chalk.green("   No textual diff (new or identical file)\n"));
     }
 
-    console.log(
-      chalk.yellow(
-        "⚠️ Automatic file application is disabled. Apply these changes manually if you approve them.\n"
-      )
+    // Create checkpoint before applying changes
+    await this.transactionManager.createCheckpoint(
+      `edit-${edit.path.replace(/[^a-zA-Z0-9]/g, '-')}`
     );
 
-    return false;
+    // Prompt for approval with retry option
+    if (this.promptChoice) {
+      const choice = await this.promptChoice(
+        `Apply changes to ${edit.path}?`,
+        [
+          { label: "Apply", value: "apply" },
+          { label: "Skip", value: "skip" },
+          { label: "Cancel all", value: "cancel" },
+        ],
+        "apply"
+      );
+
+      if (choice === "cancel") {
+        throw new Error("Edit cancelled by user");
+      }
+
+      return choice === "apply";
+    }
+
+    const { action } = await this.runInteractivePrompt(() =>
+      inquirer.prompt([
+        {
+          type: "list",
+          name: "action",
+          message: `Apply changes to ${edit.path}?`,
+          choices: [
+            { name: "✅ Apply changes", value: "apply" },
+            { name: "⏭️  Skip this file", value: "skip" },
+            { name: "❌ Cancel all edits", value: "cancel" },
+          ],
+          default: "apply",
+        },
+      ])
+    );
+
+    if (action === "cancel") {
+      throw new Error("Edit cancelled by user");
+    }
+
+    return action === "apply";
   }
 
   private async executeTool(toolCall: any): Promise<string> {
@@ -782,10 +883,23 @@ export class AgentWorkflowV2 {
         const approved = await this.reviewSingleEdit(edit);
 
         if (approved) {
+          // Apply the edit
+          const applyResult = tools.applyEdit(edit, this.cwd);
+          if (applyResult.error) {
+            // Rollback on error
+            await this.transactionManager.rollback();
+            return `❌ Failed to apply edit: ${applyResult.error}`;
+          }
+
+          // Commit checkpoint on success
+          await this.transactionManager.commit();
+
           // Track edited file for test awareness
           this.editedFiles.add(params.path);
           return `✅ Edit applied successfully to ${edit.path}`;
         } else {
+          // Rollback checkpoint if skipped
+          await this.transactionManager.rollback();
           return `⏭️ Edit skipped for ${edit.path}. You can apply it manually later if needed.`;
         }
 
@@ -818,13 +932,27 @@ export class AgentWorkflowV2 {
           const sectionApproved = await this.reviewSingleEdit(sectionEdit);
 
           if (sectionApproved) {
+            // Apply the edit
+            const applyResult = tools.applyEdit(sectionEdit, this.cwd);
+            if (applyResult.error) {
+              // Rollback on error
+              await this.transactionManager.rollback();
+              return `❌ Failed to apply edit: ${applyResult.error}`;
+            }
+
+            // Commit checkpoint on success
+            await this.transactionManager.commit();
+
             // Track edited file for test awareness
             this.editedFiles.add(path);
             return `✅ Section edited successfully in ${sectionEdit.path}`;
           } else {
+            // Rollback checkpoint if skipped
+            await this.transactionManager.rollback();
             return `⏭️ Edit skipped for ${sectionEdit.path}. You can apply it manually later if needed.`;
           }
         } catch (error) {
+          await this.transactionManager.rollback();
           return error instanceof Error ? error.message : String(error);
         }
       }
@@ -906,13 +1034,27 @@ export class AgentWorkflowV2 {
           const lineApproved = await this.reviewSingleEdit(editLineResult);
 
           if (lineApproved) {
+            // Apply the edit
+            const applyResult = tools.applyEdit(editLineResult, this.cwd);
+            if (applyResult.error) {
+              // Rollback on error
+              await this.transactionManager.rollback();
+              return `❌ Failed to apply edit: ${applyResult.error}`;
+            }
+
+            // Commit checkpoint on success
+            await this.transactionManager.commit();
+
             // Track edited file for test awareness
             this.editedFiles.add(params.path || "");
             return `✅ Line edit applied successfully to ${editLineResult.path}`;
           } else {
+            // Rollback checkpoint if skipped
+            await this.transactionManager.rollback();
             return `⏭️ Line edit skipped for ${editLineResult.path}. You can apply it manually later if needed.`;
           }
         } catch (error) {
+          await this.transactionManager.rollback();
           return error instanceof Error ? error.message : String(error);
         }
 
@@ -962,12 +1104,27 @@ export class AgentWorkflowV2 {
           const approved = await this.reviewSingleEdit(edit);
 
           if (approved) {
+            // Apply the edit
+            const applyResult = tools.applyEdit(edit, this.cwd);
+            if (applyResult.error) {
+              // Rollback on error
+              await this.transactionManager.rollback();
+              return `❌ Failed to apply edit: ${applyResult.error}`;
+            }
+
+            // Commit checkpoint on success
+            await this.transactionManager.commit();
+
             // Track edited file for test awareness
             this.editedFiles.add(targetPath);
             return `✅ File write applied to ${edit.path}`;
           }
+
+          // Rollback checkpoint if skipped
+          await this.transactionManager.rollback();
           return `⏭️ File write skipped for ${edit.path}. You can apply it manually later if needed.`;
         } catch (error) {
+          await this.transactionManager.rollback();
           return error instanceof Error ? error.message : String(error);
         }
       }

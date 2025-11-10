@@ -15,6 +15,7 @@ import { createLoginCommand } from "./commands/login.js";
 import { createLogoutCommand } from "./commands/logout.js";
 import { createWhoamiCommand } from "./commands/whoami.js";
 import { createIndexCommand } from "./commands/indexCmd.js";
+import { createDoctorCommand } from "./commands/doctor.js";
 import { handleVersion } from "./commands/version.js";
 import { createAgentsCommand } from "./commands/agents.js";
 import { SessionTracker } from "./session/tracker.js";
@@ -1829,6 +1830,7 @@ export function createCLI(): Command {
   program.addCommand(createMCPCommand());
   program.addCommand(createIndexCommand());
   program.addCommand(createAgentsCommand());
+  program.addCommand(createDoctorCommand());
 
   // Show welcome screen and start chat when no command is provided
   program.action(async () => {

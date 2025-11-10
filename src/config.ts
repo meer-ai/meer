@@ -16,6 +16,7 @@ import {
   normalizeZaiModel,
 } from './providers/zai.js';
 import type { Provider } from './providers/base.js';
+import { wrapProvider } from './providers/provider-wrapper.js';
 
 const ConfigSchema = z.object({
   provider: z.enum([
@@ -32,6 +33,10 @@ const ConfigSchema = z.object({
   model: z.string().optional(),
   temperature: z.number().optional(),
   maxIterations: z.number().optional(),
+  limits: z.object({
+    maxTokensPerSession: z.number().optional(),
+    maxCostPerSession: z.number().optional(),
+  }).optional(),
   // Ollama-specific
   ollama: z.object({
     host: z.string().optional(),
@@ -102,6 +107,10 @@ export interface LoadedConfig {
     attempts: number;
     delayMs: number;
     backoffFactor: number;
+  };
+  limits?: {
+    maxTokensPerSession?: number;
+    maxCostPerSession?: number;
   };
   contextEmbedding?: {
     enabled: boolean;
@@ -312,8 +321,17 @@ export function loadConfig(): LoadedConfig {
       throw new Error(`Unsupported provider: ${config.provider}`);
   }
 
+  // Wrap provider with retry and rate-limit handling
+  const wrappedProvider = wrapProvider(provider, {
+    maxRetries: 3,
+    baseDelay: 1000,
+    maxDelay: 30000,
+    timeout: providerKey === 'ollama' ? 300000 : 90000, // 5 min for Ollama, 90s for others
+    name: providerKey,
+  });
+
   return {
-    provider,
+    provider: wrappedProvider,
     providerType: providerKey,
     model: defaultModel,
     maxIterations: config.maxIterations ?? 25,
@@ -321,6 +339,10 @@ export function loadConfig(): LoadedConfig {
       attempts: 3,
       delayMs: 1000,
       backoffFactor: 2,
+    },
+    limits: {
+      maxTokensPerSession: config.limits?.maxTokensPerSession,
+      maxCostPerSession: config.limits?.maxCostPerSession,
     },
     autoCollectContext: config.context?.autoCollect ?? false,
     contextEmbedding: {
