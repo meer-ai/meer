@@ -15,6 +15,9 @@ import {
   type SlashCommandListEntry,
 } from '../../slash/registry.js';
 import { getSlashCommandBadges } from '../../slash/utils.js';
+import { StatusHeader } from './components/core/index.js';
+import { ToolExecutionPanel, type ToolCall } from './components/tools/index.js';
+import { WorkflowProgress, type WorkflowStage } from './components/workflow/index.js';
 
 // Types
 interface Message {
@@ -38,6 +41,21 @@ interface MeerChatProps {
   onInterrupt?: () => void;
   mode?: Mode;
   onModeChange?: (mode: Mode) => void;
+  // New props for enhanced UI
+  tools?: ToolCall[];
+  workflowStages?: WorkflowStage[];
+  currentIteration?: number;
+  maxIterations?: number;
+  tokens?: {
+    used: number;
+    limit?: number;
+  };
+  cost?: {
+    current: number;
+    limit?: number;
+  };
+  messageCount?: number;
+  sessionUptime?: number;
 }
 
 // Code Block Component
@@ -319,6 +337,14 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   onInterrupt,
   mode: externalMode,
   onModeChange,
+  tools,
+  workflowStages,
+  currentIteration,
+  maxIterations,
+  tokens,
+  cost,
+  messageCount,
+  sessionUptime,
 }) => {
   const [input, setInput] = useState('');
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -555,7 +581,28 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
   return (
     <Box flexDirection="column" height="100%" width="100%">
-      <Header provider={provider} model={model} cwd={cwd} mode={mode} />
+      <StatusHeader
+        provider={provider}
+        model={model}
+        cwd={cwd}
+        mode={mode}
+        tokens={tokens}
+        cost={cost}
+        messages={messageCount}
+        uptime={sessionUptime}
+      />
+
+      {/* Tool Execution Panel */}
+      {tools && tools.length > 0 && <ToolExecutionPanel tools={tools} />}
+
+      {/* Workflow Progress */}
+      {workflowStages && workflowStages.length > 0 && (
+        <WorkflowProgress
+          stages={workflowStages}
+          currentIteration={currentIteration}
+          maxIterations={maxIterations}
+        />
+      )}
 
       {/* Only show status bar if there's a status AND agent is NOT thinking (thinking shows after messages) */}
       {status && !isThinking && <StatusBar status={status} />}
