@@ -5,6 +5,15 @@
 
 import { Registry, Counter, Histogram, Gauge } from 'prom-client';
 
+/**
+ * Check if telemetry is enabled
+ * Can be disabled with MEER_TELEMETRY=off or MEER_TELEMETRY=false
+ */
+export function isTelemetryEnabled(): boolean {
+  const telemetryEnv = process.env.MEER_TELEMETRY?.toLowerCase();
+  return telemetryEnv !== 'off' && telemetryEnv !== 'false' && telemetryEnv !== '0';
+}
+
 // Create a custom registry
 export const metricsRegistry = new Registry();
 
@@ -185,6 +194,11 @@ export class MetricsTracker {
    */
   success(additionalLabels: Record<string, string> = {}): number {
     const duration = (Date.now() - this.startTime) / 1000;
+
+    if (!isTelemetryEnabled()) {
+      return duration;
+    }
+
     const allLabels: Record<string, string> = { ...this.labels, ...additionalLabels, status: 'success' };
 
     // Record in appropriate metric based on operation type
@@ -220,6 +234,11 @@ export class MetricsTracker {
    */
   failure(error: Error, additionalLabels: Record<string, string> = {}): number {
     const duration = (Date.now() - this.startTime) / 1000;
+
+    if (!isTelemetryEnabled()) {
+      return duration;
+    }
+
     const allLabels: Record<string, string> = { ...this.labels, ...additionalLabels, status: 'failure' };
 
     if (this.operation.includes('tool')) {
