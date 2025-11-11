@@ -312,12 +312,52 @@ export class AgentWorkflowV2 {
       let response = "";
       let streamStarted = false;
       let headerPrinted = false;
+      let bufferedContent = "";  // Buffer for filtering XML
+      let xmlStarted = false;    // Track if we're inside an XML tag
 
       const ensureConsoleHeader = () => {
         if (!headerPrinted) {
           console.log(chalk.green("\n🤖 MeerAI:\n"));
           headerPrinted = true;
         }
+      };
+
+      // Filter out XML tags from streaming output for better UX
+      const filterAndOutputChunk = (chunk: string) => {
+        bufferedContent += chunk;
+        let output = "";
+        let i = 0;
+
+        while (i < bufferedContent.length) {
+          if (!xmlStarted && bufferedContent[i] === '<' && bufferedContent.substring(i).startsWith('<tool')) {
+            // Found start of XML tag
+            xmlStarted = true;
+          }
+
+          if (!xmlStarted) {
+            // Not in XML, output this character
+            output += bufferedContent[i];
+            i++;
+          } else {
+            // Inside XML, skip until we find the closing tag
+            if (bufferedContent[i] === '>' && i > 0 && bufferedContent[i-1] !== '/') {
+              // Check if this is a closing tag </tool>
+              const beforeClosing = bufferedContent.substring(Math.max(0, i-6), i+1);
+              if (beforeClosing.includes('</tool>')) {
+                xmlStarted = false;
+              }
+            } else if (bufferedContent.substring(i).startsWith('/>')) {
+              // Self-closing tag
+              xmlStarted = false;
+              i++; // Skip the extra character
+            }
+            i++;
+          }
+        }
+
+        // Keep the buffer if we're mid-XML (to handle split tags)
+        bufferedContent = xmlStarted ? bufferedContent : "";
+        return output;
       };
 
       try {
@@ -340,10 +380,12 @@ export class AgentWorkflowV2 {
 
           if (chunk?.trim()) {
             response += chunk;
-            if (useUI) {
-              onAssistantChunk?.(chunk);
-            } else {
-              process.stdout.write(chunk);
+            const filteredChunk = filterAndOutputChunk(chunk);
+
+            if (filteredChunk && useUI) {
+              onAssistantChunk?.(filteredChunk);
+            } else if (filteredChunk) {
+              process.stdout.write(filteredChunk);
               await new Promise((resolve) => setTimeout(resolve, 5));
             }
           }
@@ -361,15 +403,18 @@ export class AgentWorkflowV2 {
             spinner.stop();
           }
 
+          // Strip XML tags from non-streaming response
+          const strippedResponse = response.replace(/<tool\s+[^>]*>[\s\S]*?<\/tool>/gi, '').replace(/<tool\s+[^>]*\/>/gi, '').trim();
+
           if (useUI) {
             if (!timeline) {
               onAssistantStart?.();
             }
-            onAssistantChunk?.(response);
+            onAssistantChunk?.(strippedResponse || "Running tools...");
             onAssistantEnd?.();
           } else {
             ensureConsoleHeader();
-            console.log(response);
+            console.log(strippedResponse || "Running tools...");
           }
         } else if (useUI) {
           onAssistantEnd?.();
@@ -1889,6 +1934,21 @@ export class AgentWorkflowV2 {
     message: string,
     defaultChoice: "confirm" | "cancel" = "cancel"
   ): Promise<boolean> {
+    // Auto-approve safe package operations
+    const safePackagePatterns = [
+      /^Install .* locally\?$/i,  // npm/yarn/pnpm install (local)
+      /^Run package script "(build|test|lint|check|compile|typecheck)"\?$/i,  // Safe npm scripts
+    ];
+
+    // Check if this is a safe operation that can be auto-approved
+    for (const pattern of safePackagePatterns) {
+      if (pattern.test(message)) {
+        // Auto-approve without prompting
+        return true;
+      }
+    }
+
+    // For all other operations, ask for confirmation
     if (this.promptChoice) {
       const choice = await this.promptChoice(
         message,
@@ -1920,6 +1980,40 @@ export class AgentWorkflowV2 {
   }
 
   private async confirmCommand(command: string): Promise<boolean> {
+    // Auto-approve safe, common commands
+    const safeCommands = [
+      // Build/test commands (read-only, safe to run)
+      /^npm\s+run\s+build$/i,
+      /^npm\s+run\s+test$/i,
+      /^npm\s+test$/i,
+      /^npm\s+run\s+lint$/i,
+      /^npm\s+run\s+check$/i,
+      /^yarn\s+build$/i,
+      /^yarn\s+test$/i,
+      /^pnpm\s+build$/i,
+      /^pnpm\s+test$/i,
+      // Git read-only commands
+      /^git\s+status$/i,
+      /^git\s+diff/i,
+      /^git\s+log/i,
+      /^git\s+branch$/i,
+      // Package managers (install only)
+      /^npm\s+install$/i,
+      /^npm\s+i$/i,
+      /^yarn\s+install$/i,
+      /^yarn$/i,
+      /^pnpm\s+install$/i,
+    ];
+
+    // Check if command is in the safe list
+    for (const pattern of safeCommands) {
+      if (pattern.test(command.trim())) {
+        // Auto-approve without prompting
+        return true;
+      }
+    }
+
+    // For all other commands, ask for confirmation
     if (this.promptChoice) {
       const choice = await this.promptChoice(
         `Run shell command: ${command}`,

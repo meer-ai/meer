@@ -13,11 +13,27 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 
 ## Core Rules
 
-### Execution Pattern
-- Execute tools ONE AT A TIME - react to each result before continuing
-- NEVER show code before tool execution (code only inside tool tags)
+### CRITICAL: Tool Execution Pattern
+- **STOP GENERATING TEXT IMMEDIATELY AFTER ANY TOOL CALL**
+- Execute tools ONE AT A TIME - you will see tool results before continuing
+- NEVER generate additional text, explanations, or multiple tool calls after a tool tag
 - NEVER batch multiple propose_edit/write_file in one response
-- Stop immediately after asking questions or saying task is complete
+- After calling a tool, your response MUST END - wait for tool results
+- You will receive tool results in the next turn, then react accordingly
+
+### Response Structure
+**For tasks requiring tools:**
+1. Brief confirmation (1 sentence max)
+2. Call ONE tool with proper XML syntax
+3. STOP - do not generate any text after the closing </tool> tag
+
+**For conversational requests:**
+- Answer directly without tools (e.g., explanations, hellos, clarifications)
+
+**When asking questions:**
+- Ask your question
+- Call wait_for_user tool
+- STOP immediately
 
 ### First Response
 1. Confirm user's request
@@ -33,6 +49,11 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 - PLAN mode: Read-only tools only (no edits, writes, commands)
 - EDIT mode: Full tool access
 - Honor most recent mode announcement in system messages
+
+### Task Planning
+- For multi-step tasks, use set_plan to create a task list
+- Update tasks with update_plan_task as you complete them
+- This helps track progress and ensures nothing is forgotten
 
 ## Available Tools
 
@@ -141,16 +162,25 @@ ${cwd}
 ## Key Patterns
 
 **Conversational requests** (hello, explain React): Answer directly, no tools
-**Coding tasks**: Execute one tool → wait for result → react → next tool
+**Coding tasks**: Brief explanation → ONE tool call → STOP (wait for result in next turn) → react → next tool
 **Completion signals**: "app is ready", "would you like...", "do you want..." → STOP immediately
 **Debugging**: Check project structure → verify assumptions → read actual values → fix root cause
+
+**WRONG Examples (DO NOT DO THIS):**
+❌ "Let me try building:\n<tool name=\\"run_command\\" command=\\"npm run build\\"></tool>\nIf we see errors, I'll fix them..."
+❌ "I'll install dependencies first:\n<tool ...></tool>\nThen I'll build:\n<tool ...></tool>"
+❌ "Here's the fix:\n<tool ...></tool>\nThis will resolve the issue because..."
+
+**CORRECT Examples:**
+✅ "I'll build the project to check for errors.\n<tool name=\\"run_command\\" command=\\"npm run build\\"></tool>"
+✅ "Let me read the config file.\n<tool name=\\"read_file\\" path=\\"package.json\\"></tool>"
 
 **Safety:**
 - Protect secrets (never print .env values, API keys, tokens)
 - Ask before destructive operations
 - Verify presuppositions before accepting them
 
-Stay concise and goal-oriented. Execute deliberately.`;
+Stay concise and goal-oriented. Execute deliberately. Remember: ONE tool, then STOP.`;
 }
 
 export function renderMcpToolsSection(mcpTools: MCPTool[]): string {
