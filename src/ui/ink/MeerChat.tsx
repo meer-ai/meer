@@ -58,7 +58,7 @@ interface MeerChatProps {
   sessionUptime?: number;
 }
 
-// Code Block Component - Enhanced with better styling
+// Code Block Component - Minimal clean design
 const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language }) => {
   const getLanguageIcon = (lang?: string): string => {
     if (!lang) return '📄';
@@ -77,22 +77,24 @@ const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, langua
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} paddingY={0} marginY={1}>
+    <Box flexDirection="column" paddingLeft={0}>
+      {/* Language tag - inline, no box */}
       {language && (
-        <Box paddingBottom={0}>
-          <Text color="cyan">
-            {getLanguageIcon(language)} <Text bold>{language}</Text>
+        <Box marginBottom={0}>
+          <Text color="dim" dimColor>
+            {getLanguageIcon(language)} {language}
           </Text>
         </Box>
       )}
-      <Box paddingTop={language ? 0 : 0} paddingBottom={0}>
-        <Text color="white">{code}</Text>
+      {/* Code content with subtle left bar */}
+      <Box flexDirection="column" borderLeft={true} paddingLeft={2} marginTop={language ? 0 : 0}>
+        <Text color="white" dimColor>{code}</Text>
       </Box>
     </Box>
   );
 };
 
-// Tool Call Component - Enhanced with better styling
+// Tool Call Component - Clean inline design
 const ToolCall: React.FC<{ toolName: string; content: string }> = ({ toolName, content }) => {
   const getToolIcon = (name: string): string => {
     const lower = name.toLowerCase();
@@ -111,22 +113,24 @@ const ToolCall: React.FC<{ toolName: string; content: string }> = ({ toolName, c
     : content;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} paddingY={0} marginY={1}>
-      <Box paddingBottom={0}>
-        <Text color="magenta" bold>
-          {getToolIcon(toolName)} {toolName}
-        </Text>
+    <Box flexDirection="column" marginTop={1} marginBottom={2} paddingLeft={0}>
+      {/* Tool header - inline style */}
+      <Box gap={1}>
+        <Text color="magenta">▎</Text>
+        <Box gap={1}>
+          <Text color="magenta">{getToolIcon(toolName)}</Text>
+          <Text color="magenta" bold>{toolName}</Text>
+        </Box>
       </Box>
-      <Box paddingTop={0}>
-        <Text color="dim">
-          {displayContent}
-        </Text>
+      {/* Tool result with left padding */}
+      <Box paddingLeft={2} marginTop={0}>
+        <Text color="dim" dimColor>{displayContent}</Text>
       </Box>
     </Box>
   );
 };
 
-// Message Component
+// Message Component - Redesigned with minimal borders
 const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message, isLast }) => {
   const parseContent = (content: string) => {
     // Parse code blocks
@@ -182,19 +186,6 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message,
     }
   };
 
-  const getBorderColor = () => {
-    switch (message.role) {
-      case 'user':
-        return 'cyan';
-      case 'assistant':
-        return 'green';
-      case 'system':
-        return 'yellow';
-      default:
-        return 'dim';
-    }
-  };
-
   const getName = () => {
     switch (message.role) {
       case 'user':
@@ -217,45 +208,49 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message,
     return `${hours}:${minutes}`;
   };
 
+  // Get accent bar character based on role
+  const getAccentBar = () => {
+    switch (message.role) {
+      case 'user':
+        return '▎';
+      case 'assistant':
+        return '▎';
+      case 'system':
+        return '▎';
+      default:
+        return '│';
+    }
+  };
+
   return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={getBorderColor()}
-        paddingX={1}
-        paddingY={0}
-      >
-        {/* Message header */}
-        <Box justifyContent="space-between" paddingY={0}>
+    <Box flexDirection="column" marginBottom={2} marginTop={1}>
+      {/* Message header - inline with accent */}
+      <Box gap={1}>
+        <Text color={getColor()} bold>{getAccentBar()}</Text>
+        <Box gap={1} flexGrow={1} justifyContent="space-between">
           <Box gap={1}>
-            <Text color={getColor()} bold>
-              {getIcon()} {getName()}
-            </Text>
+            <Text color={getColor()}>{getIcon()}</Text>
+            <Text color={getColor()} bold>{getName()}</Text>
           </Box>
           {message.timestamp && (
-            <Text color="dim">
-              {formatTime(message.timestamp)}
-            </Text>
+            <Text color="dim" dimColor>{formatTime(message.timestamp)}</Text>
           )}
         </Box>
+      </Box>
 
-        {/* Message content */}
-        <Box flexDirection="column" paddingTop={0} paddingBottom={0}>
-          {parts.map((part, idx) =>
-            part.type === 'code' ? (
-              <Box key={idx} marginTop={0} marginBottom={0}>
-                <CodeBlock code={part.content} language={'language' in part ? part.language : undefined} />
-              </Box>
-            ) : (
-              <Box key={idx} marginTop={0}>
-                <Text color="white">
-                  {part.content}
-                </Text>
-              </Box>
-            )
-          )}
-        </Box>
+      {/* Message content with left padding for alignment */}
+      <Box flexDirection="column" paddingLeft={2}>
+        {parts.map((part, idx) =>
+          part.type === 'code' ? (
+            <Box key={idx} marginTop={1} marginBottom={1}>
+              <CodeBlock code={part.content} language={'language' in part ? part.language : undefined} />
+            </Box>
+          ) : (
+            <Box key={idx} marginTop={0}>
+              <Text>{part.content.trim()}</Text>
+            </Box>
+          )
+        )}
       </Box>
     </Box>
   );
@@ -299,7 +294,7 @@ const Header: React.FC<{
   );
 };
 
-// Thinking Indicator Component - Enhanced with personality
+// Thinking Indicator Component - Clean inline design
 const ThinkingIndicator: React.FC = () => {
   const [dots, setDots] = React.useState(0);
 
@@ -320,12 +315,13 @@ const ThinkingIndicator: React.FC = () => {
   const currentMessage = messages[Math.floor(Date.now() / 2000) % messages.length];
 
   return (
-    <Box marginBottom={1} borderStyle="round" borderColor="cyan" paddingX={1} paddingY={0}>
+    <Box marginBottom={2} marginTop={1} paddingLeft={0}>
       <Box gap={1}>
+        <Text color="cyan">▎</Text>
         <Text color="cyan">
           <Spinner type="dots" />
         </Text>
-        <Text color="cyan" bold>
+        <Text color="cyan" dimColor>
           {currentMessage}{'.'.repeat(dots)}
         </Text>
       </Box>
