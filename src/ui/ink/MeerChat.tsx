@@ -58,34 +58,70 @@ interface MeerChatProps {
   sessionUptime?: number;
 }
 
-// Code Block Component
+// Code Block Component - Enhanced with better styling
 const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language }) => {
+  const getLanguageIcon = (lang?: string): string => {
+    if (!lang) return '📄';
+    const lower = lang.toLowerCase();
+    if (lower.includes('typescript') || lower === 'ts') return '🔷';
+    if (lower.includes('javascript') || lower === 'js') return '🟨';
+    if (lower.includes('python') || lower === 'py') return '🐍';
+    if (lower.includes('rust') || lower === 'rs') return '🦀';
+    if (lower.includes('go')) return '🔵';
+    if (lower.includes('java')) return '☕';
+    if (lower.includes('c++') || lower === 'cpp') return '⚡';
+    if (lower.includes('shell') || lower === 'bash' || lower === 'sh') return '🐚';
+    if (lower.includes('json')) return '📦';
+    if (lower.includes('yaml') || lower === 'yml') return '📋';
+    return '📝';
+  };
+
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginY={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} paddingY={0} marginY={1}>
       {language && (
-        <Box>
-          <Text color="cyan" bold>
-            {language}
+        <Box paddingBottom={0}>
+          <Text color="cyan">
+            {getLanguageIcon(language)} <Text bold>{language}</Text>
           </Text>
         </Box>
       )}
-      <Text color="white">{code}</Text>
+      <Box paddingTop={language ? 0 : 0} paddingBottom={0}>
+        <Text color="white">{code}</Text>
+      </Box>
     </Box>
   );
 };
 
-// Tool Call Component
+// Tool Call Component - Enhanced with better styling
 const ToolCall: React.FC<{ toolName: string; content: string }> = ({ toolName, content }) => {
+  const getToolIcon = (name: string): string => {
+    const lower = name.toLowerCase();
+    if (lower.includes('read') || lower.includes('file')) return '📖';
+    if (lower.includes('write') || lower.includes('edit')) return '✍️';
+    if (lower.includes('bash') || lower.includes('exec')) return '⚡';
+    if (lower.includes('search') || lower.includes('grep')) return '🔍';
+    if (lower.includes('web') || lower.includes('fetch')) return '🌐';
+    if (lower.includes('task') || lower.includes('agent')) return '🤖';
+    return '🛠️';
+  };
+
+  // Truncate very long content
+  const displayContent = content.length > 200
+    ? `${content.substring(0, 200)}... (${content.length} chars total)`
+    : content;
+
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1} marginY={1}>
-      <Box>
-        <Text color="yellow" bold>
-          🛠️  {toolName}
+    <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1} paddingY={0} marginY={1}>
+      <Box paddingBottom={0}>
+        <Text color="magenta" bold>
+          {getToolIcon(toolName)} {toolName}
         </Text>
       </Box>
-      <Text color="gray" dimColor>
-        {content}
-      </Text>
+      <Box paddingTop={0}>
+        <Text color="dim">
+          {displayContent}
+        </Text>
+      </Box>
     </Box>
   );
 };
@@ -123,9 +159,9 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message,
   const getIcon = () => {
     switch (message.role) {
       case 'user':
-        return '❯';
+        return '👤';
       case 'assistant':
-        return '🤖';
+        return '🌊';
       case 'system':
         return 'ℹ️';
       default:
@@ -146,23 +182,80 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message,
     }
   };
 
+  const getBorderColor = () => {
+    switch (message.role) {
+      case 'user':
+        return 'cyan';
+      case 'assistant':
+        return 'green';
+      case 'system':
+        return 'yellow';
+      default:
+        return 'dim';
+    }
+  };
+
+  const getName = () => {
+    switch (message.role) {
+      case 'user':
+        return 'You';
+      case 'assistant':
+        return 'Meer AI';
+      case 'system':
+        return 'System';
+      default:
+        return message.role;
+    }
+  };
+
+  // Format timestamp if available
+  const formatTime = (timestamp?: number): string => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    return `${hours}:${minutes}`;
+  };
+
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Box>
-        <Text color={getColor()} bold>
-          {getIcon()} {message.role === 'user' ? 'You' : message.role === 'assistant' ? 'Meer AI' : 'System'}
-        </Text>
-      </Box>
-      <Box flexDirection="column" paddingLeft={2}>
-        {parts.map((part, idx) =>
-          part.type === 'code' ? (
-            <CodeBlock key={idx} code={part.content} language={'language' in part ? part.language : undefined} />
-          ) : (
-            <Text key={idx} color="white">
-              {part.content}
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={getBorderColor()}
+        paddingX={1}
+        paddingY={0}
+      >
+        {/* Message header */}
+        <Box justifyContent="space-between" paddingY={0}>
+          <Box gap={1}>
+            <Text color={getColor()} bold>
+              {getIcon()} {getName()}
             </Text>
-          )
-        )}
+          </Box>
+          {message.timestamp && (
+            <Text color="dim">
+              {formatTime(message.timestamp)}
+            </Text>
+          )}
+        </Box>
+
+        {/* Message content */}
+        <Box flexDirection="column" paddingTop={0} paddingBottom={0}>
+          {parts.map((part, idx) =>
+            part.type === 'code' ? (
+              <Box key={idx} marginTop={0} marginBottom={0}>
+                <CodeBlock code={part.content} language={'language' in part ? part.language : undefined} />
+              </Box>
+            ) : (
+              <Box key={idx} marginTop={0}>
+                <Text color="white">
+                  {part.content}
+                </Text>
+              </Box>
+            )
+          )}
+        </Box>
       </Box>
     </Box>
   );
@@ -206,14 +299,36 @@ const Header: React.FC<{
   );
 };
 
-// Thinking Indicator Component (shows after last message)
+// Thinking Indicator Component - Enhanced with personality
 const ThinkingIndicator: React.FC = () => {
+  const [dots, setDots] = React.useState(0);
+
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      setDots(prev => (prev + 1) % 4);
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  const messages = [
+    'Thinking',
+    'Processing',
+    'Analyzing',
+    'Working',
+  ];
+
+  const currentMessage = messages[Math.floor(Date.now() / 2000) % messages.length];
+
   return (
-    <Box marginBottom={1} marginLeft={2}>
-      <Text color="yellow">
-        <Spinner type="dots" />
-      </Text>
-      <Text color="yellow"> Thinking...</Text>
+    <Box marginBottom={1} borderStyle="round" borderColor="cyan" paddingX={1} paddingY={0}>
+      <Box gap={1}>
+        <Text color="cyan">
+          <Spinner type="dots" />
+        </Text>
+        <Text color="cyan" bold>
+          {currentMessage}{'.'.repeat(dots)}
+        </Text>
+      </Box>
     </Box>
   );
 };
@@ -255,21 +370,43 @@ const InputArea: React.FC<{
   };
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginTop={1}>
-      <Box>
-        <Text color="cyan" bold>
-          Input {value.startsWith('/') && <Text color="gray" dimColor>(slash command)</Text>}
-          {isThinking && <Text color="yellow"> (Agent working...)</Text>}
-          {queuedMessages > 0 && <Text color="magenta"> ({queuedMessages} queued)</Text>}
-        </Text>
+    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} paddingY={0} marginTop={1}>
+      {/* Input header with status indicators */}
+      <Box justifyContent="space-between" paddingY={0}>
+        <Box gap={1}>
+          <Text color="cyan" bold>
+            💭 Input
+          </Text>
+          {value.startsWith('/') && (
+            <Text color="yellow">
+              (command)
+            </Text>
+          )}
+        </Box>
+        <Box gap={1}>
+          {isThinking && (
+            <Text color="yellow">
+              ⚡ working
+            </Text>
+          )}
+          {queuedMessages > 0 && (
+            <Text color="magenta">
+              📬 {queuedMessages} queued
+            </Text>
+          )}
+        </Box>
       </Box>
-      <Box marginBottom={1}>
+
+      {/* Mode hint */}
+      <Box marginTop={0} marginBottom={1}>
         <Text color={mode === 'plan' ? 'blue' : 'green'} dimColor>
           {getModeHint()}
         </Text>
       </Box>
-      <Box>
-        <Text color="cyan">❯ </Text>
+
+      {/* Input field */}
+      <Box paddingY={0}>
+        <Text color="cyan" bold>❯ </Text>
         <TextInput
           value={value}
           onChange={onChange}
@@ -278,32 +415,50 @@ const InputArea: React.FC<{
           showCursor={true}
         />
       </Box>
+
+      {/* Slash command suggestions */}
       {slashSuggestions.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="yellow">Slash commands:</Text>
-          {slashSuggestions.map((item, index) => {
+        <Box flexDirection="column" marginTop={1} paddingTop={1} borderStyle="single" borderColor="yellow">
+          <Box marginBottom={0}>
+            <Text color="yellow" bold>
+              ⚡ Suggestions ({slashSuggestions.length})
+            </Text>
+          </Box>
+          {slashSuggestions.slice(0, 5).map((item, index) => {
             const badges = getSlashCommandBadges(item);
+            const isSelected = index === selectedSuggestion;
             return (
-              <Box key={item.command}>
-                <Text color={index === selectedSuggestion ? 'cyan' : 'gray'}>
-                  {index === selectedSuggestion ? '> ' : '  '}
+              <Box key={item.command} paddingLeft={1}>
+                <Text color={isSelected ? 'cyan' : 'dim'} bold={isSelected}>
+                  {isSelected ? '▶ ' : '  '}
                   {item.command}
                 </Text>
                 {badges.length > 0 && (
-                  <Text color="gray"> [{badges.join(', ')}]</Text>
+                  <Text color="dim"> [{badges.join(', ')}]</Text>
                 )}
-                <Text color="gray"> - {item.description}</Text>
+                <Text color="dim"> - {item.description.substring(0, 50)}{item.description.length > 50 ? '...' : ''}</Text>
               </Box>
             );
           })}
-          <Text color="gray" dimColor>
-            Enter or Tab to insert · use ↑/↓ to pick
-          </Text>
+          {slashSuggestions.length > 5 && (
+            <Box paddingLeft={1}>
+              <Text color="dim">
+                ... and {slashSuggestions.length - 5} more
+              </Text>
+            </Box>
+          )}
+          <Box marginTop={1}>
+            <Text color="dim">
+              <Text color="yellow">Tab</Text> to insert · <Text color="yellow">↑/↓</Text> to navigate
+            </Text>
+          </Box>
         </Box>
       )}
-      <Box marginTop={1}>
-        <Text color="gray" dimColor>
-          <Text color="cyan">Enter</Text> to send • <Text color="cyan">ESC</Text> to interrupt • <Text color="cyan">Ctrl+P</Text> to toggle mode • <Text color="cyan">Ctrl+C</Text> to exit
+
+      {/* Keyboard shortcuts */}
+      <Box marginTop={1} paddingTop={1} borderStyle="single" borderColor="dim">
+        <Text color="dim">
+          <Text color="cyan">Enter</Text> send · <Text color="cyan">ESC</Text> interrupt · <Text color="cyan">Ctrl+P</Text> mode · <Text color="cyan">Ctrl+C</Text> exit
         </Text>
       </Box>
     </Box>
