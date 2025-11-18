@@ -1,34 +1,38 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
-import { parse, stringify } from 'yaml';
-import { z } from 'zod';
-import { OllamaProvider } from './providers/ollama.js';
-import { OpenAIProvider } from './providers/openai.js';
-import { GeminiProvider } from './providers/gemini.js';
-import { AnthropicProvider } from './providers/anthropic.js';
-import { OpenRouterProvider } from './providers/openrouter.js';
-import { MeerProvider } from './providers/meer.js';
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { join, dirname } from "path";
+import { homedir } from "os";
+import { parse, stringify } from "yaml";
+import { z } from "zod";
+import { OllamaProvider } from "./providers/ollama.js";
+import { OpenAIProvider } from "./providers/openai.js";
+import { GeminiProvider } from "./providers/gemini.js";
+import { AnthropicProvider } from "./providers/anthropic.js";
+import { OpenRouterProvider } from "./providers/openrouter.js";
+import { MeerProvider } from "./providers/meer.js";
 import {
   ZaiCodingPlanProvider,
   ZaiCreditProvider,
   DEFAULT_ZAI_MODEL,
   normalizeZaiModel,
-} from './providers/zai.js';
-import type { Provider } from './providers/base.js';
-import { wrapProvider } from './providers/provider-wrapper.js';
+} from "./providers/zai.js";
+import type { Provider } from "./providers/base.js";
+import { wrapProvider } from "./providers/provider-wrapper.js";
+import {
+  resolveUISettings,
+  type UISettings,
+} from "./ui/ui-settings.js";
 
 const ConfigSchema = z.object({
   provider: z.enum([
-    'ollama',
-    'openai',
-    'gemini',
-    'anthropic',
-    'openrouter',
-    'meer',
-    'zai',
-    'zaiCodingPlan',
-    'zaiCredit',
+    "ollama",
+    "openai",
+    "gemini",
+    "anthropic",
+    "openrouter",
+    "meer",
+    "zai",
+    "zaiCodingPlan",
+    "zaiCredit",
   ]),
   model: z.string().optional(),
   temperature: z.number().optional(),
@@ -93,6 +97,12 @@ const ConfigSchema = z.object({
       dimensions: z.number().optional(),
       maxFileSize: z.number().optional()
     }).optional()
+  }).optional(),
+  ui: z.object({
+    useAlternateBuffer: z.boolean().optional(),
+    screenReaderMode: z.enum(["auto", "on", "off"]).optional(),
+    virtualizedHistory: z.enum(["auto", "always", "never"]).optional(),
+    scrollMode: z.enum(["auto", "manual"]).optional(),
   }).optional()
 });
 
@@ -118,6 +128,7 @@ export interface LoadedConfig {
     maxFileSize: number;
   };
   autoCollectContext?: boolean;
+  ui: UISettings;
 }
 
 export function configExists(): boolean {
@@ -192,9 +203,15 @@ export function loadConfig(): LoadedConfig {
         embedding: {
           enabled: false,
           dimensions: 256,
-          maxFileSize: 200_000
-        }
-      }
+          maxFileSize: 200_000,
+        },
+      },
+      ui: {
+        useAlternateBuffer: true,
+        screenReaderMode: "auto",
+        virtualizedHistory: "auto",
+        scrollMode: "auto",
+      },
     };
 
     // Create config directory and file
@@ -350,5 +367,6 @@ export function loadConfig(): LoadedConfig {
       dimensions: config.context?.embedding?.dimensions ?? 256,
       maxFileSize: config.context?.embedding?.maxFileSize ?? 200_000,
     },
+  ui: resolveUISettings(config.ui),
   };
 }

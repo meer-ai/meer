@@ -65,6 +65,14 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     protected: true,
   },
   {
+    command: "/screen-reader",
+    description: "Toggle screen reader layout (on|off|auto)",
+  },
+  {
+    command: "/alt-buffer",
+    description: "Toggle alternate screen buffer (on|off|auto)",
+  },
+  {
     command: "/stats",
     description: "Show current session statistics",
   },

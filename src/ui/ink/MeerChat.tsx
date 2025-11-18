@@ -3,21 +3,22 @@
  * Inspired by Claude Code, Cursor, and Bubble Tea
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Box, Text, useInput, useApp, render } from 'ink';
-import Spinner from 'ink-spinner';
-import TextInput from 'ink-text-input';
-import SelectInput from 'ink-select-input';
-import Gradient from 'ink-gradient';
-import BigText from 'ink-big-text';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Box, Text, useInput, useApp, render } from "ink";
+import Spinner from "ink-spinner";
+import TextInput from "ink-text-input";
+import SelectInput from "ink-select-input";
+import Gradient from "ink-gradient";
+import BigText from "ink-big-text";
 import {
   getAllCommands,
   type SlashCommandListEntry,
-} from '../../slash/registry.js';
-import { getSlashCommandBadges } from '../../slash/utils.js';
-import { StatusHeader } from './components/core/index.js';
-import { ToolExecutionPanel, type ToolCall } from './components/tools/index.js';
-import { WorkflowProgress, type WorkflowStage } from './components/workflow/index.js';
+} from "../../slash/registry.js";
+import { getSlashCommandBadges } from "../../slash/utils.js";
+import { StatusHeader } from "./components/core/index.js";
+import { ToolExecutionPanel, type ToolCall } from "./components/tools/index.js";
+import { WorkflowProgress, type WorkflowStage } from "./components/workflow/index.js";
+import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
 
 // Types
 interface Message {
@@ -27,9 +28,17 @@ interface Message {
   timestamp?: number;
 }
 
-type Mode = 'edit' | 'plan';
+type Mode = "edit" | "plan";
 
-interface MeerChatProps {
+const formatTimestamp = (timestamp?: number): string => {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+};
+
+export interface MeerChatProps {
   onMessage: (message: string) => void;
   messages: Message[];
   isThinking: boolean;
@@ -56,6 +65,8 @@ interface MeerChatProps {
   };
   messageCount?: number;
   sessionUptime?: number;
+  virtualizeHistory?: boolean;
+  screenReader?: boolean;
 }
 
 // Code Block Component - Minimal clean design
@@ -199,15 +210,6 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message,
     }
   };
 
-  // Format timestamp if available
-  const formatTime = (timestamp?: number): string => {
-    if (!timestamp) return '';
-    const date = new Date(timestamp);
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${hours}:${minutes}`;
-  };
-
   // Get accent bar character based on role
   const getAccentBar = () => {
     switch (message.role) {
@@ -233,7 +235,7 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message,
             <Text color={getColor()} bold>{getName()}</Text>
           </Box>
           {message.timestamp && (
-            <Text color="dim" dimColor>{formatTime(message.timestamp)}</Text>
+            <Text color="dim" dimColor>{formatTimestamp(message.timestamp)}</Text>
           )}
         </Box>
       </Box>
@@ -475,6 +477,133 @@ const StatusBar: React.FC<{ status?: string }> = ({ status }) => {
   );
 };
 
+interface ScreenReaderLayoutProps {
+  provider?: string;
+  model?: string;
+  cwd?: string;
+  mode: Mode;
+  status?: string;
+  isThinking: boolean;
+  tokens?: { used: number; limit?: number };
+  cost?: { current: number; limit?: number };
+  hiddenCount: number;
+  totalMessages: number;
+  tools?: ToolCall[];
+  workflowStages?: WorkflowStage[];
+  messages: Message[];
+  children: React.ReactNode;
+}
+
+const ScreenReaderLayout: React.FC<ScreenReaderLayoutProps> = ({
+  provider,
+  model,
+  cwd,
+  mode,
+  status,
+  isThinking,
+  tokens,
+  cost,
+  hiddenCount,
+  totalMessages,
+  tools,
+  workflowStages,
+  messages,
+  children,
+}) => {
+  const modeLabel = mode === "plan" ? "Plan" : "Edit";
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Text color="cyan" bold>
+        Screen reader mode enabled
+      </Text>
+      <Text>
+        Use Tab to move focus and Enter to send. Run `/screen-reader off` to
+        return to the visual layout.
+      </Text>
+      <Text>
+        Profile: {provider ?? "unknown"} / {model ?? "unknown"} · Mode:{" "}
+        {modeLabel}
+      </Text>
+      <Text>Directory: {cwd ?? process.cwd()}</Text>
+      {tokens && (
+        <Text>
+          Tokens used: {tokens.used}
+          {tokens.limit ? ` / ${tokens.limit}` : ""}
+        </Text>
+      )}
+      {cost && typeof cost.current === "number" && cost.current > 0 && (
+        <Text>
+          Estimated cost: ${cost.current.toFixed(4)}
+          {cost.limit ? ` / ${cost.limit}` : ""}
+        </Text>
+      )}
+      {tools && tools.length > 0 && (
+        <Text>
+          Active tools:{" "}
+          {tools
+            .map((tool) => tool.name ?? "tool")
+            .join(", ")}
+        </Text>
+      )}
+      {workflowStages && workflowStages.length > 0 && (
+        <Box flexDirection="column">
+          <Text>Workflow stages:</Text>
+          {workflowStages.map((stage, index) => (
+            <Text key={stage.name}>
+              {index + 1}. {stage.name} — {stage.status}
+            </Text>
+          ))}
+        </Box>
+      )}
+      <Box flexDirection="column" aria-role="list">
+        {messages.length === 0 ? (
+          <Text>No messages yet. Ask a question to get started.</Text>
+        ) : (
+          messages.map((message, index) => (
+            <ScreenReaderMessage
+              key={index}
+              message={message}
+              ariaRole="listitem"
+            />
+          ))
+        )}
+        {hiddenCount > 0 && (
+          <Text dimColor>
+            Showing last {messages.length} messages of {totalMessages}.{" "}
+            {hiddenCount} older messages hidden for performance.
+          </Text>
+        )}
+        {isThinking && <Text>Assistant is thinking…</Text>}
+        {status && !isThinking && <Text>Status: {status}</Text>}
+      </Box>
+      {children}
+    </Box>
+  );
+};
+
+const ScreenReaderMessage: React.FC<{
+  message: Message;
+  ariaRole?: "listitem";
+}> = ({ message, ariaRole }) => {
+  const roleLabel =
+    message.role === "assistant"
+      ? "Meer"
+      : message.role === "user"
+      ? "You"
+      : message.role === "system"
+      ? "System"
+      : "Tool";
+  const content =
+    message.content?.replace(/\s+/g, " ").trim() || "[no content provided]";
+  const time = formatTimestamp(message.timestamp);
+  return (
+    <Text aria-role={ariaRole}>
+      {time ? `[${time}] ` : ""}
+      {roleLabel}: {content}
+    </Text>
+  );
+};
+
 // Main Chat Component
 export const MeerChat: React.FC<MeerChatProps> = ({
   onMessage,
@@ -496,15 +625,19 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   cost,
   messageCount,
   sessionUptime,
+  virtualizeHistory = false,
+  screenReader = false,
 }) => {
   const [input, setInput] = useState('');
-  const [scrollOffset, setScrollOffset] = useState(0);
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const [internalMode, setInternalMode] = useState<Mode>('edit');
   const [slashSuggestions, setSlashSuggestions] = useState<SlashCommandListEntry[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const { exit } = useApp();
   const slashCommandEntries = useMemo(() => getAllCommands(), []);
+  const isScreenReader = Boolean(screenReader);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [scrollAnchor, setScrollAnchor] = useState<"end" | "manual">("end");
 
   // Use external mode if provided, otherwise use internal state
   const mode = externalMode !== undefined ? externalMode : internalMode;
@@ -590,6 +723,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       if (isThinking) {
         setMessageQueue((prev) => [...prev, trimmed]);
       } else {
+        setScrollAnchor("end");
         onMessage(trimmed);
       }
     },
@@ -667,10 +801,26 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         return;
       }
     }
-    if (key.upArrow) {
-      setScrollOffset((prev) => Math.min(prev + 1, messages.length - 1));
-    } else if (key.downArrow) {
-      setScrollOffset((prev) => Math.max(prev - 1, 0));
+
+    if (virtualizeHistory && !hasSlashSuggestions) {
+      const pageSize = Math.max(1, Math.floor(scrollWindowSize * 0.8));
+      if (key.pageUp || (key.ctrl && key.upArrow)) {
+        adjustScroll(-pageSize);
+        return;
+      }
+      if (key.pageDown || (key.ctrl && key.downArrow)) {
+        adjustScroll(pageSize);
+        return;
+      }
+      if (key.ctrl && inputKey === "a") {
+        setScrollAnchor("manual");
+        setScrollOffset(0);
+        return;
+      }
+      if (key.ctrl && inputKey === "e") {
+        jumpToLatest();
+        return;
+      }
     }
   });
 
@@ -723,12 +873,99 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     }
   }, [isThinking, messageQueue, onMessage]);
 
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    setScrollOffset(0);
-  }, [messages.length]);
+  const terminalHeight =
+    process.stdout.isTTY && process.stdout.rows ? process.stdout.rows : 24;
 
-  const displayMessages = messages.slice(Math.max(0, messages.length - 10 + scrollOffset));
+  const maxVisibleMessages = useMemo(() => {
+    if (!virtualizeHistory) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return Math.max(terminalHeight * 4, 200);
+  }, [virtualizeHistory, terminalHeight]);
+
+  const { visibleMessages, hiddenCount } = useMemo(() => {
+    if (!virtualizeHistory) {
+      return { visibleMessages: messages, hiddenCount: 0 };
+    }
+    if (!Number.isFinite(maxVisibleMessages) || messages.length <= maxVisibleMessages) {
+      return { visibleMessages: messages, hiddenCount: 0 };
+    }
+    return {
+      visibleMessages: messages.slice(-maxVisibleMessages),
+      hiddenCount: messages.length - maxVisibleMessages,
+    };
+  }, [messages, virtualizeHistory, maxVisibleMessages]);
+
+  const scrollWindowSize = Math.max(
+    1,
+    Math.min(visibleMessages.length, terminalHeight * 3),
+  );
+  const maxScrollOffset = Math.max(
+    0,
+    Math.max(0, visibleMessages.length - scrollWindowSize),
+  );
+
+  useEffect(() => {
+    if (!virtualizeHistory || scrollAnchor === "end") {
+      setScrollOffset(maxScrollOffset);
+      return;
+    }
+    setScrollOffset((prev) => Math.max(0, Math.min(prev, maxScrollOffset)));
+  }, [virtualizeHistory, scrollAnchor, maxScrollOffset, visibleMessages.length]);
+
+  useEffect(() => {
+    if (!virtualizeHistory) {
+      setScrollAnchor("end");
+      setScrollOffset(0);
+    }
+  }, [virtualizeHistory]);
+
+  const adjustScroll = useCallback(
+    (delta: number) => {
+      if (!virtualizeHistory) return;
+      setScrollAnchor("manual");
+      setScrollOffset((prev) =>
+        Math.max(0, Math.min(prev + delta, maxScrollOffset)),
+      );
+    },
+    [virtualizeHistory, maxScrollOffset],
+  );
+
+  const jumpToLatest = useCallback(() => {
+    setScrollAnchor("end");
+    setScrollOffset(maxScrollOffset);
+  }, [maxScrollOffset]);
+
+  if (isScreenReader) {
+    return (
+      <ScreenReaderLayout
+        provider={provider}
+        model={model}
+        cwd={cwd}
+        mode={mode}
+        status={status}
+        isThinking={isThinking}
+        tokens={tokens}
+        cost={cost}
+        hiddenCount={hiddenCount}
+        totalMessages={messages.length}
+        tools={tools}
+        workflowStages={workflowStages}
+        messages={visibleMessages}
+      >
+        <InputArea
+          value={input}
+          onChange={handleInputChange}
+          onSubmit={handleSubmit}
+          isThinking={isThinking}
+          queuedMessages={messageQueue.length}
+          mode={mode}
+          slashSuggestions={slashSuggestions}
+          selectedSuggestion={selectedSuggestion}
+        />
+      </ScreenReaderLayout>
+    );
+  }
 
   return (
     <Box flexDirection="column" height="100%" width="100%">
@@ -760,7 +997,12 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
         {messages.length === 0 ? (
-          <Box flexDirection="column" alignItems="center" justifyContent="center" paddingY={2}>
+          <Box
+            flexDirection="column"
+            alignItems="center"
+            justifyContent="center"
+            paddingY={2}
+          >
             <Text color="gray" dimColor>
               Welcome to Meer AI! Ask me anything about your code.
             </Text>
@@ -770,18 +1012,54 @@ export const MeerChat: React.FC<MeerChatProps> = ({
             <Text color="gray" dimColor>
               Type / for slash commands (e.g., /help, /model, /setup)
             </Text>
-            <Text color={mode === 'plan' ? 'blue' : 'green'} dimColor>
+            <Text color={mode === "plan" ? "blue" : "green"} dimColor>
               Press Ctrl+P to toggle between Plan and Edit modes
             </Text>
           </Box>
         ) : (
           <Box flexDirection="column">
-            {displayMessages.map((msg, idx) => (
-              <MessageView key={idx} message={msg} isLast={idx === displayMessages.length - 1} />
-            ))}
-            {/* Show thinking indicator after last message */}
+            {hiddenCount > 0 && (
+              <Box marginBottom={1} marginLeft={2}>
+                <Text color="gray" dimColor>
+                  Showing last {visibleMessages.length} of {messages.length} messages. Older entries hidden for performance.
+                </Text>
+              </Box>
+            )}
+            <Box flexDirection="row">
+              <Box flexGrow={1}>
+                <VirtualizedList
+                  items={visibleMessages}
+                  scroll={{
+                    offset: scrollOffset,
+                    windowSize: scrollWindowSize,
+                    totalCount: visibleMessages.length,
+                  }}
+                  renderItem={(msg, idx) => (
+                    <MessageView
+                      message={msg}
+                      isLast={idx === visibleMessages.length - 1}
+                    />
+                  )}
+                />
+              </Box>
+              {virtualizeHistory && visibleMessages.length > 0 && (
+                <Box marginLeft={1}>
+                  <ScrollIndicator
+                    offset={scrollOffset}
+                    windowSize={scrollWindowSize}
+                    totalCount={visibleMessages.length}
+                  />
+                </Box>
+              )}
+            </Box>
+            {virtualizeHistory && scrollAnchor === "manual" && (
+              <Box marginLeft={2}>
+                <Text color="gray" dimColor>
+                  Manual scroll active — Ctrl+E to jump to latest, Ctrl+A for oldest.
+                </Text>
+              </Box>
+            )}
             {isThinking && <ThinkingIndicator />}
-            {/* Show status after messages if provided and not thinking */}
             {status && !isThinking && (
               <Box marginBottom={1} marginLeft={2}>
                 <Text color="blue">{status}</Text>

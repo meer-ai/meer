@@ -526,6 +526,7 @@ interface SlashCommandContext {
   rawInput: string;
   config: any;
   sessionTracker?: SessionTracker;
+  tui?: InkChatAdapter | null;
 }
 
 type SlashCommandHandler = (
@@ -618,6 +619,37 @@ const MEER_CLI_FACTORIES: Record<string, () => Command> = {
   agents: createAgentsCommand,
 };
 
+type ToggleMode = "on" | "off" | "auto";
+
+const SCREEN_READER_USAGE = chalk.gray(
+  "Usage: /screen-reader <on|off|auto>",
+);
+const ALT_BUFFER_USAGE = chalk.gray("Usage: /alt-buffer <on|off|auto>");
+
+const parseToggleMode = (value?: string): ToggleMode | null => {
+  if (!value) return null;
+  const normalized = value.toLowerCase();
+  if (normalized === "on" || normalized === "off" || normalized === "auto") {
+    return normalized;
+  }
+  return null;
+};
+
+const ensureTuiAvailable = (
+  context: SlashCommandContext,
+  feature: string,
+): InkChatAdapter | null => {
+  if (context.tui) {
+    return context.tui;
+  }
+  console.log(
+    chalk.yellow(
+      `${feature} is only available in the interactive TUI. Re-run Meer without disabling the TUI to use this command.`,
+    ),
+  );
+  return null;
+};
+
 const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
   "/ask": async ({ args }) => {
     if (args.length === 0) {
@@ -706,6 +738,42 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
   "/setup": async () => {
     await handleSetupCommand();
     return restartResult();
+  },
+  "/screen-reader": async (context) => {
+    const tui = ensureTuiAvailable(context, "Screen reader mode");
+    if (!tui) return continueResult();
+    const mode = parseToggleMode(context.args[0]);
+    if (!mode) {
+      console.log(SCREEN_READER_USAGE);
+      return continueResult();
+    }
+    tui.setScreenReaderMode(mode);
+    const message =
+      mode === "on"
+        ? "Screen reader layout enabled."
+        : mode === "off"
+          ? "Screen reader layout disabled."
+          : "Screen reader layout reset to config defaults.";
+    tui.appendSystemMessage(message);
+    return continueResult();
+  },
+  "/alt-buffer": async (context) => {
+    const tui = ensureTuiAvailable(context, "Alternate buffer mode");
+    if (!tui) return continueResult();
+    const mode = parseToggleMode(context.args[0]);
+    if (!mode) {
+      console.log(ALT_BUFFER_USAGE);
+      return continueResult();
+    }
+    tui.setAlternateBufferMode(mode);
+    const message =
+      mode === "on"
+        ? "Alternate screen buffer enabled."
+        : mode === "off"
+          ? "Alternate screen buffer disabled."
+          : "Alternate screen buffer reset to config defaults.";
+    tui.appendSystemMessage(message);
+    return continueResult();
   },
   "/version": async () => {
     await handleVersion();
@@ -845,6 +913,7 @@ async function handleSlashCommand(
   command: string,
   config: any,
   sessionTracker?: SessionTracker,
+  tui?: InkChatAdapter | null,
 ): Promise<SlashCommandResult> {
   const { command: name, args, argsText } = parseSlashInput(command);
   const context: SlashCommandContext = {
@@ -853,6 +922,7 @@ async function handleSlashCommand(
     rawInput: command,
     config,
     sessionTracker,
+    tui,
   };
 
   const handler = builtInSlashHandlers[name];
@@ -1905,6 +1975,7 @@ export function createCLI(): Command {
               provider: providerType,
               model: config.model,
               cwd: process.cwd(),
+              uiSettings: config.ui,
             })
           : null;
 
@@ -1992,7 +2063,7 @@ export function createCLI(): Command {
             }
 
             const runSlash = () =>
-              handleSlashCommand(userInput, config, sessionTracker);
+              handleSlashCommand(userInput, config, sessionTracker, chatUI);
             let slashResult: SlashCommandResult;
             if (chatUI) {
               const { result: capturedResult, stdout, stderr } =

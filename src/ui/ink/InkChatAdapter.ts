@@ -3,12 +3,17 @@
  * Provides the same interface as OceanChatUI but with beautiful modern TUI
  */
 
-import { render } from 'ink';
-import React from 'react';
-import { MeerChat } from './MeerChat.js';
-import type { Timeline } from '../workflowTimeline.js';
-import type { ToolCall } from './components/tools/index.js';
-import type { WorkflowStage } from './components/workflow/index.js';
+import { render } from "ink";
+import React from "react";
+import type { Timeline } from "../workflowTimeline.js";
+import type { ToolCall } from "./components/tools/index.js";
+import type { WorkflowStage } from "./components/workflow/index.js";
+import { AppContainer } from "./AppContainer.js";
+import {
+  resolveUISettings,
+  type ScreenReaderMode,
+  type UISettings,
+} from "../ui-settings.js";
 
 interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -21,6 +26,7 @@ export interface InkChatConfig {
   provider: string;
   model: string;
   cwd: string;
+  uiSettings?: UISettings;
 }
 
 type Mode = 'edit' | 'plan';
@@ -49,9 +55,12 @@ export class InkChatAdapter {
   private cost = { current: 0, limit: undefined as number | undefined };
   private messageCount = 0;
   private sessionStartTime = Date.now();
+  private uiSettings: UISettings;
+  private uiOverrides: Partial<UISettings> = {};
 
   constructor(config: InkChatConfig) {
     this.config = config;
+    this.uiSettings = resolveUISettings(config.uiSettings);
     this.renderUI();
   }
 
@@ -105,8 +114,10 @@ export class InkChatAdapter {
 
     const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
 
+    const activeSettings = this.getActiveUiSettings();
+
     this.instance = render(
-      React.createElement(MeerChat, {
+      React.createElement(AppContainer, {
         messages: this.messages,
         isThinking: this.isThinking,
         status: this.statusMessage || undefined,
@@ -126,7 +137,8 @@ export class InkChatAdapter {
         cost: this.cost.current > 0 ? this.cost : undefined,
         messageCount: this.messageCount,
         sessionUptime,
-      })
+        uiSettings: activeSettings,
+      }),
     );
   }
 
@@ -160,8 +172,10 @@ export class InkChatAdapter {
     const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
 
     // Force re-render by unmounting and remounting
+    const activeSettings = this.getActiveUiSettings();
+
     this.instance.rerender(
-      React.createElement(MeerChat, {
+      React.createElement(AppContainer, {
         messages: this.messages,
         isThinking: this.isThinking,
         status: this.statusMessage || undefined,
@@ -181,8 +195,41 @@ export class InkChatAdapter {
         cost: this.cost.current > 0 ? this.cost : undefined,
         messageCount: this.messageCount,
         sessionUptime,
-      })
+        uiSettings: activeSettings,
+      }),
     );
+  }
+
+  private getActiveUiSettings(): UISettings {
+    const active: UISettings = { ...this.uiSettings };
+    if (this.uiOverrides.useAlternateBuffer !== undefined) {
+      active.useAlternateBuffer = this.uiOverrides.useAlternateBuffer;
+    }
+    if (this.uiOverrides.screenReaderMode) {
+      active.screenReaderMode = this.uiOverrides.screenReaderMode;
+    }
+    if (this.uiOverrides.virtualizedHistory) {
+      active.virtualizedHistory = this.uiOverrides.virtualizedHistory;
+    }
+    return active;
+  }
+
+  setScreenReaderMode(mode: ScreenReaderMode): void {
+    if (mode === "auto") {
+      delete this.uiOverrides.screenReaderMode;
+    } else {
+      this.uiOverrides.screenReaderMode = mode;
+    }
+    this.updateUI();
+  }
+
+  setAlternateBufferMode(mode: "on" | "off" | "auto"): void {
+    if (mode === "auto") {
+      delete this.uiOverrides.useAlternateBuffer;
+    } else {
+      this.uiOverrides.useAlternateBuffer = mode === "on";
+    }
+    this.updateUI();
   }
 
   // Compatibility methods for existing agent system
