@@ -18,7 +18,9 @@ import { getSlashCommandBadges } from "../../slash/utils.js";
 import { StatusHeader } from "./components/core/index.js";
 import { ToolExecutionPanel, type ToolCall } from "./components/tools/index.js";
 import { WorkflowProgress, type WorkflowStage } from "./components/workflow/index.js";
+import { TimelinePanel } from "./components/timeline/index.js";
 import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
+import type { UITimelineEvent } from "./timelineTypes.js";
 
 // Types
 interface Message {
@@ -67,6 +69,7 @@ export interface MeerChatProps {
   sessionUptime?: number;
   virtualizeHistory?: boolean;
   screenReader?: boolean;
+  timelineEvents?: UITimelineEvent[];
 }
 
 // Code Block Component - Minimal clean design
@@ -627,6 +630,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   sessionUptime,
   virtualizeHistory = false,
   screenReader = false,
+  timelineEvents,
 }) => {
   const [input, setInput] = useState('');
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
@@ -990,6 +994,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
           currentIteration={currentIteration}
           maxIterations={maxIterations}
         />
+      )}
+
+      {timelineEvents && timelineEvents.length > 0 && (
+        <TimelinePanel events={timelineEvents} maxEvents={8} />
       )}
 
       {/* Only show status bar if there's a status AND agent is NOT thinking (thinking shows after messages) */}

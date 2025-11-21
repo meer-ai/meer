@@ -2,8 +2,9 @@ import { Command } from "commander";
 import chalk from "chalk";
 import ora from "ora";
 import inquirer from "inquirer";
-import { readFileSync } from "fs";
-import { join, dirname } from "path";
+import { readFileSync, writeFileSync, mkdirSync } from "fs";
+import { join, dirname, resolve as resolvePath } from "path";
+import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { createAskCommand } from "./commands/ask.js";
 import { createCommitMsgCommand } from "./commands/commitMsg.js";
@@ -22,6 +23,7 @@ import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { WorkflowTimeline, type Timeline } from "./ui/workflowTimeline.js";
 import { InkChatAdapter } from "./ui/ink/index.js";
+import type { UITimelineEvent } from "./ui/ink/index.js";
 import { logVerbose, setVerboseLogging } from "./logger.js";
 import { showSlashHelp } from "./ui/slashHelp.js";
 import { ProjectContextManager } from "./context/manager.js";
@@ -625,6 +627,9 @@ const SCREEN_READER_USAGE = chalk.gray(
   "Usage: /screen-reader <on|off|auto>",
 );
 const ALT_BUFFER_USAGE = chalk.gray("Usage: /alt-buffer <on|off|auto>");
+const TIMELINE_USAGE = chalk.gray(
+  "Usage: /timeline [show|save [filename]]",
+);
 
 const parseToggleMode = (value?: string): ToggleMode | null => {
   if (!value) return null;
@@ -648,6 +653,74 @@ const ensureTuiAvailable = (
     ),
   );
   return null;
+};
+
+const formatTimelineClock = (timestamp: number): string => {
+  const date = new Date(timestamp);
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  const seconds = date.getSeconds().toString().padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+};
+
+const formatTimelineEventLine = (event: UITimelineEvent): string => {
+  const clock = chalk.gray(formatTimelineClock(event.timestamp));
+  if (event.type === "task") {
+    let icon = "⏳";
+    let color = chalk.cyan;
+    if (event.status === "succeeded") {
+      icon = "✔";
+      color = chalk.green;
+    } else if (event.status === "failed") {
+      icon = "✖";
+      color = chalk.red;
+    } else if (event.status === "updated") {
+      icon = "…";
+      color = chalk.blue;
+    }
+    const detail =
+      event.detail && event.detail.trim().length > 0
+        ? chalk.gray(` — ${event.detail.trim()}`)
+        : "";
+    return `${clock} ${color(icon)} ${chalk.white(event.label)}${detail}`;
+  }
+
+  let icon = "ℹ";
+  let color = chalk.cyan;
+  if (event.level === "warn") {
+    icon = "⚠";
+    color = chalk.yellow;
+  } else if (event.level === "error") {
+    icon = "✖";
+    color = chalk.red;
+  } else if (event.level === "note") {
+    icon = "📝";
+    color = chalk.magenta;
+  }
+  return `${clock} ${color(icon)} ${chalk.white(event.message)}`;
+};
+
+const printTimelinePreview = (events: UITimelineEvent[], limit = 10): void => {
+  const visible = events.slice(-limit);
+  console.log(
+    chalk.bold.cyan(
+      `\nTimeline — showing last ${visible.length} of ${events.length} events:\n`,
+    ),
+  );
+  visible.forEach((event) => console.log(formatTimelineEventLine(event)));
+  console.log("");
+};
+
+const prepareTimelineOutputPath = (requested?: string): string => {
+  if (requested && requested.trim().length > 0) {
+    const resolved = resolvePath(process.cwd(), requested);
+    mkdirSync(dirname(resolved), { recursive: true });
+    return resolved;
+  }
+  const logsDir = join(homedir(), ".meer", "logs");
+  mkdirSync(logsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return join(logsDir, `timeline-${timestamp}.json`);
 };
 
 const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
@@ -773,6 +846,34 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
           ? "Alternate screen buffer disabled."
           : "Alternate screen buffer reset to config defaults.";
     tui.appendSystemMessage(message);
+    return continueResult();
+  },
+  "/timeline": async (context) => {
+    const tui = ensureTuiAvailable(context, "Timeline tools");
+    if (!tui) return continueResult();
+    const [actionArg, targetArg] = context.args;
+    const action = actionArg ? actionArg.toLowerCase() : "show";
+    const events = tui.getTimelineEvents();
+    if (events.length === 0) {
+      console.log(chalk.gray("Timeline is empty for this session."));
+      return continueResult();
+    }
+    if (action === "show") {
+      printTimelinePreview(events);
+      return continueResult();
+    }
+    if (action === "save") {
+      const outputPath = prepareTimelineOutputPath(targetArg);
+      const payload = {
+        generatedAt: new Date().toISOString(),
+        cwd: process.cwd(),
+        events,
+      };
+      writeFileSync(outputPath, JSON.stringify(payload, null, 2), "utf8");
+      console.log(chalk.green(`Saved timeline to ${outputPath}`));
+      return continueResult();
+    }
+    console.log(TIMELINE_USAGE);
     return continueResult();
   },
   "/version": async () => {

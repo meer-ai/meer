@@ -14,6 +14,7 @@ import {
   type ScreenReaderMode,
   type UISettings,
 } from "../ui-settings.js";
+import type { UITimelineEvent } from "./timelineTypes.js";
 
 interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -57,6 +58,10 @@ export class InkChatAdapter {
   private sessionStartTime = Date.now();
   private uiSettings: UISettings;
   private uiOverrides: Partial<UISettings> = {};
+  private timelineEvents: UITimelineEvent[] = [];
+  private readonly maxTimelineEvents = 200;
+  private timelineSequence = 0;
+  private timelineTaskMetadata = new Map<string, { label: string }>();
 
   constructor(config: InkChatConfig) {
     this.config = config;
@@ -137,6 +142,7 @@ export class InkChatAdapter {
         cost: this.cost.current > 0 ? this.cost : undefined,
         messageCount: this.messageCount,
         sessionUptime,
+        timelineEvents: this.timelineEvents,
         uiSettings: activeSettings,
       }),
     );
@@ -195,6 +201,7 @@ export class InkChatAdapter {
         cost: this.cost.current > 0 ? this.cost : undefined,
         messageCount: this.messageCount,
         sessionUptime,
+        timelineEvents: this.timelineEvents,
         uiSettings: activeSettings,
       }),
     );
@@ -411,36 +418,109 @@ export class InkChatAdapter {
 
   getTimelineAdapter(): Timeline {
     return {
-      startTask: (label: string) => {
-        const id = `task-${Date.now()}`;
+      startTask: (label: string, options?: { detail?: string }) => {
+        const id = this.nextTimelineId("task");
+        this.timelineTaskMetadata.set(id, { label });
+        this.recordTimelineEvent({
+          id,
+          type: "task",
+          status: "started",
+          label,
+          detail: options?.detail,
+          timestamp: Date.now(),
+        });
         this.setStatus(`🔄 ${label}`);
         return id;
       },
       updateTask: (id: string, detail: string) => {
+        const metadata = this.timelineTaskMetadata.get(id);
+        this.recordTimelineEvent({
+          id,
+          type: "task",
+          status: "updated",
+          label: metadata?.label ?? detail,
+          detail,
+          timestamp: Date.now(),
+        });
         this.setStatus(`🔄 ${detail}`);
       },
       succeed: (id: string, detail?: string) => {
-        this.setStatus(detail ? `✅ ${detail}` : '');
+        const metadata = this.timelineTaskMetadata.get(id);
+        this.timelineTaskMetadata.delete(id);
+        this.recordTimelineEvent({
+          id,
+          type: "task",
+          status: "succeeded",
+          label: metadata?.label ?? detail ?? "",
+          detail,
+          timestamp: Date.now(),
+        });
+        this.setStatus(detail ? `✅ ${detail}` : "");
       },
       fail: (id: string, detail?: string) => {
-        this.setStatus(detail ? `❌ ${detail}` : '');
+        const metadata = this.timelineTaskMetadata.get(id);
+        this.timelineTaskMetadata.delete(id);
+        this.recordTimelineEvent({
+          id,
+          type: "task",
+          status: "failed",
+          label: metadata?.label ?? detail ?? "",
+          detail,
+          timestamp: Date.now(),
+        });
+        this.setStatus(detail ? `❌ ${detail}` : "");
       },
       info: (message: string) => {
+        this.recordTimelineEvent({
+          id: this.nextTimelineId("log"),
+          type: "log",
+          level: "info",
+          message,
+          timestamp: Date.now(),
+        });
         this.appendSystemMessage(`ℹ️  ${message}`);
       },
       note: (message: string) => {
+        this.recordTimelineEvent({
+          id: this.nextTimelineId("log"),
+          type: "log",
+          level: "note",
+          message,
+          timestamp: Date.now(),
+        });
         this.appendSystemMessage(`📝 ${message}`);
       },
       warn: (message: string) => {
+        this.recordTimelineEvent({
+          id: this.nextTimelineId("log"),
+          type: "log",
+          level: "warn",
+          message,
+          timestamp: Date.now(),
+        });
         this.appendSystemMessage(`⚠️  ${message}`);
       },
       error: (message: string) => {
+        this.recordTimelineEvent({
+          id: this.nextTimelineId("log"),
+          type: "log",
+          level: "error",
+          message,
+          timestamp: Date.now(),
+        });
         this.appendSystemMessage(`❌ ${message}`);
       },
       close: () => {
-        this.setStatus('');
+        this.setStatus("");
       },
     };
+  }
+
+  getTimelineEvents(limit?: number): UITimelineEvent[] {
+    if (typeof limit === "number" && limit > 0) {
+      return this.timelineEvents.slice(-limit);
+    }
+    return [...this.timelineEvents];
   }
 
   // Enhanced UI tracking methods
@@ -565,6 +645,19 @@ export class InkChatAdapter {
       this.instance.unmount();
       this.instance = null;
     }
+  }
+
+  private nextTimelineId(prefix: string): string {
+    this.timelineSequence += 1;
+    return `${prefix}-${this.timelineSequence}`;
+  }
+
+  private recordTimelineEvent(event: UITimelineEvent): void {
+    const events = [...this.timelineEvents, event];
+    if (events.length > this.maxTimelineEvents) {
+      events.splice(0, events.length - this.maxTimelineEvents);
+    }
+    this.timelineEvents = events;
   }
 }
 

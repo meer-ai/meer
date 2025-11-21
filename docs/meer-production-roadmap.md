@@ -62,6 +62,15 @@ This roadmap adapts the operational maturity in Google's Gemini CLI to make Meer
 | `O5.3` Troubleshooting guide | Mirror Gemini’s `docs/troubleshooting.md`, covering MCP, auth, shell integration, proxies. |
 | `O5.4` Security checklist | Threat modeling for shell/file tools, approval prompts, audit logging of modifications. |
 
+### 6. Competitive Differentiators
+
+| Milestone | Description | Dependencies |
+| --------- | ----------- | ------------ |
+| `D6.1` Workspace context graph | File-system watchers + Git metadata + MCP resource cache unify into a searchable context graph so prompts auto-summarize touched files (Claude Code leans on static snapshots; we’ll keep it live). | `A4.1`, `O5.2` |
+| `D6.2` Verified auto-apply loops | Layer an approval-aware autop-run flow with deterministic dry-runs, so Meer can iterate faster than Gemini CLI’s current “ask-then-apply” loop while remaining auditable. | `A4.4`, `U3.3` |
+| `D6.3` Multi-runtime sandboxes | Spin up per-task shells (Node/Go/Python) with resource quotas and stream status back to the timeline, beating Claude Code’s single-shell constraint for long-lived jobs. | `A4.1`, `O5.1` |
+| `D6.4` Session portability | Allow `/handoff` to package transcript + timelines + config diffs so users can resume on another machine or elevate to cloud runners; neither Gemini nor Claude expose portable replay yet. | `R1.3`, `O5.3` |
+
 ---
 
 ## Execution Phases
@@ -89,6 +98,17 @@ This roadmap adapts the operational maturity in Google's Gemini CLI to make Meer
 5. **Ops Hardening (Weeks 15+)**
    - Telemetry pipeline, config doc generators, troubleshooting/security docs (`O5.1–O5.4`).
    - Evaluate error budgets, SLOs, and automated alerting for failures.
+
+---
+
+## Competitive Benchmarking — Gemini CLI & Claude Code
+
+| Capability | Gemini CLI (OSS) | Claude Code (Beta) | MeerAI Delta |
+| ---------- | ---------------- | ------------------ | ------------ |
+| Observability & plans | Ships `WorkflowTimeline` + slash command palette, but diff previews and approval history are mostly textual. | Provides IDE-style panes yet little terminal-first telemetry when run headless. | Timeline widgets with diff previews, approval ledger, and exportable event logs keep parity in the terminal alone. |
+| Workspace context | Context pinning + `/remember` commands require manual curation. | Uploads repo snapshots per run; large repos need manual filters. | Live workspace graph + smart file queues auto-summarize touched files and MCP resources. |
+| Autonomy & guard rails | Ask/approve loops are explicit; autop-run experiments exist but lack typed budgets. | Autop-run iterates quickly but exposes few policy levers beyond “stop after N steps.” | Verified auto-apply loops enforce typed budgets, dry-run previews, and policy-aware approvals. |
+| Environment portability | `npm` install plus `npx` bootstrap; sessions stay local. | Desktop-first experience with limited CI replay. | Session handoff bundles (transcript + config + diffs) let users resume locally, in CI, or on remote runners. |
 
 ---
 
