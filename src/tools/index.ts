@@ -31,6 +31,8 @@ import { spawn, execSync } from "child_process";
 import { glob } from "glob";
 import { ProjectContextManager } from "../context/manager.js";
 import { diffLines } from "diff";
+import type { Plan } from "../plan/types.js";
+import { planStore } from "../plan/store.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const BRAVE_SEARCH_PORTAL_URL = "https://search.brave.com/search";
@@ -40,6 +42,7 @@ export interface ToolResult {
   tool: string;
   result: string;
   error?: string;
+  plan?: Plan | null;
 }
 
 export interface FileEdit {
@@ -3532,131 +3535,108 @@ export function validateProject(
   }
 }
 
-/**
- * Interface for a task in the plan
- */
-export interface PlanTask {
-  id: string;
-  description: string;
-  status: "pending" | "in_progress" | "completed" | "skipped";
-  notes?: string;
-}
+    /**
+     * Tool: Set or update the execution plan
+     * This helps organize complex tasks into steps and track progress
+     */
+    export function setPlan(
+      title: string,
+      tasks: Array<{ description: string }>,
+      cwd: string
+    ): ToolResult {
+      try {
+        // Create new plan
+        const now = Date.now();
+        const draftPlan: Plan = {
+          title,
+          tasks: tasks.map((task, index) => ({
+            id: `task-${index + 1}`,
+            description: task.description,
+            status: "pending",
+          })),
+          createdAt: now,
+          updatedAt: now,
+        };
+        const activePlan = planStore.setPlan(draftPlan) ?? draftPlan;
 
-/**
- * Interface for the plan
- */
-export interface Plan {
-  title: string;
-  tasks: PlanTask[];
-  createdAt: number;
-  updatedAt: number;
-}
-
-// In-memory storage for the current plan
-let currentPlan: Plan | null = null;
-
-/**
- * Tool: Set or update the execution plan
- * This helps organize complex tasks into steps and track progress
- */
-export function setPlan(
-  title: string,
-  tasks: Array<{ description: string }>,
-  cwd: string
-): ToolResult {
-  try {
-    // Create new plan
-    const now = Date.now();
-    currentPlan = {
-      title,
-      tasks: tasks.map((task, index) => ({
-        id: `task-${index + 1}`,
-        description: task.description,
-        status: "pending",
-      })),
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // Format output
+        // Format output
     const output = [
-      chalk.bold.blue(`\n📋 Plan Created: ${title}`),
+      chalk.bold.blue(`\n📋 Plan Created: ${activePlan.title}`),
       "",
-      ...currentPlan.tasks.map((task, index) => {
-        const statusIcon = "⏳";
+      ...activePlan.tasks.map((task, index) => {
+        const statusIcon = "📌";
         return `  ${chalk.gray(`${index + 1}.`)} ${statusIcon} ${task.description}`;
       }),
       "",
-      chalk.gray(`Total tasks: ${currentPlan.tasks.length}`),
+      chalk.gray(`Total tasks: ${activePlan.tasks.length}`),
     ].join("\n");
 
-    return {
-      tool: "set_plan",
-      result: output,
-    };
-  } catch (error) {
-    return {
-      tool: "set_plan",
-      result: "",
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-/**
- * Tool: Update a task in the current plan
- */
-export function updatePlanTask(
-  taskId: string,
-  status: "pending" | "in_progress" | "completed" | "skipped",
-  notes?: string
-): ToolResult {
-  try {
-    if (!currentPlan) {
-      return {
-        tool: "update_plan_task",
-        result: "",
-        error: "No active plan. Use set_plan to create a plan first.",
-      };
+        return {
+          tool: "set_plan",
+          result: output,
+          plan: activePlan,
+        };
+      } catch (error) {
+        return {
+          tool: "set_plan",
+          result: "",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
 
-    const task = currentPlan.tasks.find((t) => t.id === taskId);
-    if (!task) {
-      return {
-        tool: "update_plan_task",
-        result: "",
-        error: `Task ${taskId} not found in the plan.`,
-      };
-    }
+    /**
+     * Tool: Update a task in the current plan
+     */
+    export function updatePlanTask(
+      taskId: string,
+      status: "pending" | "in_progress" | "completed" | "skipped",
+      notes?: string
+    ): ToolResult {
+      try {
+        const currentPlan = planStore.getSnapshot();
+        if (!currentPlan) {
+          return {
+            tool: "update_plan_task",
+            result: "",
+            error: "No active plan. Use set_plan to create a plan first.",
+          };
+        }
 
-    task.status = status;
-    if (notes) {
-      task.notes = notes;
-    }
-    currentPlan.updatedAt = Date.now();
+        const taskExists = currentPlan.tasks.some((t) => t.id === taskId);
+        if (!taskExists) {
+          return {
+            tool: "update_plan_task",
+            result: "",
+            error: `Task ${taskId} not found in the plan.`,
+          };
+        }
 
-    // Format output
-    const statusIcon =
-      status === "completed"
-        ? "✅"
-        : status === "in_progress"
-        ? "🔄"
-        : status === "skipped"
-        ? "⏭️"
-        : "⏳";
+        const updatedPlan = (
+          planStore.update((plan) => {
+            const mutableTask = plan.tasks.find((t) => t.id === taskId);
+            if (!mutableTask) {
+              return;
+            }
+            mutableTask.status = status;
+            if (notes) {
+              mutableTask.notes = notes;
+            }
+          })
+        ) ?? currentPlan;
 
     const output = [
-      chalk.bold.blue(`\n📋 Plan Updated: ${currentPlan.title}`),
+      chalk.bold.blue(`\n📋 Plan Updated: ${updatedPlan.title}`),
       "",
-      ...currentPlan.tasks.map((t, index) => {
+      ...updatedPlan.tasks.map((t, index) => {
         const icon =
           t.status === "completed"
             ? "✅"
             : t.status === "in_progress"
-            ? "🔄"
+            ? "⏳"
             : t.status === "skipped"
             ? "⏭️"
-            : "⏳";
+            : "📌";
         const color =
           t.status === "completed"
             ? chalk.green
@@ -3669,47 +3649,49 @@ export function updatePlanTask(
       }),
       "",
       chalk.gray(
-        `Progress: ${currentPlan.tasks.filter((t) => t.status === "completed").length}/${currentPlan.tasks.length} tasks completed`
+        `Progress: ${updatedPlan.tasks.filter((t) => t.status === "completed").length}/${updatedPlan.tasks.length} tasks completed`
       ),
     ].join("\n");
 
-    return {
-      tool: "update_plan_task",
-      result: output,
-    };
-  } catch (error) {
-    return {
-      tool: "update_plan_task",
-      result: "",
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-/**
- * Tool: Show the current plan
- */
-export function showPlan(): ToolResult {
-  try {
-    if (!currentPlan) {
-      return {
-        tool: "show_plan",
-        result: "No active plan.",
-      };
+        return {
+          tool: "update_plan_task",
+          result: output,
+          plan: updatedPlan,
+        };
+      } catch (error) {
+        return {
+          tool: "update_plan_task",
+          result: "",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
 
+    /**
+     * Tool: Show the current plan
+     */
+    export function showPlan(): ToolResult {
+      try {
+        const plan = planStore.getSnapshot();
+        if (!plan) {
+          return {
+            tool: "show_plan",
+            result: "No active plan.",
+          };
+        }
+
     const output = [
-      chalk.bold.blue(`\n📋 Current Plan: ${currentPlan.title}`),
+      chalk.bold.blue(`\n📋 Current Plan: ${plan.title}`),
       "",
-      ...currentPlan.tasks.map((task, index) => {
+      ...plan.tasks.map((task, index) => {
         const icon =
           task.status === "completed"
             ? "✅"
             : task.status === "in_progress"
-            ? "🔄"
+            ? "⏳"
             : task.status === "skipped"
             ? "⏭️"
-            : "⏳";
+            : "📌";
         const color =
           task.status === "completed"
             ? chalk.green
@@ -3726,41 +3708,44 @@ export function showPlan(): ToolResult {
       }),
       "",
       chalk.gray(
-        `Progress: ${currentPlan.tasks.filter((t) => t.status === "completed").length}/${currentPlan.tasks.length} tasks completed`
+        `Progress: ${plan.tasks.filter((t) => t.status === "completed").length}/${plan.tasks.length} tasks completed`
       ),
     ].join("\n");
 
-    return {
-      tool: "show_plan",
-      result: output,
-    };
-  } catch (error) {
-    return {
-      tool: "show_plan",
-      result: "",
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
+        return {
+          tool: "show_plan",
+          result: output,
+          plan,
+        };
+      } catch (error) {
+        return {
+          tool: "show_plan",
+          result: "",
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
 
 /**
  * Tool: Clear the current plan
  */
 export function clearPlan(): ToolResult {
   try {
-    if (!currentPlan) {
+    const existingPlan = planStore.getSnapshot();
+    if (!existingPlan) {
       return {
         tool: "clear_plan",
         result: "No active plan to clear.",
       };
     }
 
-    const title = currentPlan.title;
-    currentPlan = null;
+    const title = existingPlan.title;
+    planStore.clear();
 
     return {
       tool: "clear_plan",
-      result: chalk.green(`✓ Plan "${title}" has been cleared.`),
+      result: chalk.green(`✅ Plan "${title}" has been cleared.`),
+      plan: null,
     };
   } catch (error) {
     return {

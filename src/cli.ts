@@ -34,6 +34,10 @@ import {
 } from "./slash/registry.js";
 import type { SlashCommandDefinition } from "./slash/schema.js";
 import { renderSlashTemplate } from "./slash/template.js";
+import { planStore } from "./plan/store.js";
+import { AgentEventBus } from "./agent/eventBus.js";
+import { AgentEventRecorder } from "./agent/eventRecorder.js";
+import { BusTimeline } from "./agent/busTimeline.js";
 
 // Get package.json path and read version
 const __filename = fileURLToPath(import.meta.url);
@@ -529,6 +533,7 @@ interface SlashCommandContext {
   config: any;
   sessionTracker?: SessionTracker;
   tui?: InkChatAdapter | null;
+  eventRecorder?: AgentEventRecorder | null;
 }
 
 type SlashCommandHandler = (
@@ -849,11 +854,12 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     return continueResult();
   },
   "/timeline": async (context) => {
-    const tui = ensureTuiAvailable(context, "Timeline tools");
-    if (!tui) return continueResult();
     const [actionArg, targetArg] = context.args;
     const action = actionArg ? actionArg.toLowerCase() : "show";
-    const events = tui.getTimelineEvents();
+    const events =
+      context.eventRecorder?.getTimelineEvents() ??
+      context.tui?.getTimelineEvents() ??
+      [];
     if (events.length === 0) {
       console.log(chalk.gray("Timeline is empty for this session."));
       return continueResult();
@@ -868,6 +874,7 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
         generatedAt: new Date().toISOString(),
         cwd: process.cwd(),
         events,
+        plan: context.eventRecorder?.getPlanSnapshot() ?? null,
       };
       writeFileSync(outputPath, JSON.stringify(payload, null, 2), "utf8");
       console.log(chalk.green(`Saved timeline to ${outputPath}`));
@@ -1015,6 +1022,7 @@ async function handleSlashCommand(
   config: any,
   sessionTracker?: SessionTracker,
   tui?: InkChatAdapter | null,
+  eventRecorder?: AgentEventRecorder | null,
 ): Promise<SlashCommandResult> {
   const { command: name, args, argsText } = parseSlashInput(command);
   const context: SlashCommandContext = {
@@ -1024,6 +1032,7 @@ async function handleSlashCommand(
     config,
     sessionTracker,
     tui,
+    eventRecorder,
   };
 
   const handler = builtInSlashHandlers[name];
@@ -2035,6 +2044,8 @@ export function createCLI(): Command {
         });
 
         const sessionTracker = new SessionTracker(providerType, config.model);
+        const eventBus = new AgentEventBus();
+        const eventRecorder = new AgentEventRecorder(eventBus);
 
         const agent = useLangChainAgent && LangChainAgentWorkflow
           ? new LangChainAgentWorkflow({
@@ -2052,6 +2063,7 @@ export function createCLI(): Command {
               providerType,
               model: config.model,
               sessionTracker,
+              eventBus,
             });
 
         await agent.initialize();
@@ -2077,8 +2089,23 @@ export function createCLI(): Command {
               model: config.model,
               cwd: process.cwd(),
               uiSettings: config.ui,
+              eventBus,
             })
           : null;
+        let detachPlanListener: (() => void) | null = null;
+
+        const pushPlanSnapshot = (plan = planStore.getSnapshot()): void => {
+          if (eventBus) {
+            eventBus.emitPlan(plan);
+          } else if (chatUI) {
+            chatUI.setPlan(plan);
+          }
+        };
+
+        pushPlanSnapshot();
+        detachPlanListener = planStore.subscribe((plan) => {
+          pushPlanSnapshot(plan);
+        });
 
         chatUI?.captureConsole();
         chatUI?.enableContinuousChat(enqueueInput);
@@ -2087,10 +2114,14 @@ export function createCLI(): Command {
           const finalStats = await sessionTracker.endSession();
           if (chatUI) {
             chatUI.appendSystemMessage("Session ended. Goodbye! 🌊");
+            detachPlanListener?.();
+            detachPlanListener = null;
             chatUI.destroy();
           } else {
             console.log("\n");
           }
+          eventRecorder.dispose();
+          eventBus.removeAllListeners();
           ChatBoxUI.displayGoodbye(finalStats);
           process.exit(0);
         };
@@ -2164,7 +2195,13 @@ export function createCLI(): Command {
             }
 
             const runSlash = () =>
-              handleSlashCommand(userInput, config, sessionTracker, chatUI);
+              handleSlashCommand(
+                userInput,
+                config,
+                sessionTracker,
+                chatUI,
+                eventRecorder,
+              );
             let slashResult: SlashCommandResult;
             if (chatUI) {
               const { result: capturedResult, stdout, stderr } =
@@ -2214,9 +2251,10 @@ export function createCLI(): Command {
 
           sessionTracker.trackMessage();
 
-          const timeline: Timeline = chatUI
-            ? chatUI.getTimelineAdapter()
-            : new WorkflowTimeline();
+          const timeline: Timeline = new BusTimeline(
+            eventBus,
+            chatUI ? undefined : new WorkflowTimeline(),
+          );
 
           try {
             const messageStartTime = Date.now();
@@ -2268,8 +2306,12 @@ export function createCLI(): Command {
         const finalStats = await sessionTracker.endSession();
 
         if (chatUI) {
+          detachPlanListener?.();
+          detachPlanListener = null;
           chatUI.destroy();
         }
+        eventRecorder.dispose();
+        eventBus.removeAllListeners();
 
         if (!restarting) {
           ChatBoxUI.displayGoodbye(finalStats);

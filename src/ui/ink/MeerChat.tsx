@@ -15,9 +15,11 @@ import {
   type SlashCommandListEntry,
 } from "../../slash/registry.js";
 import { getSlashCommandBadges } from "../../slash/utils.js";
+import type { Plan } from "../../plan/types.js";
 import { StatusHeader } from "./components/core/index.js";
 import { ToolExecutionPanel, type ToolCall } from "./components/tools/index.js";
 import { WorkflowProgress, type WorkflowStage } from "./components/workflow/index.js";
+import { PlanPanel } from "./components/plan/index.js";
 import { TimelinePanel } from "./components/timeline/index.js";
 import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
 import type { UITimelineEvent } from "./timelineTypes.js";
@@ -70,6 +72,7 @@ export interface MeerChatProps {
   virtualizeHistory?: boolean;
   screenReader?: boolean;
   timelineEvents?: UITimelineEvent[];
+  plan?: Plan | null;
 }
 
 // Code Block Component - Minimal clean design
@@ -494,6 +497,7 @@ interface ScreenReaderLayoutProps {
   tools?: ToolCall[];
   workflowStages?: WorkflowStage[];
   messages: Message[];
+  plan?: Plan | null;
   children: React.ReactNode;
 }
 
@@ -511,9 +515,24 @@ const ScreenReaderLayout: React.FC<ScreenReaderLayoutProps> = ({
   tools,
   workflowStages,
   messages,
+  plan,
   children,
 }) => {
   const modeLabel = mode === "plan" ? "Plan" : "Edit";
+  const describePlanStatus = (
+    status: Plan["tasks"][number]["status"]
+  ): string => {
+    switch (status) {
+      case "completed":
+        return "completed";
+      case "in_progress":
+        return "in progress";
+      case "skipped":
+        return "skipped";
+      default:
+        return "pending";
+    }
+  };
   return (
     <Box flexDirection="column" gap={1}>
       <Text color="cyan" bold>
@@ -553,9 +572,24 @@ const ScreenReaderLayout: React.FC<ScreenReaderLayoutProps> = ({
           <Text>Workflow stages:</Text>
           {workflowStages.map((stage, index) => (
             <Text key={stage.name}>
-              {index + 1}. {stage.name} — {stage.status}
+              {index + 1}. {stage.name} - {stage.status}
             </Text>
           ))}
+        </Box>
+      )}
+      {plan && (
+        <Box flexDirection="column">
+          <Text>Plan: {plan.title}</Text>
+          {plan.tasks.slice(0, 5).map((task, index) => (
+            <Text key={task.id}>
+              {index + 1}. {task.description} - {describePlanStatus(task.status)}
+            </Text>
+          ))}
+          {plan.tasks.length > 5 && (
+            <Text color="dim">
+              +{plan.tasks.length - 5} more task{plan.tasks.length - 5 === 1 ? "" : "s"}
+            </Text>
+          )}
         </Box>
       )}
       <Box flexDirection="column" aria-role="list">
@@ -631,6 +665,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   virtualizeHistory = false,
   screenReader = false,
   timelineEvents,
+  plan,
 }) => {
   const [input, setInput] = useState('');
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
@@ -951,12 +986,13 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         isThinking={isThinking}
         tokens={tokens}
         cost={cost}
-        hiddenCount={hiddenCount}
-        totalMessages={messages.length}
-        tools={tools}
-        workflowStages={workflowStages}
-        messages={visibleMessages}
-      >
+      hiddenCount={hiddenCount}
+      totalMessages={messages.length}
+      tools={tools}
+      workflowStages={workflowStages}
+      messages={visibleMessages}
+      plan={plan}
+    >
         <InputArea
           value={input}
           onChange={handleInputChange}
@@ -995,6 +1031,8 @@ export const MeerChat: React.FC<MeerChatProps> = ({
           maxIterations={maxIterations}
         />
       )}
+
+      {plan && plan.tasks.length > 0 && <PlanPanel plan={plan} />}
 
       {timelineEvents && timelineEvents.length > 0 && (
         <TimelinePanel events={timelineEvents} maxEvents={8} />

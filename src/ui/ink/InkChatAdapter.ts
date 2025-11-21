@@ -15,6 +15,14 @@ import {
   type UISettings,
 } from "../ui-settings.js";
 import type { UITimelineEvent } from "./timelineTypes.js";
+import type { Plan } from "../../plan/types.js";
+import {
+  AgentEventBus,
+  type AgentLogEvent,
+  type AgentTaskEvent,
+  type AgentLogLevel,
+  type AgentToolEvent,
+} from "../../agent/eventBus.js";
 
 interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -28,6 +36,7 @@ export interface InkChatConfig {
   model: string;
   cwd: string;
   uiSettings?: UISettings;
+  eventBus?: AgentEventBus;
 }
 
 type Mode = 'edit' | 'plan';
@@ -62,10 +71,15 @@ export class InkChatAdapter {
   private readonly maxTimelineEvents = 200;
   private timelineSequence = 0;
   private timelineTaskMetadata = new Map<string, { label: string }>();
+  private eventBus?: AgentEventBus;
+  private busUnsubscribers: Array<() => void> = [];
+  private plan: Plan | null = null;
 
   constructor(config: InkChatConfig) {
     this.config = config;
     this.uiSettings = resolveUISettings(config.uiSettings);
+    this.eventBus = config.eventBus;
+    this.attachEventBus();
     this.renderUI();
   }
 
@@ -90,6 +104,21 @@ export class InkChatAdapter {
       this.appendSystemMessage(`Switched to ${modeLabel} mode`);
       this.updateUI();
     }
+  }
+
+  setPlan(plan: Plan | null): void {
+    const previous = this.plan;
+    const noChange =
+      (!previous && !plan) ||
+      (previous &&
+        plan &&
+        previous.updatedAt === plan.updatedAt &&
+        previous.tasks.length === plan.tasks.length);
+    if (noChange) {
+      return;
+    }
+    this.plan = plan ? this.clonePlan(plan) : null;
+    this.updateUI();
   }
 
   private renderUI() {
@@ -143,6 +172,7 @@ export class InkChatAdapter {
         messageCount: this.messageCount,
         sessionUptime,
         timelineEvents: this.timelineEvents,
+        plan: this.plan ?? undefined,
         uiSettings: activeSettings,
       }),
     );
@@ -201,6 +231,7 @@ export class InkChatAdapter {
         cost: this.cost.current > 0 ? this.cost : undefined,
         messageCount: this.messageCount,
         sessionUptime,
+        plan: this.plan ?? undefined,
         timelineEvents: this.timelineEvents,
         uiSettings: activeSettings,
       }),
@@ -417,6 +448,109 @@ export class InkChatAdapter {
   }
 
   getTimelineAdapter(): Timeline {
+    if (this.eventBus) {
+      return this.createBusTimelineAdapter();
+    }
+    return this.createLocalTimelineAdapter();
+  }
+
+  getTimelineEvents(limit?: number): UITimelineEvent[] {
+    if (typeof limit === "number" && limit > 0) {
+      return this.timelineEvents.slice(-limit);
+    }
+    return [...this.timelineEvents];
+  }
+
+  private createBusTimelineAdapter(): Timeline {
+    const bus = this.eventBus;
+    if (!bus) {
+      throw new Error("Agent event bus is not available");
+    }
+    return {
+      startTask: (label: string, options?: { detail?: string }) => {
+        const id = this.nextTimelineId("task");
+        this.timelineTaskMetadata.set(id, { label });
+        bus.emitTask({
+          id,
+          label,
+          detail: options?.detail,
+          status: "started",
+          timestamp: Date.now(),
+        });
+        return id;
+      },
+      updateTask: (id: string, detail: string) => {
+        const metadata = this.timelineTaskMetadata.get(id);
+        bus.emitTask({
+          id,
+          label: metadata?.label ?? detail,
+          detail,
+          status: "updated",
+          timestamp: Date.now(),
+        });
+      },
+      succeed: (id: string, detail?: string) => {
+        const metadata = this.timelineTaskMetadata.get(id);
+        this.timelineTaskMetadata.delete(id);
+        bus.emitTask({
+          id,
+          label: metadata?.label ?? detail ?? "",
+          detail,
+          status: "succeeded",
+          timestamp: Date.now(),
+        });
+      },
+      fail: (id: string, detail?: string) => {
+        const metadata = this.timelineTaskMetadata.get(id);
+        this.timelineTaskMetadata.delete(id);
+        bus.emitTask({
+          id,
+          label: metadata?.label ?? detail ?? "",
+          detail,
+          status: "failed",
+          timestamp: Date.now(),
+        });
+      },
+      info: (message: string) => {
+        this.emitBusLog("info", message);
+      },
+      note: (message: string) => {
+        this.emitBusLog("note", message);
+      },
+      warn: (message: string) => {
+        this.emitBusLog("warn", message);
+      },
+      error: (message: string) => {
+        this.emitBusLog("error", message);
+      },
+      close: () => {
+        for (const [id, metadata] of this.timelineTaskMetadata.entries()) {
+          bus.emitTask({
+            id,
+            label: metadata.label,
+            detail: "Aborted",
+            status: "failed",
+            timestamp: Date.now(),
+          });
+        }
+        this.timelineTaskMetadata.clear();
+        this.setStatus("");
+      },
+    };
+  }
+
+  private emitBusLog(level: AgentLogLevel, message: string): void {
+    const bus = this.eventBus;
+    if (!bus) return;
+    bus.emitLog({
+      id: this.nextTimelineId("log"),
+      level,
+      message,
+      timestamp: Date.now(),
+    });
+  }
+
+  private createLocalTimelineAdapter(): Timeline {
     return {
       startTask: (label: string, options?: { detail?: string }) => {
         const id = this.nextTimelineId("task");
@@ -429,7 +563,7 @@ export class InkChatAdapter {
           detail: options?.detail,
           timestamp: Date.now(),
         });
-        this.setStatus(`🔄 ${label}`);
+        this.setStatus(`?? ${label}`);
         return id;
       },
       updateTask: (id: string, detail: string) => {
@@ -442,7 +576,7 @@ export class InkChatAdapter {
           detail,
           timestamp: Date.now(),
         });
-        this.setStatus(`🔄 ${detail}`);
+        this.setStatus(`?? ${detail}`);
       },
       succeed: (id: string, detail?: string) => {
         const metadata = this.timelineTaskMetadata.get(id);
@@ -455,7 +589,7 @@ export class InkChatAdapter {
           detail,
           timestamp: Date.now(),
         });
-        this.setStatus(detail ? `✅ ${detail}` : "");
+        this.setStatus(detail ? `? ${detail}` : "");
       },
       fail: (id: string, detail?: string) => {
         const metadata = this.timelineTaskMetadata.get(id);
@@ -468,7 +602,7 @@ export class InkChatAdapter {
           detail,
           timestamp: Date.now(),
         });
-        this.setStatus(detail ? `❌ ${detail}` : "");
+        this.setStatus(detail ? `? ${detail}` : "");
       },
       info: (message: string) => {
         this.recordTimelineEvent({
@@ -478,7 +612,7 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`ℹ️  ${message}`);
+        this.appendSystemMessage(`??  ${message}`);
       },
       note: (message: string) => {
         this.recordTimelineEvent({
@@ -488,7 +622,7 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`📝 ${message}`);
+        this.appendSystemMessage(`?? ${message}`);
       },
       warn: (message: string) => {
         this.recordTimelineEvent({
@@ -498,7 +632,7 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`⚠️  ${message}`);
+        this.appendSystemMessage(`??  ${message}`);
       },
       error: (message: string) => {
         this.recordTimelineEvent({
@@ -508,19 +642,12 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`❌ ${message}`);
+        this.appendSystemMessage(`? ${message}`);
       },
       close: () => {
         this.setStatus("");
       },
     };
-  }
-
-  getTimelineEvents(limit?: number): UITimelineEvent[] {
-    if (typeof limit === "number" && limit > 0) {
-      return this.timelineEvents.slice(-limit);
-    }
-    return [...this.timelineEvents];
   }
 
   // Enhanced UI tracking methods
@@ -632,6 +759,7 @@ export class InkChatAdapter {
   }
 
   destroy(): void {
+    this.detachEventBus();
     if (this.promptActive && this.promptRejecter) {
       this.promptRejecter(new Error('UI destroyed'));
     }
@@ -647,9 +775,108 @@ export class InkChatAdapter {
     }
   }
 
+  private attachEventBus(): void {
+    if (!this.eventBus) {
+      return;
+    }
+    this.detachEventBus();
+    this.busUnsubscribers.push(
+      this.eventBus.onTask((event) => this.handleTaskEvent(event)),
+      this.eventBus.onLog((event) => this.handleLogEvent(event)),
+      this.eventBus.onPlan(({ plan }) => this.setPlan(plan)),
+      this.eventBus.onTool((event) => this.handleToolEvent(event)),
+    );
+  }
+
+  private detachEventBus(): void {
+    if (this.busUnsubscribers.length === 0) {
+      return;
+    }
+    for (const dispose of this.busUnsubscribers) {
+      dispose();
+    }
+    this.busUnsubscribers = [];
+  }
+
+  private handleTaskEvent(event: AgentTaskEvent): void {
+    this.recordTimelineEvent({
+      id: event.id,
+      type: "task",
+      status: event.status,
+      label: event.label,
+      detail: event.detail,
+      timestamp: event.timestamp,
+    });
+    if (event.status === "started" || event.status === "updated") {
+      this.setStatus(`?? ${event.detail ?? event.label}`);
+    } else if (event.status === "succeeded") {
+      this.setStatus(event.detail ? `? ${event.detail}` : "");
+    } else {
+      this.setStatus(event.detail ? `? ${event.detail}` : "");
+    }
+  }
+
+  private handleLogEvent(event: AgentLogEvent): void {
+    this.recordTimelineEvent({
+      id: event.id,
+      type: "log",
+      level: event.level,
+      message: event.message,
+      timestamp: event.timestamp,
+    });
+    if (event.level === "info") {
+      this.appendSystemMessage(`??  ${event.message}`);
+    } else if (event.level === "note") {
+      this.appendSystemMessage(`?? ${event.message}`);
+    } else if (event.level === "warn") {
+      this.appendSystemMessage(`??  ${event.message}`);
+    } else {
+      this.appendSystemMessage(`? ${event.message}`);
+    }
+  }
+
+  private handleToolEvent(event: AgentToolEvent): void {
+    const statusMap: Record<AgentToolEvent["status"], ToolCall["status"]> = {
+      pending: "pending",
+      running: "running",
+      succeeded: "success",
+      failed: "error",
+    };
+    const tool = this.tools.find((existing) => existing.id === event.id);
+    if (tool) {
+      tool.status = statusMap[event.status];
+      if (event.resultPreview) {
+        tool.result = event.resultPreview;
+      }
+      if (event.error) {
+        tool.error = event.error;
+      }
+      if (event.status === "succeeded" || event.status === "failed") {
+        tool.endTime = Date.now();
+      }
+    } else {
+      this.tools.push({
+        id: event.id,
+        name: event.tool,
+        status: statusMap[event.status],
+        startTime: Date.now(),
+        result: event.resultPreview,
+        error: event.error,
+      });
+    }
+    this.updateUI();
+  }
+
   private nextTimelineId(prefix: string): string {
     this.timelineSequence += 1;
     return `${prefix}-${this.timelineSequence}`;
+  }
+
+  private clonePlan(plan: Plan): Plan {
+    return {
+      ...plan,
+      tasks: plan.tasks.map((task) => ({ ...task })),
+    };
   }
 
   private recordTimelineEvent(event: UITimelineEvent): void {

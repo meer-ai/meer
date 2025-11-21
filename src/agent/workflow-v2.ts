@@ -14,6 +14,7 @@ import { buildAgentSystemPrompt } from "./prompts/systemPrompt.js";
 import { ContextPreprocessor } from "./context-preprocessor.js";
 import { TransactionManager } from "./transaction-manager.js";
 import { TestDetector } from "./test-detector.js";
+import type { AgentEventBus } from "./eventBus.js";
 
 export interface AgentConfig {
   provider: Provider;
@@ -30,6 +31,7 @@ export interface AgentConfig {
     maxTokensPerSession?: number;
     maxCostPerSession?: number;
   };
+  eventBus?: AgentEventBus;
 }
 
 /**
@@ -78,6 +80,8 @@ export class AgentWorkflowV2 {
     toolsExecuted: 0,
     toolExecutionTime: new Map<string, number[]>(),
   };
+  private eventBus?: AgentEventBus;
+  private toolEventSequence = 0;
 
   constructor(config: AgentConfig) {
     this.provider = config.provider;
@@ -94,6 +98,7 @@ export class AgentWorkflowV2 {
     this.testDetector = new TestDetector(this.cwd);
     this.maxTokensPerSession = config.limits?.maxTokensPerSession;
     this.maxCostPerSession = config.limits?.maxCostPerSession;
+    this.eventBus = config.eventBus;
 
     if (this.contextLimit) {
       this.sessionTracker?.setContextLimit(this.contextLimit);
@@ -580,6 +585,10 @@ export class AgentWorkflowV2 {
 
         const parallelPromises = parallelizable.map(async (toolCall) => {
           let toolTaskId: string | undefined;
+          const toolEventId = this.nextToolEventId();
+          this.emitToolEvent(toolEventId, toolCall.tool, "running", {
+            argsPreview: this.previewArgs(toolCall.params),
+          });
           if (timeline) {
             toolTaskId = timeline.startTask(toolCall.tool, {
               detail: "parallel",
@@ -590,6 +599,9 @@ export class AgentWorkflowV2 {
 
           try {
             const result = await this.executeTool(toolCall);
+            this.emitToolEvent(toolEventId, toolCall.tool, "succeeded", {
+              resultPreview: this.previewResult(result),
+            });
             if (timeline && toolTaskId) {
               timeline.succeed(toolTaskId, "Done");
             } else {
@@ -598,6 +610,9 @@ export class AgentWorkflowV2 {
             return this.formatToolResult(toolCall.tool, result);
           } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);
+            this.emitToolEvent(toolEventId, toolCall.tool, "failed", {
+              error: errorMsg,
+            });
             if (timeline && toolTaskId) {
               timeline.fail(toolTaskId, errorMsg);
             } else {
@@ -640,6 +655,10 @@ export class AgentWorkflowV2 {
         try {
           for (const toolCall of sequential) {
             let toolTaskId: string | undefined;
+            const toolEventId = this.nextToolEventId();
+            this.emitToolEvent(toolEventId, toolCall.tool, "running", {
+              argsPreview: this.previewArgs(toolCall.params),
+            });
             if (timeline) {
               toolTaskId = timeline.startTask(toolCall.tool, {
                 detail: "sequential",
@@ -651,6 +670,9 @@ export class AgentWorkflowV2 {
             try {
               const result = await this.executeTool(toolCall);
               toolResults.push(this.formatToolResult(toolCall.tool, result));
+               this.emitToolEvent(toolEventId, toolCall.tool, "succeeded", {
+                 resultPreview: this.previewResult(result),
+               });
               if (timeline && toolTaskId) {
                 timeline.succeed(toolTaskId, "Done");
               } else {
@@ -659,6 +681,9 @@ export class AgentWorkflowV2 {
             } catch (error) {
               const errorMsg = error instanceof Error ? error.message : String(error);
               toolResults.push(`Tool: ${toolCall.tool}\nError: ${errorMsg}`);
+               this.emitToolEvent(toolEventId, toolCall.tool, "failed", {
+                 error: errorMsg,
+               });
               if (timeline && toolTaskId) {
                 timeline.fail(toolTaskId, errorMsg);
               } else {
@@ -2150,6 +2175,56 @@ export class AgentWorkflowV2 {
       }
     }
   }
+
+  private nextToolEventId(): string {
+    this.toolEventSequence += 1;
+    return `tool-${this.toolEventSequence}`;
+  }
+
+  private emitToolEvent(
+    id: string,
+    tool: string,
+    status: "pending" | "running" | "succeeded" | "failed",
+    extras?: { argsPreview?: string; resultPreview?: string; error?: string },
+  ): void {
+    if (!this.eventBus) {
+      return;
+    }
+    this.eventBus.emitTool({
+      id,
+      tool,
+      status,
+      timestamp: Date.now(),
+      argsPreview: extras?.argsPreview,
+      resultPreview: extras?.resultPreview,
+      error: extras?.error,
+    });
+  }
+
+  private previewArgs(params: any): string | undefined {
+    if (params === undefined || params === null) {
+      return undefined;
+    }
+    try {
+      const serialized =
+        typeof params === "string" ? params : JSON.stringify(params);
+      return this.truncatePreview(serialized);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private previewResult(result: string): string | undefined {
+    if (!result) {
+      return undefined;
+    }
+    return this.truncatePreview(result);
+  }
+
+  private truncatePreview(value: string, max = 200): string {
+    return value.length > max ? `${value.slice(0, max)}…` : value;
+  }
+
 
 }
 
