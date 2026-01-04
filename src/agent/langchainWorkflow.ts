@@ -359,8 +359,8 @@ export class LangChainAgentWorkflow {
         }
         streamStarted = true;
         if (timeline && thinkingTaskId) {
-          timeline.succeed(thinkingTaskId, "Streaming response");
-          thinkingTaskId = undefined;
+          timeline.succeed(thinkingTaskId, ""); // Don't show "Streaming response" - it's redundant
+          thinkingTaskId = undefined; // Clear the task ID
         }
         stopSpinner();
         if (useUI) {

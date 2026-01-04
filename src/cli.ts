@@ -2047,27 +2047,6 @@ export function createCLI(): Command {
         const eventBus = new AgentEventBus();
         const eventRecorder = new AgentEventRecorder(eventBus);
 
-        const agent = useLangChainAgent && LangChainAgentWorkflow
-          ? new LangChainAgentWorkflow({
-              provider: config.provider,
-              cwd: process.cwd(),
-              maxIterations: config.maxIterations,
-              providerType,
-              model: config.model,
-              sessionTracker,
-            })
-          : new AgentWorkflowV2({
-              provider: config.provider,
-              cwd: process.cwd(),
-              maxIterations: config.maxIterations,
-              providerType,
-              model: config.model,
-              sessionTracker,
-              eventBus,
-            });
-
-        await agent.initialize();
-
         const useTui =
           Boolean(process.stdout.isTTY && process.stdin.isTTY) &&
           process.env.MEER_NO_TUI !== "1";
@@ -2092,6 +2071,46 @@ export function createCLI(): Command {
               eventBus,
             })
           : null;
+
+        const { AgentWorkflowV3 } = await import("./agent/workflow-v3.js");
+        
+        const agent = useLangChainAgent && LangChainAgentWorkflow
+          ? new LangChainAgentWorkflow({
+              provider: config.provider,
+              cwd: process.cwd(),
+              maxIterations: config.maxIterations,
+              providerType,
+              model: config.model,
+              sessionTracker,
+            })
+          : new AgentWorkflowV3({
+              provider: config.provider,
+              cwd: process.cwd(),
+              maxIterations: config.maxIterations,
+              providerType,
+              model: config.model,
+              sessionTracker,
+              eventBus,
+              onStreamingStart: () => chatUI?.startAssistantMessage(),
+              onStreamingChunk: (chunk) => chatUI?.appendAssistantChunk(chunk),
+              onStreamingEnd: () => chatUI?.finishAssistantMessage(),
+              onToolStart: (tool, args) => chatUI?.addTool(tool),
+              onToolUpdate: (toolName, status, result) => {
+                const tool = chatUI?.getTimelineAdapter().startTask(toolName);
+                if (status === 'running') {
+                  chatUI?.startTool(toolName);
+                } else if (status === 'succeeded') {
+                  chatUI?.completeTool(toolName, result);
+                } else if (status === 'failed') {
+                  chatUI?.failTool(toolName, result || 'Error');
+                }
+              },
+              onToolEnd: () => chatUI?.clearTools(),
+              onStatusChange: (status) => chatUI?.setStatus(status),
+              onError: (error) => chatUI?.appendSystemMessage(`❌ ${error.message}`),
+            });
+
+        await agent.initialize();
         let detachPlanListener: (() => void) | null = null;
 
         const pushPlanSnapshot = (plan = planStore.getSnapshot()): void => {
@@ -2259,28 +2278,8 @@ export function createCLI(): Command {
           try {
             const messageStartTime = Date.now();
 
-            await agent.processMessage(userInput, {
-              timeline,
-              onAssistantStart: chatUI
-                ? () => chatUI.startAssistantMessage()
-                : undefined,
-              onAssistantChunk: chatUI
-                ? (chunk: string) => chatUI.appendAssistantChunk(chunk)
-                : undefined,
-              onAssistantEnd: chatUI
-                ? () => chatUI.finishAssistantMessage()
-                : undefined,
-              withTerminal: chatUI
-                ? <T>(fn: () => Promise<T>) => chatUI.runWithTerminal(fn)
-                : undefined,
-              promptChoice: chatUI
-                ? (
-                    prompt: string,
-                    choices: Array<{ label: string; value: string }>,
-                    defaultValue: string
-                  ) => chatUI.promptChoice(prompt, choices, defaultValue)
-                : undefined,
-            });
+            // WorkflowV3 uses callback-based API, not options-based
+            await agent.processMessage(userInput);
 
             sessionTracker.trackApiCall(Date.now() - messageStartTime);
           } catch (error) {

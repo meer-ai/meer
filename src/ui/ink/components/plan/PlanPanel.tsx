@@ -14,7 +14,7 @@ const STATUS_META = {
   skipped: { icon: "⏭️", color: "magenta" as const },
 };
 
-export const PlanPanel: React.FC<PlanPanelProps> = ({
+export const PlanPanel: React.FC<PlanPanelProps> = React.memo(({
   plan,
   maxVisibleTasks = 6,
 }) => {
@@ -79,7 +79,7 @@ export const PlanPanel: React.FC<PlanPanelProps> = ({
       )}
     </Box>
   );
-};
+});
 
 export default PlanPanel;
 

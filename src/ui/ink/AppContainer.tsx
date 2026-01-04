@@ -44,15 +44,21 @@ function useAlternateBuffer(enabled: boolean): void {
     if (!enabled || !process.stdout.isTTY) {
       return;
     }
+
     try {
+      // Enter alternate screen buffer
       process.stdout.write(ansiEscapes.enterAlternativeScreen);
+      process.stdout.write(ansiEscapes.clearScreen);
+      process.stdout.write(ansiEscapes.cursorTo(0, 0));
       process.stdout.write(ansiEscapes.cursorHide);
     } catch {
       // Ignore terminal capability errors; fall back to default buffer.
     }
+
     return () => {
       try {
         process.stdout.write(ansiEscapes.cursorShow);
+        process.stdout.write(ansiEscapes.clearScreen);
         process.stdout.write(ansiEscapes.exitAlternativeScreen);
       } catch {
         // noop

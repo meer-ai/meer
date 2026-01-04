@@ -21,7 +21,7 @@ export interface WorkflowProgressProps {
   maxIterations?: number;
 }
 
-export const WorkflowProgress: React.FC<WorkflowProgressProps> = ({
+export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
   stages,
   currentIteration,
   maxIterations,
@@ -215,6 +215,6 @@ export const WorkflowProgress: React.FC<WorkflowProgressProps> = ({
       </Box>
     </Box>
   );
-};
+});
 
 export default WorkflowProgress;

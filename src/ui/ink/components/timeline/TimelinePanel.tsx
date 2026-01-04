@@ -29,7 +29,7 @@ const formatTime = (timestamp: number): string => {
   return `${hours}:${minutes}:${seconds}`;
 };
 
-const TimelineRow: React.FC<{ event: UITimelineEvent }> = ({ event }) => {
+const TimelineRow: React.FC<{ event: UITimelineEvent }> = React.memo(({ event }) => {
   const time = formatTime(event.timestamp);
 
   if (event.type === "task") {
@@ -64,9 +64,9 @@ const TimelineRow: React.FC<{ event: UITimelineEvent }> = ({ event }) => {
       <Text color={event.level === "error" ? "red" : "white"}>{event.message}</Text>
     </Box>
   );
-};
+});
 
-export const TimelinePanel: React.FC<TimelinePanelProps> = ({
+export const TimelinePanel: React.FC<TimelinePanelProps> = React.memo(({
   events,
   maxEvents = 8,
 }) => {
@@ -98,6 +98,6 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       </Box>
     </Box>
   );
-};
+});
 
 export default TimelinePanel;

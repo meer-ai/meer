@@ -24,7 +24,7 @@ export interface ToolExecutionPanelProps {
   collapsed?: boolean;
 }
 
-export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = ({
+export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(({
   tools,
   isParallel = false,
   collapsed = false,
@@ -34,6 +34,13 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = ({
 
   // Update elapsed times for running tools
   useEffect(() => {
+    // Only run interval if there are actually running tools
+    const hasRunningTools = tools.some(tool => tool.status === 'running');
+
+    if (!hasRunningTools) {
+      return;
+    }
+
     const interval = setInterval(() => {
       const newElapsed = new Map<string, number>();
       tools.forEach((tool: ToolCall) => {
@@ -270,6 +277,6 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = ({
       )}
     </Box>
   );
-};
+});
 
 export default ToolExecutionPanel;

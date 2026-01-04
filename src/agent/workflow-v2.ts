@@ -370,7 +370,8 @@ export class AgentWorkflowV2 {
           if (!streamStarted) {
             streamStarted = true;
             if (timeline && thinkingTaskId) {
-              timeline.succeed(thinkingTaskId, "Streaming response");
+              timeline.succeed(thinkingTaskId, ""); // Don't show "Streaming response" - it's redundant
+              thinkingTaskId = undefined; // Clear the task ID
             } else if (spinner) {
               spinner.stop();
             }
@@ -426,6 +427,7 @@ export class AgentWorkflowV2 {
         } else {
           console.log("\n");
         }
+
         const completionTokens = countTokens(this.model, response);
         this.sessionTracker?.trackCompletionTokens(completionTokens);
 

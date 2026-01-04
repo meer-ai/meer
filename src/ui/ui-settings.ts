@@ -12,7 +12,7 @@ export interface UISettings {
 export type UISettingsInput = Partial<UISettings> | undefined;
 
 export const DEFAULT_UI_SETTINGS: UISettings = {
-  useAlternateBuffer: true,
+  useAlternateBuffer: false, // Disabled by default to prevent blank screen issues
   screenReaderMode: "auto",
   virtualizedHistory: "auto",
   scrollMode: "auto",

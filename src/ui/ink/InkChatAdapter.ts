@@ -23,6 +23,7 @@ import {
   type AgentLogLevel,
   type AgentToolEvent,
 } from "../../agent/eventBus.js";
+import { debounce } from "./utils/debounce.js";
 
 interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -74,6 +75,9 @@ export class InkChatAdapter {
   private eventBus?: AgentEventBus;
   private busUnsubscribers: Array<() => void> = [];
   private plan: Plan | null = null;
+
+  // Debounced updateUI for streaming - reduces re-renders from 100+/sec to ~20/sec
+  private debouncedUpdateUI = debounce(() => this.updateUI(), { delay: 50, maxWait: 200 });
 
   constructor(config: InkChatConfig) {
     this.config = config;
@@ -299,13 +303,16 @@ export class InkChatAdapter {
     const message = this.messages[this.currentAssistantIndex];
     if (message) {
       message.content += chunk;
-      this.updateUI();
+      // Use debounced updateUI for streaming to reduce re-renders
+      this.debouncedUpdateUI();
     }
   }
 
   finishAssistantMessage(): void {
     this.isThinking = false;
     this.currentAssistantIndex = null;
+    // Cancel any pending debounced updates and render final state immediately
+    this.debouncedUpdateUI.cancel();
     this.updateUI();
   }
 

@@ -46,11 +46,18 @@ export const ScrollIndicator: React.FC<ScrollIndicatorProps> = ({
     Math.round(((offset + windowSize) / totalCount) * 100),
   );
 
+  // Check if user is at the bottom
+  const isAtBottom = offset + windowSize >= totalCount;
+  const hasNewMessages = !isAtBottom;
+
   return (
     <Box flexDirection="column" alignItems="flex-end">
       <Text color="gray">Scroll</Text>
       <Text color="cyan">{segments.join("")}</Text>
       <Text color="gray">{percentage}%</Text>
+      {hasNewMessages && (
+        <Text color="yellow" bold>↓ New</Text>
+      )}
     </Box>
   );
 };

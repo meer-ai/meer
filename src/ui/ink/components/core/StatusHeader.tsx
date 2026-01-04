@@ -27,7 +27,7 @@ export interface StatusHeaderProps {
   compact?: boolean;
 }
 
-export const StatusHeader: React.FC<StatusHeaderProps> = ({
+export const StatusHeader: React.FC<StatusHeaderProps> = React.memo(({
   provider,
   model,
   cwd,
@@ -215,6 +215,6 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
       )}
     </Box>
   );
-};
+});
 
 export default StatusHeader;

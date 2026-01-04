@@ -101,7 +101,7 @@ export function createAskCommand(): Command {
           for await (const chunk of config.provider.stream(messages)) {
             if (!streamStarted) {
               streamStarted = true;
-              timeline.succeed(thinkingTask, 'Streaming response');
+              timeline.succeed(thinkingTask, ''); // Don't show "Streaming response" - it's redundant
               printHeader();
             }
 

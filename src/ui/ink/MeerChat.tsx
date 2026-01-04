@@ -3,7 +3,13 @@
  * Inspired by Claude Code, Cursor, and Bubble Tea
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import { Box, Text, useInput, useApp, render } from "ink";
 import Spinner from "ink-spinner";
 import TextInput from "ink-text-input";
@@ -18,15 +24,19 @@ import { getSlashCommandBadges } from "../../slash/utils.js";
 import type { Plan } from "../../plan/types.js";
 import { StatusHeader } from "./components/core/index.js";
 import { ToolExecutionPanel, type ToolCall } from "./components/tools/index.js";
-import { WorkflowProgress, type WorkflowStage } from "./components/workflow/index.js";
+import {
+  WorkflowProgress,
+  type WorkflowStage,
+} from "./components/workflow/index.js";
 import { PlanPanel } from "./components/plan/index.js";
 import { TimelinePanel } from "./components/timeline/index.js";
 import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
 import type { UITimelineEvent } from "./timelineTypes.js";
+import { debounce } from "./utils/debounce.js";
 
 // Types
 interface Message {
-  role: 'user' | 'assistant' | 'system' | 'tool';
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   toolName?: string;
   timestamp?: number;
@@ -76,193 +86,238 @@ export interface MeerChatProps {
 }
 
 // Code Block Component - Minimal clean design
-const CodeBlock: React.FC<{ code: string; language?: string }> = ({ code, language }) => {
-  const getLanguageIcon = (lang?: string): string => {
-    if (!lang) return '📄';
-    const lower = lang.toLowerCase();
-    if (lower.includes('typescript') || lower === 'ts') return '🔷';
-    if (lower.includes('javascript') || lower === 'js') return '🟨';
-    if (lower.includes('python') || lower === 'py') return '🐍';
-    if (lower.includes('rust') || lower === 'rs') return '🦀';
-    if (lower.includes('go')) return '🔵';
-    if (lower.includes('java')) return '☕';
-    if (lower.includes('c++') || lower === 'cpp') return '⚡';
-    if (lower.includes('shell') || lower === 'bash' || lower === 'sh') return '🐚';
-    if (lower.includes('json')) return '📦';
-    if (lower.includes('yaml') || lower === 'yml') return '📋';
-    return '📝';
-  };
+const CodeBlock: React.FC<{ code: string; language?: string }> = React.memo(
+  ({ code, language }) => {
+    const getLanguageIcon = (lang?: string): string => {
+      if (!lang) return "📄";
+      const lower = lang.toLowerCase();
+      if (lower.includes("typescript") || lower === "ts") return "🔷";
+      if (lower.includes("javascript") || lower === "js") return "🟨";
+      if (lower.includes("python") || lower === "py") return "🐍";
+      if (lower.includes("rust") || lower === "rs") return "🦀";
+      if (lower.includes("go")) return "🔵";
+      if (lower.includes("java")) return "☕";
+      if (lower.includes("c++") || lower === "cpp") return "⚡";
+      if (lower.includes("shell") || lower === "bash" || lower === "sh")
+        return "🐚";
+      if (lower.includes("json")) return "📦";
+      if (lower.includes("yaml") || lower === "yml") return "📋";
+      return "📝";
+    };
 
-  return (
-    <Box flexDirection="column" paddingLeft={0}>
-      {/* Language tag - inline, no box */}
-      {language && (
-        <Box marginBottom={0}>
-          <Text color="dim" dimColor>
-            {getLanguageIcon(language)} {language}
+    return (
+      <Box flexDirection="column" paddingLeft={0}>
+        {/* Language tag - inline, no box */}
+        {language && (
+          <Box marginBottom={0}>
+            <Text color="dim" dimColor>
+              {getLanguageIcon(language)} {language}
+            </Text>
+          </Box>
+        )}
+        {/* Code content with subtle left bar */}
+        <Box
+          flexDirection="column"
+          borderLeft={true}
+          paddingLeft={2}
+          marginTop={language ? 0 : 0}
+        >
+          <Text color="white" dimColor>
+            {code}
           </Text>
         </Box>
-      )}
-      {/* Code content with subtle left bar */}
-      <Box flexDirection="column" borderLeft={true} paddingLeft={2} marginTop={language ? 0 : 0}>
-        <Text color="white" dimColor>{code}</Text>
       </Box>
-    </Box>
-  );
-};
+    );
+  }
+);
 
 // Tool Call Component - Clean inline design
-const ToolCall: React.FC<{ toolName: string; content: string }> = ({ toolName, content }) => {
-  const getToolIcon = (name: string): string => {
-    const lower = name.toLowerCase();
-    if (lower.includes('read') || lower.includes('file')) return '📖';
-    if (lower.includes('write') || lower.includes('edit')) return '✍️';
-    if (lower.includes('bash') || lower.includes('exec')) return '⚡';
-    if (lower.includes('search') || lower.includes('grep')) return '🔍';
-    if (lower.includes('web') || lower.includes('fetch')) return '🌐';
-    if (lower.includes('task') || lower.includes('agent')) return '🤖';
-    return '🛠️';
-  };
+const ToolCall: React.FC<{ toolName: string; content: string }> = React.memo(
+  ({ toolName, content }) => {
+    const getToolIcon = (name: string): string => {
+      const lower = name.toLowerCase();
+      if (lower.includes("read") || lower.includes("file")) return "📖";
+      if (lower.includes("write") || lower.includes("edit")) return "✍️";
+      if (lower.includes("bash") || lower.includes("exec")) return "⚡";
+      if (lower.includes("search") || lower.includes("grep")) return "🔍";
+      if (lower.includes("web") || lower.includes("fetch")) return "🌐";
+      if (lower.includes("task") || lower.includes("agent")) return "🤖";
+      return "🛠️";
+    };
 
-  // Truncate very long content
-  const displayContent = content.length > 200
-    ? `${content.substring(0, 200)}... (${content.length} chars total)`
-    : content;
+    // Truncate very long content
+    const displayContent =
+      content.length > 200
+        ? `${content.substring(0, 200)}... (${content.length} chars total)`
+        : content;
 
-  return (
-    <Box flexDirection="column" marginTop={1} marginBottom={2} paddingLeft={0}>
-      {/* Tool header - inline style */}
-      <Box gap={1}>
-        <Text color="magenta">▎</Text>
+    return (
+      <Box
+        flexDirection="column"
+        marginTop={1}
+        marginBottom={2}
+        paddingLeft={0}
+      >
+        {/* Tool header - inline style */}
         <Box gap={1}>
-          <Text color="magenta">{getToolIcon(toolName)}</Text>
-          <Text color="magenta" bold>{toolName}</Text>
+          <Text color="magenta">▎</Text>
+          <Box gap={1}>
+            <Text color="magenta">{getToolIcon(toolName)}</Text>
+            <Text color="magenta" bold>
+              {toolName}
+            </Text>
+          </Box>
+        </Box>
+        {/* Tool result with left padding */}
+        <Box paddingLeft={2} marginTop={0}>
+          <Text color="dim" dimColor>
+            {displayContent}
+          </Text>
         </Box>
       </Box>
-      {/* Tool result with left padding */}
-      <Box paddingLeft={2} marginTop={0}>
-        <Text color="dim" dimColor>{displayContent}</Text>
-      </Box>
-    </Box>
-  );
-};
+    );
+  }
+);
 
 // Message Component - Redesigned with minimal borders
-const MessageView: React.FC<{ message: Message; isLast: boolean }> = ({ message, isLast }) => {
-  const parseContent = (content: string) => {
-    // Parse code blocks
-    const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
-    const parts: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
-    let lastIndex = 0;
-    let match;
+const MessageView: React.FC<{ message: Message; isLast: boolean }> = React.memo(
+  ({ message, isLast }) => {
+    const parseContent = (content: string) => {
+      // Parse code blocks
+      const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+      const parts: Array<{
+        type: "text" | "code";
+        content: string;
+        language?: string;
+      }> = [];
+      let lastIndex = 0;
+      let match;
 
-    while ((match = codeBlockRegex.exec(content)) !== null) {
-      if (match.index > lastIndex) {
-        parts.push({ type: 'text', content: content.slice(lastIndex, match.index) });
+      while ((match = codeBlockRegex.exec(content)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push({
+            type: "text",
+            content: content.slice(lastIndex, match.index),
+          });
+        }
+        parts.push({ type: "code", content: match[2], language: match[1] });
+        lastIndex = codeBlockRegex.lastIndex;
       }
-      parts.push({ type: 'code', content: match[2], language: match[1] });
-      lastIndex = codeBlockRegex.lastIndex;
+
+      if (lastIndex < content.length) {
+        parts.push({ type: "text", content: content.slice(lastIndex) });
+      }
+
+      return parts.length > 0 ? parts : [{ type: "text", content }];
+    };
+
+    const parts = parseContent(message.content);
+
+    if (message.role === "tool") {
+      return (
+        <ToolCall
+          toolName={message.toolName || "unknown"}
+          content={message.content}
+        />
+      );
     }
 
-    if (lastIndex < content.length) {
-      parts.push({ type: 'text', content: content.slice(lastIndex) });
-    }
+    const getIcon = () => {
+      switch (message.role) {
+        case "user":
+          return "👤";
+        case "assistant":
+          return "🌊";
+        case "system":
+          return "ℹ️";
+        default:
+          return "•";
+      }
+    };
 
-    return parts.length > 0 ? parts : [{ type: 'text', content }];
-  };
+    const getColor = () => {
+      switch (message.role) {
+        case "user":
+          return "cyan";
+        case "assistant":
+          return "green";
+        case "system":
+          return "yellow";
+        default:
+          return "white";
+      }
+    };
 
-  const parts = parseContent(message.content);
+    const getName = () => {
+      switch (message.role) {
+        case "user":
+          return "You";
+        case "assistant":
+          return "Meer AI";
+        case "system":
+          return "System";
+        default:
+          return message.role;
+      }
+    };
 
-  if (message.role === 'tool') {
-    return <ToolCall toolName={message.toolName || 'unknown'} content={message.content} />;
-  }
+    // Get accent bar character based on role
+    const getAccentBar = () => {
+      switch (message.role) {
+        case "user":
+          return "▎";
+        case "assistant":
+          return "▎";
+        case "system":
+          return "▎";
+        default:
+          return "│";
+      }
+    };
 
-  const getIcon = () => {
-    switch (message.role) {
-      case 'user':
-        return '👤';
-      case 'assistant':
-        return '🌊';
-      case 'system':
-        return 'ℹ️';
-      default:
-        return '•';
-    }
-  };
-
-  const getColor = () => {
-    switch (message.role) {
-      case 'user':
-        return 'cyan';
-      case 'assistant':
-        return 'green';
-      case 'system':
-        return 'yellow';
-      default:
-        return 'white';
-    }
-  };
-
-  const getName = () => {
-    switch (message.role) {
-      case 'user':
-        return 'You';
-      case 'assistant':
-        return 'Meer AI';
-      case 'system':
-        return 'System';
-      default:
-        return message.role;
-    }
-  };
-
-  // Get accent bar character based on role
-  const getAccentBar = () => {
-    switch (message.role) {
-      case 'user':
-        return '▎';
-      case 'assistant':
-        return '▎';
-      case 'system':
-        return '▎';
-      default:
-        return '│';
-    }
-  };
-
-  return (
-    <Box flexDirection="column" marginBottom={2} marginTop={1}>
-      {/* Message header - inline with accent */}
-      <Box gap={1}>
-        <Text color={getColor()} bold>{getAccentBar()}</Text>
-        <Box gap={1} flexGrow={1} justifyContent="space-between">
-          <Box gap={1}>
-            <Text color={getColor()}>{getIcon()}</Text>
-            <Text color={getColor()} bold>{getName()}</Text>
+    return (
+      <Box flexDirection="column" marginBottom={2} marginTop={1}>
+        {/* Message header - inline with accent */}
+        <Box gap={1}>
+          <Text color={getColor()} bold>
+            {getAccentBar()}
+          </Text>
+          <Box gap={1} flexGrow={1} justifyContent="space-between">
+            <Box gap={1}>
+              <Text color={getColor()}>{getIcon()}</Text>
+              <Text color={getColor()} bold>
+                {getName()}
+              </Text>
+            </Box>
+            {message.timestamp && (
+              <Text color="dim" dimColor>
+                {formatTimestamp(message.timestamp)}
+              </Text>
+            )}
           </Box>
-          {message.timestamp && (
-            <Text color="dim" dimColor>{formatTimestamp(message.timestamp)}</Text>
+        </Box>
+
+        {/* Message content with left padding for alignment */}
+        <Box flexDirection="column" paddingLeft={2}>
+          {parts.map((part, idx) =>
+            part.type === "code" ? (
+              <Box key={idx} marginTop={1} marginBottom={1}>
+                <CodeBlock
+                  code={part.content}
+                  language={"language" in part ? part.language : undefined}
+                />
+              </Box>
+            ) : (
+              <Box key={idx} marginTop={0}>
+                <Text>{part.content.trim()}</Text>
+              </Box>
+            )
           )}
         </Box>
       </Box>
-
-      {/* Message content with left padding for alignment */}
-      <Box flexDirection="column" paddingLeft={2}>
-        {parts.map((part, idx) =>
-          part.type === 'code' ? (
-            <Box key={idx} marginTop={1} marginBottom={1}>
-              <CodeBlock code={part.content} language={'language' in part ? part.language : undefined} />
-            </Box>
-          ) : (
-            <Box key={idx} marginTop={0}>
-              <Text>{part.content.trim()}</Text>
-            </Box>
-          )
-        )}
-      </Box>
-    </Box>
-  );
-};
+    );
+  }
+);
 
 // Header Component
 const Header: React.FC<{
@@ -270,13 +325,19 @@ const Header: React.FC<{
   model?: string;
   cwd?: string;
   mode?: Mode;
-}> = ({ provider, model, cwd, mode = 'edit' }) => {
-  const getModeColor = () => mode === 'plan' ? 'blue' : 'green';
-  const getModeIcon = () => mode === 'plan' ? '📋' : '✏️';
-  const getModeLabel = () => mode === 'plan' ? 'PLAN' : 'EDIT';
+}> = ({ provider, model, cwd, mode = "edit" }) => {
+  const getModeColor = () => (mode === "plan" ? "blue" : "green");
+  const getModeIcon = () => (mode === "plan" ? "📋" : "✏️");
+  const getModeLabel = () => (mode === "plan" ? "PLAN" : "EDIT");
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="cyan"
+      paddingX={1}
+      marginBottom={1}
+    >
       <Box justifyContent="center">
         <Gradient name="cristal">
           <Text bold>🌊 Meer AI</Text>
@@ -285,9 +346,9 @@ const Header: React.FC<{
       <Box justifyContent="space-between">
         <Box>
           <Text color="cyan">Provider: </Text>
-          <Text color="white">{provider || 'unknown'}</Text>
+          <Text color="white">{provider || "unknown"}</Text>
           <Text color="gray"> / </Text>
-          <Text color="white">{model || 'unknown'}</Text>
+          <Text color="white">{model || "unknown"}</Text>
         </Box>
         <Box>
           <Text color={getModeColor()} bold>
@@ -296,31 +357,29 @@ const Header: React.FC<{
         </Box>
       </Box>
       <Box>
-        <Text color="gray" dimColor>{cwd || process.cwd()}</Text>
+        <Text color="gray" dimColor>
+          {cwd || process.cwd()}
+        </Text>
       </Box>
     </Box>
   );
 };
 
 // Thinking Indicator Component - Clean inline design
-const ThinkingIndicator: React.FC = () => {
+const ThinkingIndicator: React.FC = React.memo(() => {
   const [dots, setDots] = React.useState(0);
 
   React.useEffect(() => {
     const interval = setInterval(() => {
-      setDots(prev => (prev + 1) % 4);
+      setDots((prev) => (prev + 1) % 4);
     }, 500);
     return () => clearInterval(interval);
   }, []);
 
-  const messages = [
-    'Thinking',
-    'Processing',
-    'Analyzing',
-    'Working',
-  ];
+  const messages = ["Thinking", "Processing", "Analyzing", "Working"];
 
-  const currentMessage = messages[Math.floor(Date.now() / 2000) % messages.length];
+  const currentMessage =
+    messages[Math.floor(Date.now() / 2000) % messages.length];
 
   return (
     <Box marginBottom={2} marginTop={1} paddingLeft={0}>
@@ -330,12 +389,13 @@ const ThinkingIndicator: React.FC = () => {
           <Spinner type="dots" />
         </Text>
         <Text color="cyan" dimColor>
-          {currentMessage}{'.'.repeat(dots)}
+          {currentMessage}
+          {".".repeat(dots)}
         </Text>
       </Box>
     </Box>
   );
-};
+});
 
 // Input Component
 const InputArea: React.FC<{
@@ -348,129 +408,214 @@ const InputArea: React.FC<{
   mode?: Mode;
   slashSuggestions: SlashCommandListEntry[];
   selectedSuggestion: number;
-}> = ({
-  value,
-  onChange,
-  onSubmit,
-  placeholder,
-  isThinking,
-  queuedMessages,
-  mode = 'edit',
-  slashSuggestions,
-  selectedSuggestion,
-}) => {
-  const getPlaceholder = () => {
-    if (mode === 'plan') {
-      return 'Ask for analysis and planning... (read-only mode)';
-    }
-    return placeholder || 'Type a message... (/ for commands)';
-  };
+}> = React.memo(
+  ({
+    value,
+    onChange,
+    onSubmit,
+    placeholder,
+    isThinking,
+    queuedMessages,
+    mode = "edit",
+    slashSuggestions,
+    selectedSuggestion,
+  }) => {
+    const getPlaceholder = () => {
+      if (mode === "plan") {
+        return "Ask for analysis and planning... (read-only mode)";
+      }
+      return placeholder || "Type a message... (/ for commands)";
+    };
 
-  const getModeHint = () => {
-    if (mode === 'plan') {
-      return '📋 Plan Mode: AI will analyze and plan without making changes';
-    }
-    return '✏️ Edit Mode: AI can read and modify files';
-  };
+    const getModeHint = () => {
+      if (mode === "plan") {
+        return "📋 Plan Mode: AI will analyze and plan without making changes";
+      }
+      return "✏️ Edit Mode: AI can read and modify files";
+    };
 
-  return (
-    <Box flexDirection="column" borderStyle="round" borderColor="cyan" paddingX={1} paddingY={0} marginTop={1}>
-      {/* Input header with status indicators */}
-      <Box justifyContent="space-between" paddingY={0}>
-        <Box gap={1}>
-          <Text color="cyan" bold>
-            💭 Input
-          </Text>
-          {value.startsWith('/') && (
-            <Text color="yellow">
-              (command)
+    return (
+      <Box
+        flexDirection="column"
+        borderStyle="double"
+        borderColor={isThinking ? "yellow" : "cyan"}
+        paddingX={1}
+        paddingY={0}
+        marginTop={1}
+      >
+        {/* Input header with status indicators */}
+        <Box justifyContent="space-between" paddingY={0}>
+          <Box gap={1}>
+            <Text color="cyan" bold>
+              💭 Input
             </Text>
-          )}
-        </Box>
-        <Box gap={1}>
-          {isThinking && (
-            <Text color="yellow">
-              ⚡ working
-            </Text>
-          )}
-          {queuedMessages > 0 && (
-            <Text color="magenta">
-              📬 {queuedMessages} queued
-            </Text>
-          )}
-        </Box>
-      </Box>
-
-      {/* Mode hint */}
-      <Box marginTop={0} marginBottom={1}>
-        <Text color={mode === 'plan' ? 'blue' : 'green'} dimColor>
-          {getModeHint()}
-        </Text>
-      </Box>
-
-      {/* Input field */}
-      <Box paddingY={0}>
-        <Text color="cyan" bold>❯ </Text>
-        <TextInput
-          value={value}
-          onChange={onChange}
-          onSubmit={onSubmit}
-          placeholder={getPlaceholder()}
-          showCursor={true}
-        />
-      </Box>
-
-      {/* Slash command suggestions */}
-      {slashSuggestions.length > 0 && (
-        <Box flexDirection="column" marginTop={1} paddingTop={1} borderStyle="single" borderColor="yellow">
-          <Box marginBottom={0}>
-            <Text color="yellow" bold>
-              ⚡ Suggestions ({slashSuggestions.length})
-            </Text>
+            {value.startsWith("/") && (
+              <Text color="yellow" bold>
+                ⚡ COMMAND
+              </Text>
+            )}
           </Box>
-          {slashSuggestions.slice(0, 5).map((item, index) => {
-            const badges = getSlashCommandBadges(item);
-            const isSelected = index === selectedSuggestion;
-            return (
-              <Box key={item.command} paddingLeft={1}>
-                <Text color={isSelected ? 'cyan' : 'dim'} bold={isSelected}>
-                  {isSelected ? '▶ ' : '  '}
-                  {item.command}
-                </Text>
-                {badges.length > 0 && (
-                  <Text color="dim"> [{badges.join(', ')}]</Text>
-                )}
-                <Text color="dim"> - {item.description.substring(0, 50)}{item.description.length > 50 ? '...' : ''}</Text>
-              </Box>
-            );
-          })}
-          {slashSuggestions.length > 5 && (
-            <Box paddingLeft={1}>
-              <Text color="dim">
-                ... and {slashSuggestions.length - 5} more
+          <Box gap={1}>
+            {isThinking && (
+              <Text color="yellow" bold>
+                ⏳ AI thinking...
+              </Text>
+            )}
+            {queuedMessages > 0 && (
+              <Text color="magenta" bold>
+                📬 {queuedMessages} queued
+              </Text>
+            )}
+          </Box>
+        </Box>
+
+        {/* Mode indicator with icon */}
+        <Box marginTop={0} marginBottom={1} paddingLeft={0}>
+          <Text color={mode === "plan" ? "blue" : "green"} bold>
+            {mode === "plan" ? "📋" : "✏️"} {getModeHint()}
+          </Text>
+        </Box>
+
+        {/* Input field with better prompt */}
+        <Box paddingY={0} flexDirection="row">
+          <Text color={isThinking ? "yellow" : "cyan"} bold>
+            {isThinking ? "⏸  " : "❯ "}
+          </Text>
+          <Box flexGrow={1}>
+            <TextInput
+              value={value}
+              onChange={onChange}
+              onSubmit={onSubmit}
+              placeholder={getPlaceholder()}
+              showCursor={!isThinking}
+            />
+          </Box>
+        </Box>
+
+        {/* Slash command suggestions - Improved design */}
+        {slashSuggestions.length > 0 && (
+          <Box
+            flexDirection="column"
+            marginTop={1}
+            paddingTop={0}
+            borderStyle="round"
+            borderColor="yellow"
+          >
+            <Box marginBottom={0} paddingX={1} paddingY={0}>
+              <Text color="yellow" bold>
+                ⚡ Commands ({slashSuggestions.length} found)
               </Text>
             </Box>
-          )}
-          <Box marginTop={1}>
-            <Text color="dim">
-              <Text color="yellow">Tab</Text> to insert · <Text color="yellow">↑/↓</Text> to navigate
-            </Text>
+            <Box flexDirection="column" marginTop={0}>
+              {slashSuggestions.slice(0, 5).map((item, index) => {
+                const badges = getSlashCommandBadges(item);
+                const isSelected = index === selectedSuggestion;
+                return (
+                  <Box
+                    key={item.command}
+                    paddingX={1}
+                    paddingY={0}
+                    borderStyle={isSelected ? "single" : undefined}
+                    borderColor={isSelected ? "cyan" : undefined}
+                  >
+                    <Box flexDirection="row" gap={1}>
+                      <Text
+                        color={isSelected ? "cyan" : "yellow"}
+                        bold={isSelected}
+                      >
+                        {isSelected ? "▶" : "●"}
+                      </Text>
+                      <Text
+                        color={isSelected ? "cyan" : "white"}
+                        bold={isSelected}
+                      >
+                        {item.command}
+                      </Text>
+                      {badges.length > 0 && (
+                        <Text color="magenta" dimColor>
+                          {" "}
+                          [{badges.join(", ")}]
+                        </Text>
+                      )}
+                    </Box>
+                    <Box paddingLeft={2}>
+                      <Text color="gray" dimColor>
+                        {item.description.substring(0, 60)}
+                        {item.description.length > 60 ? "..." : ""}
+                      </Text>
+                    </Box>
+                  </Box>
+                );
+              })}
+              {slashSuggestions.length > 5 && (
+                <Box paddingX={1}>
+                  <Text color="dim" italic>
+                    ... and {slashSuggestions.length - 5} more commands
+                  </Text>
+                </Box>
+              )}
+            </Box>
+            <Box
+              marginTop={0}
+              paddingX={1}
+              paddingTop={0}
+              borderStyle="single"
+              borderColor="dim"
+            >
+              <Text color="dim">
+                <Text color="yellow" bold>
+                  Tab
+                </Text>{" "}
+                insert ·{" "}
+                <Text color="yellow" bold>
+                  ↑↓
+                </Text>{" "}
+                navigate ·{" "}
+                <Text color="yellow" bold>
+                  Enter
+                </Text>{" "}
+                execute
+              </Text>
+            </Box>
           </Box>
-        </Box>
-      )}
+        )}
 
-      {/* Keyboard shortcuts */}
-      <Box marginTop={1} paddingTop={1} borderStyle="single" borderColor="dim">
-        <Text color="dim">
-          <Text color="cyan">Enter</Text> send · <Text color="cyan">ESC</Text> interrupt · <Text color="cyan">Ctrl+P</Text> mode · <Text color="cyan">Ctrl+C</Text> exit
-        </Text>
+        {/* Keyboard shortcuts - Enhanced */}
+        <Box
+          marginTop={1}
+          paddingTop={0}
+          borderStyle="single"
+          borderColor="dim"
+        >
+          <Text color="gray">
+            <Text color="cyan" bold>
+              Enter
+            </Text>{" "}
+            <Text color="dim">send</Text> │
+            <Text color="yellow" bold>
+              {" "}
+              ESC
+            </Text>{" "}
+            <Text color="dim">interrupt</Text> │
+            <Text color="green" bold>
+              {" "}
+              Ctrl+P
+            </Text>{" "}
+            <Text color="dim">toggle mode</Text> │
+            <Text color="red" bold>
+              {" "}
+              Ctrl+C
+            </Text>{" "}
+            <Text color="dim">exit</Text>
+          </Text>
+        </Box>
       </Box>
-    </Box>
-  );
-};
+    );
+  }
+);
 
 // Status Bar Component
-const StatusBar: React.FC<{ status?: string }> = ({ status }) => {
+const StatusBar: React.FC<{ status?: string }> = React.memo(({ status }) => {
   if (!status) return null;
 
   return (
@@ -481,7 +626,7 @@ const StatusBar: React.FC<{ status?: string }> = ({ status }) => {
       <Text color="yellow"> {status}</Text>
     </Box>
   );
-};
+});
 
 interface ScreenReaderLayoutProps {
   provider?: string;
@@ -561,10 +706,7 @@ const ScreenReaderLayout: React.FC<ScreenReaderLayoutProps> = ({
       )}
       {tools && tools.length > 0 && (
         <Text>
-          Active tools:{" "}
-          {tools
-            .map((tool) => tool.name ?? "tool")
-            .join(", ")}
+          Active tools: {tools.map((tool) => tool.name ?? "tool").join(", ")}
         </Text>
       )}
       {workflowStages && workflowStages.length > 0 && (
@@ -582,12 +724,14 @@ const ScreenReaderLayout: React.FC<ScreenReaderLayoutProps> = ({
           <Text>Plan: {plan.title}</Text>
           {plan.tasks.slice(0, 5).map((task, index) => (
             <Text key={task.id}>
-              {index + 1}. {task.description} - {describePlanStatus(task.status)}
+              {index + 1}. {task.description} -{" "}
+              {describePlanStatus(task.status)}
             </Text>
           ))}
           {plan.tasks.length > 5 && (
             <Text color="dim">
-              +{plan.tasks.length - 5} more task{plan.tasks.length - 5 === 1 ? "" : "s"}
+              +{plan.tasks.length - 5} more task
+              {plan.tasks.length - 5 === 1 ? "" : "s"}
             </Text>
           )}
         </Box>
@@ -667,10 +811,12 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   timelineEvents,
   plan,
 }) => {
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState("");
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
-  const [internalMode, setInternalMode] = useState<Mode>('edit');
-  const [slashSuggestions, setSlashSuggestions] = useState<SlashCommandListEntry[]>([]);
+  const [internalMode, setInternalMode] = useState<Mode>("edit");
+  const [slashSuggestions, setSlashSuggestions] = useState<
+    SlashCommandListEntry[]
+  >([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const { exit } = useApp();
   const slashCommandEntries = useMemo(() => getAllCommands(), []);
@@ -682,7 +828,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const mode = externalMode !== undefined ? externalMode : internalMode;
 
   const toggleMode = useCallback(() => {
-    const newMode: Mode = mode === 'edit' ? 'plan' : 'edit';
+    const newMode: Mode = mode === "edit" ? "plan" : "edit";
 
     if (onModeChange) {
       onModeChange(newMode);
@@ -699,24 +845,23 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     setSelectedSuggestion(0);
   }, []);
 
-  const updateSlashSuggestions = useCallback(
+  const updateSlashSuggestionsImmediate = useCallback(
     (value: string) => {
       const trimmedLeading = value.trimStart();
 
-      if (!trimmedLeading.startsWith('/')) {
+      if (!trimmedLeading.startsWith("/")) {
         clearSlashSuggestions();
         return;
       }
 
-      const firstSpace = trimmedLeading.indexOf(' ');
+      const firstSpace = trimmedLeading.indexOf(" ");
       const commandToken =
-        firstSpace === -1 ? trimmedLeading : trimmedLeading.slice(0, firstSpace);
+        firstSpace === -1
+          ? trimmedLeading
+          : trimmedLeading.slice(0, firstSpace);
       const hasArguments =
         firstSpace !== -1 &&
-        trimmedLeading
-          .slice(firstSpace + 1)
-          .trim()
-          .length > 0;
+        trimmedLeading.slice(firstSpace + 1).trim().length > 0;
 
       if (hasArguments) {
         clearSlashSuggestions();
@@ -725,7 +870,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
       const normalized = commandToken.toLowerCase();
       const options =
-        commandToken === '/'
+        commandToken === "/"
           ? slashCommandEntries
           : slashCommandEntries.filter((entry) =>
               entry.command.toLowerCase().startsWith(normalized)
@@ -737,11 +882,15 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       }
 
       setSlashSuggestions(options);
-      setSelectedSuggestion((prev) =>
-        prev < options.length ? prev : 0
-      );
+      setSelectedSuggestion((prev) => (prev < options.length ? prev : 0));
     },
     [clearSlashSuggestions, slashCommandEntries]
+  );
+
+  // Debounce slash suggestions to prevent lag with 500+ commands
+  const updateSlashSuggestions = useMemo(
+    () => debounce(updateSlashSuggestionsImmediate, { delay: 150 }),
+    [updateSlashSuggestionsImmediate]
   );
 
   const handleInputChange = useCallback(
@@ -770,13 +919,13 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   );
 
   const applySlashSuggestion = useCallback(
-    (mode: 'insert' | 'send' = 'insert') => {
+    (mode: "insert" | "send" = "insert") => {
       if (slashSuggestions.length === 0) return;
       const suggestion = slashSuggestions[selectedSuggestion];
 
-      if (mode === 'send') {
+      if (mode === "send") {
         clearSlashSuggestions();
-        handleInputChange('');
+        handleInputChange("");
         sendMessage(suggestion.command);
         return;
       }
@@ -796,47 +945,54 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const hasSlashSuggestions = slashSuggestions.length > 0;
 
   // Handle keyboard shortcuts
+  // Note: We keep isActive=true but only handle global shortcuts, not text input
+  // TextInput component handles actual typing to prevent double character input
   useInput((inputKey, key) => {
-    if (key.ctrl && inputKey === 'c') {
+    // Global shortcuts that should always work
+    if (key.ctrl && inputKey === "c") {
       onExit?.();
       exit();
       return;
     }
-    if (key.ctrl && inputKey === 'p') {
+    if (key.ctrl && inputKey === "p") {
       // Toggle between plan and edit mode
       toggleMode();
       return;
     }
+
+    // ESC key behavior:
+    // 1. If there are slash suggestions, clear them first
+    // 2. If agent is thinking, interrupt it
+    // This prevents ambiguity - ESC clears UI state before interrupting
     if (key.escape) {
-      // Interrupt agent with ESC key
-      if (isThinking && onInterrupt) {
-        onInterrupt();
-      }
       if (hasSlashSuggestions) {
         clearSlashSuggestions();
+        return;
       }
-      return;
+      if (isThinking && onInterrupt) {
+        onInterrupt();
+        return;
+      }
     }
-    if (key.ctrl && inputKey === 'l') {
+    if (key.ctrl && inputKey === "l") {
       // Clear screen (handled by parent)
       return;
     }
 
     if (hasSlashSuggestions) {
       if (key.tab) {
-        applySlashSuggestion('insert');
+        applySlashSuggestion("insert");
         return;
       }
       if (key.upArrow) {
         setSelectedSuggestion(
-          (prev) => (prev - 1 + slashSuggestions.length) % slashSuggestions.length
+          (prev) =>
+            (prev - 1 + slashSuggestions.length) % slashSuggestions.length
         );
         return;
       }
       if (key.downArrow) {
-        setSelectedSuggestion(
-          (prev) => (prev + 1) % slashSuggestions.length
-        );
+        setSelectedSuggestion((prev) => (prev + 1) % slashSuggestions.length);
         return;
       }
     }
@@ -866,17 +1022,17 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
 
-    const commandToken = trimmed.split(/\s+/)[0] ?? '';
+    const commandToken = trimmed.split(/\s+/)[0] ?? "";
     const suggestion = slashSuggestions[selectedSuggestion];
     const shouldApplySlash =
       hasSlashSuggestions &&
-      commandToken.startsWith('/') &&
+      commandToken.startsWith("/") &&
       trimmed === commandToken &&
       suggestion &&
       suggestion.command.toLowerCase().startsWith(commandToken.toLowerCase());
 
     if (shouldApplySlash) {
-      applySlashSuggestion('send');
+      applySlashSuggestion("send");
       return;
     }
 
@@ -885,13 +1041,13 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     }
 
     if (isThinking) {
-      handleInputChange('');
+      handleInputChange("");
       sendMessage(trimmed);
       return;
     }
 
     sendMessage(trimmed);
-    handleInputChange('');
+    handleInputChange("");
   }, [
     applySlashSuggestion,
     handleInputChange,
@@ -926,7 +1082,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     if (!virtualizeHistory) {
       return { visibleMessages: messages, hiddenCount: 0 };
     }
-    if (!Number.isFinite(maxVisibleMessages) || messages.length <= maxVisibleMessages) {
+    if (
+      !Number.isFinite(maxVisibleMessages) ||
+      messages.length <= maxVisibleMessages
+    ) {
       return { visibleMessages: messages, hiddenCount: 0 };
     }
     return {
@@ -937,11 +1096,11 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
   const scrollWindowSize = Math.max(
     1,
-    Math.min(visibleMessages.length, terminalHeight * 3),
+    Math.min(visibleMessages.length, terminalHeight * 3)
   );
   const maxScrollOffset = Math.max(
     0,
-    Math.max(0, visibleMessages.length - scrollWindowSize),
+    Math.max(0, visibleMessages.length - scrollWindowSize)
   );
 
   useEffect(() => {
@@ -950,7 +1109,12 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       return;
     }
     setScrollOffset((prev) => Math.max(0, Math.min(prev, maxScrollOffset)));
-  }, [virtualizeHistory, scrollAnchor, maxScrollOffset, visibleMessages.length]);
+  }, [
+    virtualizeHistory,
+    scrollAnchor,
+    maxScrollOffset,
+    visibleMessages.length,
+  ]);
 
   useEffect(() => {
     if (!virtualizeHistory) {
@@ -964,10 +1128,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       if (!virtualizeHistory) return;
       setScrollAnchor("manual");
       setScrollOffset((prev) =>
-        Math.max(0, Math.min(prev + delta, maxScrollOffset)),
+        Math.max(0, Math.min(prev + delta, maxScrollOffset))
       );
     },
-    [virtualizeHistory, maxScrollOffset],
+    [virtualizeHistory, maxScrollOffset]
   );
 
   const jumpToLatest = useCallback(() => {
@@ -986,13 +1150,13 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         isThinking={isThinking}
         tokens={tokens}
         cost={cost}
-      hiddenCount={hiddenCount}
-      totalMessages={messages.length}
-      tools={tools}
-      workflowStages={workflowStages}
-      messages={visibleMessages}
-      plan={plan}
-    >
+        hiddenCount={hiddenCount}
+        totalMessages={messages.length}
+        tools={tools}
+        workflowStages={workflowStages}
+        messages={visibleMessages}
+        plan={plan}
+      >
         <InputArea
           value={input}
           onChange={handleInputChange}
@@ -1067,7 +1231,8 @@ export const MeerChat: React.FC<MeerChatProps> = ({
             {hiddenCount > 0 && (
               <Box marginBottom={1} marginLeft={2}>
                 <Text color="gray" dimColor>
-                  Showing last {visibleMessages.length} of {messages.length} messages. Older entries hidden for performance.
+                  Showing last {visibleMessages.length} of {messages.length}{" "}
+                  messages. Older entries hidden for performance.
                 </Text>
               </Box>
             )}
@@ -1101,7 +1266,8 @@ export const MeerChat: React.FC<MeerChatProps> = ({
             {virtualizeHistory && scrollAnchor === "manual" && (
               <Box marginLeft={2}>
                 <Text color="gray" dimColor>
-                  Manual scroll active — Ctrl+E to jump to latest, Ctrl+A for oldest.
+                  Manual scroll active — Ctrl+E to jump to latest, Ctrl+A for
+                  oldest.
                 </Text>
               </Box>
             )}
@@ -1130,13 +1296,16 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 };
 
 // Render function for standalone use
-export function renderMeerChat(props: Omit<MeerChatProps, 'messages'>) {
+export function renderMeerChat(props: Omit<MeerChatProps, "messages">) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isThinking, setIsThinking] = useState(false);
 
   const handleMessage = async (message: string) => {
     // Add user message
-    setMessages((prev) => [...prev, { role: 'user', content: message, timestamp: Date.now() }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: message, timestamp: Date.now() },
+    ]);
     setIsThinking(true);
 
     try {
