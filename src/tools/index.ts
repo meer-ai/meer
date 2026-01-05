@@ -2368,7 +2368,7 @@ export function gitBranch(
 
     for (const line of lines) {
       const isCurrent = line.startsWith("*");
-      const branchName = line.replace("*", "").trim();
+      const branchName = isCurrent ? line.slice(1).trim() : line.trim();
 
       if (isCurrent) {
         result += `${chalk.green("*")} ${chalk.green(branchName)} ${chalk.gray("(current)")}\n`;
