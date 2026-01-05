@@ -310,6 +310,19 @@ export class InkChatAdapter {
 
   finishAssistantMessage(): void {
     this.isThinking = false;
+
+    // If the assistant message is still empty (e.g., provider only streamed tool
+    // calls or nothing at all), fill it with a friendly status so the UI isn't
+    // blank.
+    if (this.currentAssistantIndex !== null) {
+      const msg = this.messages[this.currentAssistantIndex];
+      if (msg && (!msg.content || msg.content.trim().length === 0)) {
+        msg.content =
+          this.statusMessage?.trim() ||
+          "Waiting for user input…";
+      }
+    }
+
     this.currentAssistantIndex = null;
     // Cancel any pending debounced updates and render final state immediately
     this.debouncedUpdateUI.cancel();
@@ -361,9 +374,34 @@ export class InkChatAdapter {
     options: Array<{ label: string; value: T }>,
     defaultValue: T
   ): Promise<T> {
-    // For now, just append as system message and return default
-    // TODO: Implement proper choice UI with ink-select-input
-    this.appendSystemMessage(`${message}\nOptions: ${options.map(o => o.label).join(', ')}`);
+    // Render a lightweight inline choice prompt in the transcript, then wait for
+    // the user to type a selection (by label or value). Falls back to the
+    // provided defaultValue on empty input.
+    const choiceLine = options.map(o => `${o.label} [${o.value}]`).join(' | ');
+    this.appendSystemMessage(`${message}\n${choiceLine}\nEnter choice (default: ${defaultValue}):`);
+
+    const raw = await this.prompt();
+    const input = raw.trim();
+    if (!input) return defaultValue;
+
+    const normalized = input.toLowerCase();
+    const match =
+      options.find(o => o.value.toLowerCase() === normalized) ||
+      options.find(o => o.label.toLowerCase() === normalized);
+
+    if (match) {
+      return match.value;
+    }
+
+    // If the user typed a partial prefix, accept the first matching prefix.
+    const prefixMatch =
+      options.find(o => o.value.toLowerCase().startsWith(normalized)) ||
+      options.find(o => o.label.toLowerCase().startsWith(normalized));
+    if (prefixMatch) {
+      return prefixMatch.value;
+    }
+
+    // Unrecognized input: return default to stay safe.
     return defaultValue;
   }
 

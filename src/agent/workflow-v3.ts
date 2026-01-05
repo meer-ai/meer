@@ -245,8 +245,9 @@ export class AgentWorkflowV3 {
 
         // Get LLM response with streaming
         const response = await this.streamResponse();
-        
-        if (!response) {
+        const displayResponse = this.filterXML(response).trim();
+
+        if (!response || !response.trim()) {
           this.updateStatus("Received empty response, stopping");
           break;
         }
@@ -255,13 +256,15 @@ export class AgentWorkflowV3 {
 
         // Check if we should stop (AI asking questions or completed)
         if (this.shouldStopAfterResponse(response)) {
-          this.messages.push({ role: "assistant", content: response });
+          const assistantContent =
+            displayResponse || "Waiting for your input…";
+          this.messages.push({ role: "assistant", content: assistantContent });
           
           if (this.enableMemory) {
             memory.addToSession({
               timestamp: Date.now(),
               role: "assistant",
-              content: response,
+              content: assistantContent,
               metadata: { provider: this.providerType, model: this.model },
             });
           }
@@ -275,13 +278,15 @@ export class AgentWorkflowV3 {
 
         if (toolCalls.length === 0) {
           // No tools, we're done
-          this.messages.push({ role: "assistant", content: response });
+          const assistantContent =
+            displayResponse || "Ready for your next command.";
+          this.messages.push({ role: "assistant", content: assistantContent });
           
           if (this.enableMemory) {
             memory.addToSession({
               timestamp: Date.now(),
               role: "assistant",
-              content: response,
+              content: assistantContent,
               metadata: { provider: this.providerType, model: this.model },
             });
           }
@@ -294,7 +299,9 @@ export class AgentWorkflowV3 {
         const toolResults = await this.executeTools(toolCalls);
 
         // Add tool results to conversation
-        this.messages.push({ role: "assistant", content: response });
+        const assistantContent =
+          displayResponse || "Working with tools…";
+        this.messages.push({ role: "assistant", content: assistantContent });
         this.messages.push({
           role: "user",
           content: `Tool Results:\n\n${toolResults.join("\n\n")}`
@@ -393,6 +400,14 @@ export class AgentWorkflowV3 {
             this.callbacks.onStreamingChunk?.(filteredChunk);
           }
         }
+      }
+
+      // If the provider streamed nothing (or only XML tool calls), emit a single
+      // fallback chunk so the UI isn't left blank.
+      if ((!streamStarted || !bufferedContent.trim()) && response.trim()) {
+        const fallbackChunk =
+          this.filterXML(response).trim() || "(executing tool calls)";
+        this.callbacks.onStreamingChunk?.(fallbackChunk);
       }
 
       // Track tokens

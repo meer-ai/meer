@@ -2107,7 +2107,14 @@ export function createCLI(): Command {
               },
               onToolEnd: () => chatUI?.clearTools(),
               onStatusChange: (status) => chatUI?.setStatus(status),
-              onError: (error) => chatUI?.appendSystemMessage(`❌ ${error.message}`),
+              onError: (error) => chatUI?.appendSystemMessage(`? ${error.message}`),
+              promptChoice: async (promptMessage, choices, defaultChoice) => {
+                if (chatUI) {
+                  const fallback = defaultChoice ?? choices[0]?.value ?? "";
+                  return chatUI.promptChoice(promptMessage, choices, fallback);
+                }
+                return defaultChoice ?? choices[0]?.value ?? "";
+              },
             });
 
         await agent.initialize();

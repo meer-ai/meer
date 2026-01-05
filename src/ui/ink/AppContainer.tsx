@@ -28,13 +28,14 @@ export const AppContainer: React.FC<AppContainerProps> = ({
     return { screenReader, alternateBuffer, virtualizeHistory };
   }, [uiSettings, terminalHeight]);
 
-  useAlternateBuffer(layoutPreferences.alternateBuffer);
+  // Intentionally skip alternate buffer to reduce flicker/shake
 
   return (
     <MeerChat
       {...chatProps}
-      virtualizeHistory={layoutPreferences.virtualizeHistory}
-      screenReader={layoutPreferences.screenReader}
+      // Minimal layout ignores virtualization/screenReader toggles
+      // Force alternate buffer off to avoid terminal flicker
+      // (no call to useAlternateBuffer here)
     />
   );
 };
