@@ -33,9 +33,6 @@ export const AppContainer: React.FC<AppContainerProps> = ({
   return (
     <MeerChat
       {...chatProps}
-      // Minimal layout ignores virtualization/screenReader toggles
-      // Force alternate buffer off to avoid terminal flicker
-      // (no call to useAlternateBuffer here)
     />
   );
 };

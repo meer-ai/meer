@@ -24,8 +24,10 @@ import {
   type AgentToolEvent,
 } from "../../agent/eventBus.js";
 import { debounce } from "./utils/debounce.js";
+import { BUILT_IN_SLASH_COMMANDS } from "../../slash/builtins.js";
 
 interface Message {
+  id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolName?: string;
@@ -178,6 +180,7 @@ export class InkChatAdapter {
         timelineEvents: this.timelineEvents,
         plan: this.plan ?? undefined,
         uiSettings: activeSettings,
+        slashSuggestions: BUILT_IN_SLASH_COMMANDS.map(c => ({ name: c.command.slice(1), description: c.description })),
       }),
     );
   }
@@ -238,6 +241,7 @@ export class InkChatAdapter {
         plan: this.plan ?? undefined,
         timelineEvents: this.timelineEvents,
         uiSettings: activeSettings,
+        slashSuggestions: BUILT_IN_SLASH_COMMANDS.map(c => ({ name: c.command.slice(1), description: c.description })),
       }),
     );
   }
@@ -278,7 +282,7 @@ export class InkChatAdapter {
 
   appendUserMessage(content: string): void {
     if (!content.trim()) return;
-    this.messages.push({ role: 'user', content, timestamp: Date.now() });
+    this.messages.push({ id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, role: 'user', content, timestamp: Date.now() });
     this.messageCount++;
     this.updateUI();
   }
@@ -286,6 +290,7 @@ export class InkChatAdapter {
   startAssistantMessage(): void {
     this.isThinking = true;
     this.currentAssistantIndex = this.messages.push({
+      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
@@ -330,12 +335,13 @@ export class InkChatAdapter {
   }
 
   appendSystemMessage(content: string): void {
-    this.messages.push({ role: 'system', content, timestamp: Date.now() });
+    this.messages.push({ id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, role: 'system', content, timestamp: Date.now() });
     this.updateUI();
   }
 
   appendToolMessage(toolName: string, content: string): void {
     this.messages.push({
+      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role: 'tool',
       content,
       toolName,
@@ -434,25 +440,25 @@ export class InkChatAdapter {
         writer: TWriter,
         collector: (chunk: string) => void
       ): TWriter =>
-      ((chunk: any, encoding?: any, callback?: any) => {
-        const normalizedEncoding =
-          typeof encoding === 'string' ? (encoding as BufferEncoding) : undefined;
-        const normalized =
-          typeof chunk === 'string'
-            ? chunk
-            : Buffer.isBuffer(chunk)
-            ? chunk.toString(
-                normalizedEncoding ?? 'utf8'
-              )
-            : String(chunk);
+        ((chunk: any, encoding?: any, callback?: any) => {
+          const normalizedEncoding =
+            typeof encoding === 'string' ? (encoding as BufferEncoding) : undefined;
+          const normalized =
+            typeof chunk === 'string'
+              ? chunk
+              : Buffer.isBuffer(chunk)
+                ? chunk.toString(
+                  normalizedEncoding ?? 'utf8'
+                )
+                : String(chunk);
 
-        collector(normalized);
-        return (writer as unknown as (...args: any[]) => boolean)(
-          chunk,
-          normalizedEncoding,
-          callback
-        );
-      }) as TWriter;
+          collector(normalized);
+          return (writer as unknown as (...args: any[]) => boolean)(
+            chunk,
+            normalizedEncoding,
+            callback
+          );
+        }) as TWriter;
 
     if (capture) {
       process.stdout.write = wrapWriter(

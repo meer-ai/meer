@@ -1,6 +1,7 @@
 /**
  * Minimal Gemini-style layout for Meer.
  * Keeps the Meer logo idea but adopts a clean header > history > input structure.
+ * Now with slash command autocomplete support.
  */
 
 import React, { useCallback, useMemo, useState } from "react";
@@ -20,6 +21,11 @@ interface Message {
   timestamp?: number;
 }
 
+export interface SlashCommandSuggestion {
+  name: string;
+  description?: string;
+}
+
 export interface MeerChatProps {
   onMessage: (message: string) => void;
   messages: Message[];
@@ -33,10 +39,17 @@ export interface MeerChatProps {
   mode?: Mode;
   onModeChange?: (mode: Mode) => void;
   tools?: ToolCall[];
+  workflowStages?: import('./components/workflow/index.js').WorkflowStage[];
+  currentIteration?: number;
+  maxIterations?: number;
   tokens?: { used: number; limit?: number };
   cost?: { current: number; limit?: number };
   messageCount?: number;
   sessionUptime?: number;
+  timelineEvents?: any[];
+  plan?: import('../../plan/types.js').Plan | null;
+  slashSuggestions?: SlashCommandSuggestion[];
+  onSlashSelect?: (command: string) => void;
 }
 
 const Hero = ({
@@ -47,17 +60,6 @@ const Hero = ({
   model?: string;
 }) => (
   <Box flexDirection="column" gap={0} marginBottom={1}>
-    {/* <Box gap={1} alignItems="center">
-      <Text color="cyan">Gemini-style workflow</Text>
-      <Text color="dim">·</Text>
-      <Text color="dim">{provider || "provider"}</Text>
-      {model && (
-        <>
-          <Text color="dim">/</Text>
-          <Text color="dim">{model}</Text>
-        </>
-      )}
-    </Box> */}
     <Text color="dim">
       Tips: Ask questions, edit files, or run commands. Use /help for commands.
     </Text>
@@ -69,10 +71,10 @@ const MessageItem: React.FC<{ message: Message }> = ({ message }) => {
     message.role === "assistant"
       ? "cyan"
       : message.role === "user"
-      ? "green"
-      : message.role === "tool"
-      ? "magenta"
-      : "dim";
+        ? "green"
+        : message.role === "tool"
+          ? "magenta"
+          : "dim";
   return (
     <Box gap={1}>
       <Text color={color}>{message.role === "assistant" ? "Meer AI" : message.role}</Text>
@@ -104,7 +106,7 @@ const History = ({
       gap={0}
     >
       <Static items={staticMessages}>
-        {(item) => <MessageItem message={item} />}
+        {(item, index) => <MessageItem key={item.timestamp ?? index} message={item} />}
       </Static>
       {liveMessage && <MessageItem message={liveMessage} />}
       {isThinking && (
@@ -115,6 +117,48 @@ const History = ({
           <Text color="cyan">{status || "Thinking..."}</Text>
         </Box>
       )}
+    </Box>
+  );
+};
+
+const SlashSuggestionsOverlay: React.FC<{
+  suggestions: SlashCommandSuggestion[];
+  selectedIndex: number;
+}> = ({ suggestions, selectedIndex }) => {
+  if (suggestions.length === 0) return null;
+
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle="round"
+      borderColor="yellow"
+      paddingX={1}
+      paddingY={0}
+      marginBottom={1}
+    >
+      <Box gap={1} marginBottom={0}>
+        <Text color="yellow" bold>⚡ Commands</Text>
+        <Text color="dim">({suggestions.length} found)</Text>
+      </Box>
+      {suggestions.slice(0, 8).map((cmd, idx) => (
+        <Box key={cmd.name} gap={1}>
+          <Text color={idx === selectedIndex ? "cyan" : "dim"}>
+            {idx === selectedIndex ? "❯" : " "}
+          </Text>
+          <Text color={idx === selectedIndex ? "cyan" : "white"} bold={idx === selectedIndex}>
+            /{cmd.name}
+          </Text>
+          {cmd.description && (
+            <Text color="dim">{cmd.description}</Text>
+          )}
+        </Box>
+      ))}
+      {suggestions.length > 8 && (
+        <Text color="dim" italic>... and {suggestions.length - 8} more</Text>
+      )}
+      <Box marginTop={0}>
+        <Text color="dim">↑↓ navigate · Enter select · Esc cancel</Text>
+      </Box>
     </Box>
   );
 };
@@ -170,22 +214,71 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   sessionUptime,
   timelineEvents,
   plan,
+  slashSuggestions = [],
+  onSlashSelect,
 }) => {
   const [input, setInput] = useState("");
+  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+
+  // Filter suggestions based on input
+  const filteredSuggestions = useMemo(() => {
+    if (!input.startsWith("/")) return [];
+    const query = input.slice(1).toLowerCase();
+    return slashSuggestions.filter(cmd =>
+      cmd.name.toLowerCase().includes(query)
+    );
+  }, [input, slashSuggestions]);
+
+  const handleChange = useCallback((value: string) => {
+    setInput(value);
+    setSelectedSuggestion(0); // Reset selection when input changes
+  }, []);
 
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed) return;
+
+    // If showing suggestions and one is selected, use that
+    if (filteredSuggestions.length > 0 && input.startsWith("/")) {
+      const selected = filteredSuggestions[selectedSuggestion];
+      if (selected && onSlashSelect) {
+        onSlashSelect(selected.name);
+        setInput("");
+        return;
+      }
+    }
+
     onMessage(trimmed);
     setInput("");
-  }, [input, onMessage]);
+  }, [input, filteredSuggestions, selectedSuggestion, onMessage, onSlashSelect]);
 
   useInput((inputKey, key) => {
     if (key.ctrl && inputKey === "p") {
       onModeChange?.(mode === "edit" ? "plan" : "edit");
     }
-    if (key.escape && isThinking) {
-      // Let caller handle interrupt if wired
+
+    // Navigate slash suggestions
+    if (filteredSuggestions.length > 0) {
+      if (key.upArrow) {
+        setSelectedSuggestion(prev =>
+          (prev - 1 + filteredSuggestions.length) % filteredSuggestions.length
+        );
+      }
+      if (key.downArrow) {
+        setSelectedSuggestion(prev =>
+          (prev + 1) % filteredSuggestions.length
+        );
+      }
+      if (key.tab) {
+        // Tab complete the selected suggestion
+        const selected = filteredSuggestions[selectedSuggestion];
+        if (selected) {
+          setInput(`/${selected.name} `);
+        }
+      }
+      if (key.escape) {
+        setInput("");
+      }
     }
   });
 
@@ -208,7 +301,15 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       {/* Keep the middle clean: history only */}
       <History messages={messages} isThinking={isThinking} status={status} />
 
-      <InputBar value={input} onChange={setInput} onSubmit={handleSubmit} cwd={cwd} mode={mode} />
+      {/* Slash command suggestions overlay */}
+      {filteredSuggestions.length > 0 && (
+        <SlashSuggestionsOverlay
+          suggestions={filteredSuggestions}
+          selectedIndex={selectedSuggestion}
+        />
+      )}
+
+      <InputBar value={input} onChange={handleChange} onSubmit={handleSubmit} cwd={cwd} mode={mode} />
     </Box>
   );
 };
