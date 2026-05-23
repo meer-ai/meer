@@ -238,11 +238,11 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     const trimmed = input.trim();
     if (!trimmed) return;
 
-    // If showing suggestions and one is selected, use that
+    // If showing suggestions and one is selected, expand to the full command
     if (filteredSuggestions.length > 0 && input.startsWith("/")) {
       const selected = filteredSuggestions[selectedSuggestion];
-      if (selected && onSlashSelect) {
-        onSlashSelect(selected.name);
+      if (selected) {
+        onMessage("/" + selected.name);
         setInput("");
         return;
       }
@@ -250,7 +250,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
     onMessage(trimmed);
     setInput("");
-  }, [input, filteredSuggestions, selectedSuggestion, onMessage, onSlashSelect]);
+  }, [input, filteredSuggestions, selectedSuggestion, onMessage]);
 
   useInput((inputKey, key) => {
     if (key.ctrl && inputKey === "p") {

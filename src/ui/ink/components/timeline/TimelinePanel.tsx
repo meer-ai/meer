@@ -68,13 +68,29 @@ const TimelineRow: React.FC<{ event: UITimelineEvent }> = React.memo(({ event })
 
 export const TimelinePanel: React.FC<TimelinePanelProps> = React.memo(({
   events,
-  maxEvents = 8,
+  maxEvents = 5,
 }) => {
   if (!events || events.length === 0) {
     return null;
   }
 
-  const visible = events.slice(-Math.max(1, maxEvents));
+  const latestTaskEvents = new Map<string, UITimelineEvent>();
+  const importantLogs: UITimelineEvent[] = [];
+
+  for (const event of events) {
+    if (event.type === "task") {
+      latestTaskEvents.set(event.id, event);
+      continue;
+    }
+
+    if (event.level === "warn" || event.level === "error") {
+      importantLogs.push(event);
+    }
+  }
+
+  const visible = [...latestTaskEvents.values(), ...importantLogs]
+    .sort((left, right) => left.timestamp - right.timestamp)
+    .slice(-Math.max(1, maxEvents));
 
   return (
     <Box

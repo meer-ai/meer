@@ -8,28 +8,20 @@ import React, {
   useEffect,
   useCallback,
   useMemo,
-  useRef,
 } from "react";
-import { Box, Text, useInput, useApp, render } from "ink";
+import { Box, Text, useInput, useApp } from "ink";
 import Spinner from "ink-spinner";
 import TextInput from "ink-text-input";
 import SelectInput from "ink-select-input";
-import Gradient from "ink-gradient";
-import BigText from "ink-big-text";
 import {
   getAllCommands,
   type SlashCommandListEntry,
 } from "../../slash/registry.js";
 import { getSlashCommandBadges } from "../../slash/utils.js";
 import type { Plan } from "../../plan/types.js";
-import { StatusHeader } from "./components/core/index.js";
 import { ToolExecutionPanel, type ToolCall } from "./components/tools/index.js";
-import {
-  WorkflowProgress,
-  type WorkflowStage,
-} from "./components/workflow/index.js";
 import { PlanPanel } from "./components/plan/index.js";
-import { TimelinePanel } from "./components/timeline/index.js";
+import type { WorkflowStage } from "./components/workflow/index.js";
 import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
 import type { Message } from "./contexts/ChatContext.js";
 import { debounce } from "./utils/debounce.js";
@@ -41,6 +33,7 @@ import { debounce } from "./utils/debounce.js";
 export interface MeerChatV2Props {
   onMessage: (message: string) => void;
   messages: Message[];
+  draftAssistant?: Message;
   isThinking: boolean;
   status?: string;
   provider?: string;
@@ -68,6 +61,13 @@ export interface MeerChatV2Props {
   screenReader?: boolean;
   timelineEvents?: any[];
   plan?: Plan | null;
+  slashSuggestions?: SlashCommandListEntry[];
+  choicePrompt?: {
+    message: string;
+    options: Array<{ label: string; value: string }>;
+    defaultValue: string;
+  };
+  onChoiceSelect?: (value: string) => void;
 }
 
 // ============================================================================
@@ -177,8 +177,8 @@ const ToolCallView: React.FC<{ toolName: string; content: string }> =
   );
 
 // Message Component - Optimized with memo
-const MessageView: React.FC<{ message: Message; isLast: boolean }> = React.memo(
-  ({ message, isLast }) => {
+const MessageView: React.FC<{ message: Message; isDraft?: boolean }> = React.memo(
+  ({ message, isDraft = false }) => {
     const parseContent = (content: string) => {
       const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
       const parts: Array<{
@@ -224,13 +224,13 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = React.memo(
     const getIcon = () => {
       switch (message.role) {
         case "user":
-          return "👤";
+          return "You";
         case "assistant":
-          return "🌊";
+          return "Meer";
         case "system":
-          return "ℹ️";
+          return "System";
         default:
-          return "•";
+          return message.toolName || "Tool";
       }
     };
 
@@ -252,7 +252,7 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = React.memo(
         case "user":
           return "You";
         case "assistant":
-          return "Meer AI";
+          return "Meer";
         case "system":
           return "System";
         default:
@@ -260,38 +260,25 @@ const MessageView: React.FC<{ message: Message; isLast: boolean }> = React.memo(
       }
     };
 
-    const getAccentBar = () => {
-      switch (message.role) {
-        case "user":
-          return "▎";
-        case "assistant":
-          return "▎";
-        case "system":
-          return "▎";
-        default:
-          return "│";
-      }
-    };
-
     return (
-      <Box flexDirection="column" marginBottom={2} marginTop={1}>
+      <Box flexDirection="column" marginBottom={1}>
         <Box gap={1}>
           <Text color={getColor()} bold>
-            {getAccentBar()}
+            {getIcon()}
           </Text>
-          <Box gap={1} flexGrow={1} justifyContent="space-between">
-            <Box gap={1}>
-              <Text color={getColor()}>{getIcon()}</Text>
-              <Text color={getColor()} bold>
-                {getName()}
-              </Text>
-            </Box>
-            {message.timestamp && (
-              <Text color="dim" dimColor>
-                {formatTimestamp(message.timestamp)}
-              </Text>
-            )}
-          </Box>
+          <Text color={getColor()} bold>
+            {getName()}
+          </Text>
+          {isDraft && (
+            <Text color="dim" dimColor>
+              streaming
+            </Text>
+          )}
+          {message.timestamp && (
+            <Text color="dim" dimColor>
+              {formatTimestamp(message.timestamp)}
+            </Text>
+          )}
         </Box>
         <Box flexDirection="column" paddingLeft={2}>
           {parts.map((part, idx) =>
@@ -324,52 +311,6 @@ const formatTimestamp = (timestamp?: number): string => {
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${hours}:${minutes}`;
 };
-
-// Header Component - Memoized
-const Header: React.FC<{
-  provider?: string;
-  model?: string;
-  cwd?: string;
-  mode?: "edit" | "plan";
-}> = React.memo(({ provider, model, cwd, mode = "edit" }) => {
-  const getModeColor = () => (mode === "plan" ? "blue" : "green");
-  const getModeIcon = () => (mode === "plan" ? "📋" : "✏️");
-  const getModeLabel = () => (mode === "plan" ? "PLAN" : "EDIT");
-
-  return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-      marginBottom={1}
-    >
-      <Box justifyContent="center">
-        <Gradient name="cristal">
-          <Text bold>🌊 Meer AI</Text>
-        </Gradient>
-      </Box>
-      <Box justifyContent="space-between">
-        <Box>
-          <Text color="cyan">Provider: </Text>
-          <Text color="white">{provider || "unknown"}</Text>
-          <Text color="gray"> / </Text>
-          <Text color="white">{model || "unknown"}</Text>
-        </Box>
-        <Box>
-          <Text color={getModeColor()} bold>
-            {getModeIcon()} {getModeLabel()} MODE
-          </Text>
-        </Box>
-      </Box>
-      <Box>
-        <Text color="gray" dimColor>
-          {cwd || process.cwd()}
-        </Text>
-      </Box>
-    </Box>
-  );
-});
 
 // Thinking Indicator - Memoized
 const ThinkingIndicator: React.FC = React.memo(() => {
@@ -410,9 +351,16 @@ const InputArea: React.FC<{
   placeholder?: string;
   isThinking: boolean;
   queuedMessages: number;
+  queuedPreview: string[];
   mode?: "edit" | "plan";
   slashSuggestions: SlashCommandListEntry[];
   selectedSuggestion: number;
+  choicePrompt?: {
+    message: string;
+    options: Array<{ label: string; value: string }>;
+    defaultValue: string;
+  };
+  onChoiceSelect?: (value: string) => void;
 }> = React.memo(
   ({
     value,
@@ -421,9 +369,12 @@ const InputArea: React.FC<{
     placeholder,
     isThinking,
     queuedMessages,
+    queuedPreview,
     mode = "edit",
     slashSuggestions,
     selectedSuggestion,
+    choicePrompt,
+    onChoiceSelect,
   }) => {
     const getPlaceholder = () => {
       if (mode === "plan") {
@@ -440,48 +391,38 @@ const InputArea: React.FC<{
     };
 
     return (
-      <Box
-        flexDirection="column"
-        borderStyle="double"
-        borderColor={isThinking ? "yellow" : "cyan"}
-        paddingX={1}
-        paddingY={0}
-        marginTop={1}
-      >
-        <Box justifyContent="space-between" paddingY={0}>
-          <Box gap={1}>
-            <Text color="cyan" bold>
-              💭 Input
-            </Text>
-            {value.startsWith("/") && (
-              <Text color="yellow" bold>
-                ⚡ COMMAND
-              </Text>
+      <Box flexDirection="column" marginTop={1} paddingX={1}>
+        {queuedPreview.length > 0 && (
+          <Box flexDirection="column" marginBottom={1}>
+            <Text color="magenta">Queued</Text>
+            {queuedPreview.slice(0, 3).map((message, index) => (
+              <Box key={`${index}-${message}`} paddingLeft={2}>
+                <Text color="dim">
+                  {truncateLine(message, 90)}
+                </Text>
+              </Box>
+            ))}
+            {queuedMessages > queuedPreview.length && (
+              <Box paddingLeft={2}>
+                <Text color="dim">
+                  +{queuedMessages - queuedPreview.length} more queued message
+                  {queuedMessages - queuedPreview.length === 1 ? "" : "s"}
+                </Text>
+              </Box>
             )}
           </Box>
-          <Box gap={1}>
-            {isThinking && (
-              <Text color="yellow" bold>
-                ⏳ AI thinking...
-              </Text>
-            )}
-            {queuedMessages > 0 && (
-              <Text color="magenta" bold>
-                📬 {queuedMessages} queued
-              </Text>
-            )}
-          </Box>
-        </Box>
-
-        <Box marginTop={0} marginBottom={1} paddingLeft={0}>
-          <Text color={mode === "plan" ? "blue" : "green"} bold>
-            {mode === "plan" ? "📋" : "✏️"} {getModeHint()}
+        )}
+        <Box gap={2}>
+          <Text color={mode === "plan" ? "blue" : "green"}>
+            {mode === "plan" ? "plan" : "edit"}
           </Text>
+          {value.startsWith("/") && <Text color="yellow">command</Text>}
+          {isThinking && <Text color="yellow">thinking</Text>}
+          {queuedMessages > 0 && <Text color="magenta">queued {queuedMessages}</Text>}
         </Box>
-
-        <Box paddingY={0} flexDirection="row">
+        <Box flexDirection="row">
           <Text color={isThinking ? "yellow" : "cyan"} bold>
-            {isThinking ? "⏸ " : "❯ "}
+            {isThinking ? "…" : "›"}{" "}
           </Text>
           <Box flexGrow={1}>
             <TextInput
@@ -494,31 +435,24 @@ const InputArea: React.FC<{
           </Box>
         </Box>
 
+        {choicePrompt && onChoiceSelect && (
+          <InlineChoicePrompt
+            message={choicePrompt.message}
+            options={choicePrompt.options}
+            defaultValue={choicePrompt.defaultValue}
+            onSelect={onChoiceSelect}
+          />
+        )}
+
         {slashSuggestions.length > 0 && (
-          <Box
-            flexDirection="column"
-            marginTop={1}
-            paddingTop={0}
-            borderStyle="round"
-            borderColor="yellow"
-          >
-            <Box marginBottom={0} paddingX={1} paddingY={0}>
-              <Text color="yellow" bold>
-                ⚡ Commands ({slashSuggestions.length} found)
-              </Text>
-            </Box>
-            <Box flexDirection="column" marginTop={0}>
+          <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+            <Text color="yellow">Commands</Text>
+            <Box flexDirection="column">
               {slashSuggestions.slice(0, 5).map((item, index) => {
                 const badges = getSlashCommandBadges(item);
                 const isSelected = index === selectedSuggestion;
                 return (
-                  <Box
-                    key={item.command}
-                    paddingX={1}
-                    paddingY={0}
-                    borderStyle={isSelected ? "single" : undefined}
-                    borderColor={isSelected ? "cyan" : undefined}
-                  >
+                  <Box key={item.command}>
                     <Box flexDirection="row" gap={1}>
                       <Text
                         color={isSelected ? "cyan" : "yellow"}
@@ -549,66 +483,20 @@ const InputArea: React.FC<{
                 );
               })}
               {slashSuggestions.length > 5 && (
-                <Box paddingX={1}>
+                <Box>
                   <Text color="dim" italic>
                     ... and {slashSuggestions.length - 5} more commands
                   </Text>
                 </Box>
               )}
             </Box>
-            <Box
-              marginTop={0}
-              paddingX={1}
-              paddingTop={0}
-              borderStyle="single"
-              borderColor="dim"
-            >
-              <Text color="dim">
-                <Text color="yellow" bold>
-                  Tab
-                </Text>{" "}
-                <Text color="dim">insert · </Text>
-                <Text color="yellow" bold>
-                  ↑↓
-                </Text>{" "}
-                <Text color="dim">navigate · </Text>
-                <Text color="yellow" bold>
-                  Enter
-                </Text>{" "}
-                <Text color="dim">execute</Text>
-              </Text>
-            </Box>
+            <Text color="dim">Tab insert · ↑↓ navigate · Enter run</Text>
           </Box>
         )}
 
-        <Box
-          marginTop={1}
-          paddingTop={0}
-          borderStyle="single"
-          borderColor="dim"
-        >
-          <Text color="gray">
-            <Text color="cyan" bold>
-              Enter
-            </Text>{" "}
-            <Text color="dim">send</Text> │
-            <Text color="yellow" bold>
-              {" "}
-              ESC
-            </Text>{" "}
-            <Text color="dim">interrupt</Text> │
-            <Text color="green" bold>
-              {" "}
-              Ctrl+P
-            </Text>{" "}
-            <Text color="dim">toggle mode</Text> │
-            <Text color="red" bold>
-              {" "}
-              Ctrl+C
-            </Text>{" "}
-            <Text color="dim">exit</Text>
-          </Text>
-        </Box>
+        <Text color="dim">
+          Enter send · Esc interrupt · Ctrl+P mode · Ctrl+C exit
+        </Text>
       </Box>
     );
   },
@@ -621,11 +509,70 @@ const StatusBar: React.FC<{ status?: string }> = React.memo(({ status }) => {
   if (!status) return null;
 
   return (
-    <Box borderStyle="single" borderColor="gray" paddingX={1} marginY={1}>
+    <Box paddingX={1} marginBottom={1}>
       <Text color="yellow">
         <Spinner type="dots" />
       </Text>
       <Text color="yellow"> {status}</Text>
+    </Box>
+  );
+});
+
+const FooterBar: React.FC<{
+  provider?: string;
+  model?: string;
+  cwd?: string;
+  mode: "edit" | "plan";
+  tokens?: {
+    used: number;
+    limit?: number;
+  };
+  cost?: {
+    current: number;
+    limit?: number;
+  };
+  messageCount?: number;
+  sessionUptime?: number;
+  liveResponseVisible: boolean;
+}> = React.memo(({
+  provider,
+  model,
+  cwd,
+  mode,
+  tokens,
+  cost,
+  messageCount,
+  sessionUptime,
+  liveResponseVisible,
+}) => {
+  const location = cwd || process.cwd();
+  const modeLabel = mode === "plan" ? "plan" : "edit";
+  const tokenLabel = tokens?.used ? `${formatCompactNumber(tokens.used)} tok` : null;
+  const costLabel =
+    cost && cost.current > 0 ? `$${cost.current.toFixed(3)}` : null;
+  const uptimeLabel =
+    typeof sessionUptime === "number" ? formatDurationSeconds(sessionUptime) : null;
+
+  return (
+    <Box flexDirection="column" paddingX={1} marginTop={1}>
+      <Text color="dim">{truncateLine(location, 140)}</Text>
+      <Box justifyContent="space-between">
+        <Box gap={2} flexShrink={1}>
+          <Text color="cyan">Meer</Text>
+          <Text color="dim">{provider || "unknown"}/{model || "unknown"}</Text>
+          <Text color={mode === "plan" ? "blue" : "green"}>{modeLabel}</Text>
+          <Text color="dim">live {liveResponseVisible ? "on" : "off"}</Text>
+        </Box>
+        <Box gap={2} flexShrink={0}>
+          {tokenLabel && <Text color="dim">{tokenLabel}</Text>}
+          {costLabel && <Text color="dim">{costLabel}</Text>}
+          {typeof messageCount === "number" && <Text color="dim">{messageCount} msgs</Text>}
+          {uptimeLabel && <Text color="dim">{uptimeLabel}</Text>}
+        </Box>
+      </Box>
+      <Text color="dim">
+        Enter send · Esc interrupt · Ctrl+P mode · Ctrl+T live response · Ctrl+C exit
+      </Text>
     </Box>
   );
 });
@@ -637,6 +584,7 @@ const StatusBar: React.FC<{ status?: string }> = React.memo(({ status }) => {
 export const MeerChatV2: React.FC<MeerChatV2Props> = ({
   onMessage,
   messages,
+  draftAssistant,
   isThinking,
   status,
   provider,
@@ -658,6 +606,9 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
   screenReader = false,
   timelineEvents,
   plan,
+  slashSuggestions: providedSlashSuggestions,
+  choicePrompt,
+  onChoiceSelect,
 }) => {
   const [input, setInput] = useState("");
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
@@ -666,13 +617,21 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
     SlashCommandListEntry[]
   >([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const [showLiveResponse, setShowLiveResponse] = useState(true);
   const { exit } = useApp();
-  const slashCommandEntries = useMemo(() => getAllCommands(), []);
+  const slashCommandEntries = useMemo(
+    () =>
+      providedSlashSuggestions && providedSlashSuggestions.length > 0
+        ? providedSlashSuggestions
+        : getAllCommands(),
+    [providedSlashSuggestions]
+  );
   const isScreenReader = Boolean(screenReader);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [scrollAnchor, setScrollAnchor] = useState<"end" | "manual">("end");
 
   const mode = externalMode !== undefined ? externalMode : internalMode;
+  const queuedPreview = useMemo(() => messageQueue.slice(0, 3), [messageQueue]);
 
   const toggleMode = useCallback(() => {
     const newMode: "edit" | "plan" = mode === "edit" ? "plan" : "edit";
@@ -787,6 +746,10 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
   );
 
   const hasSlashSuggestions = slashSuggestions.length > 0;
+  const hasChoicePrompt =
+    Boolean(choicePrompt) &&
+    Boolean(onChoiceSelect) &&
+    (choicePrompt?.options.length ?? 0) > 0;
 
   // Handle keyboard shortcuts
   useInput((inputKey, key) => {
@@ -797,6 +760,10 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
     }
     if (key.ctrl && inputKey === "p") {
       toggleMode();
+      return;
+    }
+    if (key.ctrl && inputKey === "t") {
+      setShowLiveResponse((prev) => !prev);
       return;
     }
 
@@ -828,7 +795,31 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
         return;
       }
     }
-  });
+
+    if (!virtualizeHistory || hasSlashSuggestions) {
+      return;
+    }
+
+    if (key.pageUp) {
+      adjustScroll(-Math.max(1, Math.floor(scrollWindowSize * 0.75)));
+      return;
+    }
+
+    if (key.pageDown) {
+      adjustScroll(Math.max(1, Math.floor(scrollWindowSize * 0.75)));
+      return;
+    }
+
+    if (key.home) {
+      setScrollAnchor("manual");
+      setScrollOffset(0);
+      return;
+    }
+
+    if (key.end) {
+      jumpToLatest();
+    }
+  }, { isActive: !hasChoicePrompt });
 
   const handleSubmit = useCallback(() => {
     const trimmed = input.trim();
@@ -968,45 +959,26 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
         messages={visibleMessages}
         plan={plan}
       >
-        <InputArea
-          value={input}
-          onChange={handleInputChange}
-          onSubmit={handleSubmit}
-          isThinking={isThinking}
-          queuedMessages={messageQueue.length}
-          mode={mode}
-          slashSuggestions={slashSuggestions}
-          selectedSuggestion={selectedSuggestion}
-        />
-      </ScreenReaderLayout>
-    );
+      <InputArea
+        value={input}
+        onChange={handleInputChange}
+        onSubmit={handleSubmit}
+        isThinking={isThinking}
+        queuedMessages={messageQueue.length}
+        queuedPreview={queuedPreview}
+        mode={mode}
+        slashSuggestions={slashSuggestions}
+        selectedSuggestion={selectedSuggestion}
+        choicePrompt={choicePrompt}
+        onChoiceSelect={onChoiceSelect}
+      />
+    </ScreenReaderLayout>
+  );
   }
 
   return (
     <Box flexDirection="column" height="100%" width="100%">
-      <StatusHeader
-        provider={provider}
-        model={model}
-        cwd={cwd}
-        mode={mode}
-        tokens={tokens}
-        cost={cost}
-        messages={messageCount}
-        uptime={sessionUptime}
-      />
-
-      {tools && tools.length > 0 && <ToolExecutionPanel tools={tools} />}
-      {workflowStages && workflowStages.length > 0 && (
-        <WorkflowProgress
-          stages={workflowStages}
-          currentIteration={currentIteration}
-          maxIterations={maxIterations}
-        />
-      )}
       {plan && plan.tasks.length > 0 && <PlanPanel plan={plan} />}
-      {timelineEvents && timelineEvents.length > 0 && (
-        <TimelinePanel events={timelineEvents} maxEvents={8} />
-      )}
 
       {status && !isThinking && <StatusBar status={status} />}
 
@@ -1043,45 +1015,76 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
             )}
             <Box flexDirection="row">
               <Box flexGrow={1}>
+                {(() => {
+                  const displayMessages =
+                    draftAssistant && showLiveResponse
+                      ? [...visibleMessages, draftAssistant]
+                      : visibleMessages;
+                  const displayWindowSize = Math.max(
+                    1,
+                    Math.min(displayMessages.length, terminalHeight * 3)
+                  );
+
+                  return (
                 <VirtualizedList
-                  items={visibleMessages}
+                  items={displayMessages}
                   scroll={{
                     offset: scrollOffset,
-                    windowSize: scrollWindowSize,
-                    totalCount: visibleMessages.length,
+                    windowSize: displayWindowSize,
+                    totalCount: displayMessages.length,
                   }}
+                  renderGap={(position, hidden) => (
+                    <Box marginY={1} paddingLeft={2}>
+                      <Text color="dim">
+                        {position === "top"
+                          ? `${hidden} earlier message${hidden === 1 ? "" : "s"}`
+                          : `${hidden} later message${hidden === 1 ? "" : "s"}`}
+                      </Text>
+                    </Box>
+                  )}
                   renderItem={(msg, idx) => (
                     <MessageView
                       message={msg}
-                      isLast={idx === visibleMessages.length - 1}
+                      isDraft={Boolean(draftAssistant && showLiveResponse && msg.id === draftAssistant.id)}
                     />
                   )}
                 />
+                  );
+                })()}
               </Box>
-              {virtualizeHistory && visibleMessages.length > 0 && (
+              {virtualizeHistory && (visibleMessages.length > 0 || (draftAssistant && showLiveResponse)) && (
                 <Box marginLeft={1}>
+                  {(() => {
+                    const displayMessagesCount =
+                      draftAssistant && showLiveResponse
+                        ? visibleMessages.length + 1
+                        : visibleMessages.length;
+                    const displayWindowSize = Math.max(
+                      1,
+                      Math.min(displayMessagesCount, terminalHeight * 3)
+                    );
+
+                    return (
                   <ScrollIndicator
                     offset={scrollOffset}
-                    windowSize={scrollWindowSize}
-                    totalCount={visibleMessages.length}
+                    windowSize={displayWindowSize}
+                    totalCount={displayMessagesCount}
                   />
+                    );
+                  })()}
                 </Box>
               )}
             </Box>
             {virtualizeHistory && scrollAnchor === "manual" && (
               <Box marginLeft={2}>
                 <Text color="gray" dimColor>
-                  Manual scroll active — Ctrl+E to jump to latest, Ctrl+A for
-                  oldest.
+                  Manual scroll active — PageUp/PageDown to browse, Home for
+                  oldest, End for latest.
                 </Text>
               </Box>
             )}
-            {isThinking && <ThinkingIndicator />}
-            {status && !isThinking && (
-              <Box marginBottom={1} marginLeft={2}>
-                <Text color="blue">{status}</Text>
-              </Box>
-            )}
+            {tools && tools.length > 0 && <ToolExecutionPanel tools={tools} />}
+            {isThinking && (!draftAssistant?.content || !showLiveResponse) && <ThinkingIndicator />}
           </Box>
         )}
       </Box>
@@ -1092,13 +1095,93 @@ export const MeerChatV2: React.FC<MeerChatV2Props> = ({
         onSubmit={handleSubmit}
         isThinking={isThinking}
         queuedMessages={messageQueue.length}
+        queuedPreview={queuedPreview}
         mode={mode}
         slashSuggestions={slashSuggestions}
         selectedSuggestion={selectedSuggestion}
+        choicePrompt={choicePrompt}
+        onChoiceSelect={onChoiceSelect}
+      />
+
+      <FooterBar
+        provider={provider}
+        model={model}
+        cwd={cwd}
+        mode={mode}
+        tokens={tokens}
+        cost={cost}
+        messageCount={messageCount}
+        sessionUptime={sessionUptime}
+        liveResponseVisible={showLiveResponse}
       />
     </Box>
   );
 };
+
+const InlineChoicePrompt: React.FC<{
+  message: string;
+  options: Array<{ label: string; value: string }>;
+  defaultValue: string;
+  onSelect: (value: string) => void;
+}> = ({ message, options, defaultValue, onSelect }) => {
+  const items = useMemo(
+    () =>
+      options.map((option) => ({
+        label: option.label,
+        value: option.value,
+      })),
+    [options]
+  );
+
+  const initialIndex = useMemo(() => {
+    const index = options.findIndex((option) => option.value === defaultValue);
+    return index >= 0 ? index : 0;
+  }, [defaultValue, options]);
+
+  return (
+    <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+      <Text color="yellow">
+        {message}
+      </Text>
+      <Text color="dim">
+        Use ↑↓ or j/k to navigate, Enter to select, or press a number key.
+      </Text>
+      <Box marginTop={1}>
+        <SelectInput
+          items={items}
+          initialIndex={initialIndex}
+          onSelect={(item) => onSelect(String(item.value))}
+        />
+      </Box>
+    </Box>
+  );
+};
+
+function truncateLine(value: string, maxLength: number): string {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxLength) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, maxLength - 1)}…`;
+}
+
+function formatCompactNumber(value: number): string {
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}m`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(value);
+}
+
+function formatDurationSeconds(value: number): string {
+  const totalSeconds = Math.max(0, Math.floor(value));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m ${seconds}s`;
+}
 
 // Screen Reader Layout Component
 const ScreenReaderLayout: React.FC<{

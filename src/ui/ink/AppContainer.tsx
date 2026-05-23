@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo } from "react";
 import ansiEscapes from "ansi-escapes";
-import { MeerChat, type MeerChatProps } from "./MeerChat.js";
+import { MeerChatV2, type MeerChatV2Props } from "./MeerChatV2.js";
 import {
   shouldUseAlternateBuffer,
   shouldUseScreenReaderLayout,
@@ -8,7 +8,7 @@ import {
   type UISettings,
 } from "../ui-settings.js";
 
-export interface AppContainerProps extends MeerChatProps {
+export interface AppContainerProps extends MeerChatV2Props {
   uiSettings: UISettings;
 }
 
@@ -28,11 +28,13 @@ export const AppContainer: React.FC<AppContainerProps> = ({
     return { screenReader, alternateBuffer, virtualizeHistory };
   }, [uiSettings, terminalHeight]);
 
-  // Intentionally skip alternate buffer to reduce flicker/shake
+  useAlternateBuffer(layoutPreferences.alternateBuffer);
 
   return (
-    <MeerChat
+    <MeerChatV2
       {...chatProps}
+      screenReader={layoutPreferences.screenReader}
+      virtualizeHistory={layoutPreferences.virtualizeHistory}
     />
   );
 };

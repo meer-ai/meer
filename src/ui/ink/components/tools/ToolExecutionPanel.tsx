@@ -6,6 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Box, Text } from 'ink';
 import Spinner from 'ink-spinner';
+import { DiffViewer, parseDiff } from './DiffViewer.js';
 
 export interface ToolCall {
   id: string;
@@ -29,7 +30,6 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(
   isParallel = false,
   collapsed = false,
 }) => {
-  const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
   const [elapsedTimes, setElapsedTimes] = useState<Map<string, number>>(new Map());
 
   // Update elapsed times for running tools
@@ -95,15 +95,56 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(
     }
   };
 
-  const formatArgs = (args?: Record<string, any>): string => {
+  const summarizeArgs = (args?: Record<string, any>): string => {
     if (!args || Object.keys(args).length === 0) return '';
-    const entries = Object.entries(args);
-    if (entries.length === 1) {
-      const [key, value] = entries[0];
-      const strValue = typeof value === 'string' ? value : JSON.stringify(value);
-      return strValue.length > 40 ? `${strValue.substring(0, 40)}...` : strValue;
+    const preferredKeys = ['path', 'filePath', 'pattern', 'query', 'command', 'symbol', 'oldName', 'newName'];
+    for (const key of preferredKeys) {
+      if (key in args) {
+        return `${key}: ${truncateResult(formatValue(args[key]), 56)}`;
+      }
     }
-    return `${entries.length} args`;
+    const [firstKey, firstValue] = Object.entries(args)[0];
+    return `${firstKey}: ${truncateResult(formatValue(firstValue), 56)}`;
+  };
+
+  const getToolLabel = (toolName: string): string => {
+    const label = toolName.replace(/[_-]+/g, ' ').trim();
+    return label.charAt(0).toUpperCase() + label.slice(1);
+  };
+
+  const getToolIcon = (toolName: string): string => {
+    const lower = toolName.toLowerCase();
+    if (lower.includes('read') || lower.includes('list') || lower.includes('find') || lower.includes('grep') || lower.includes('search')) return '→';
+    if (lower.includes('write') || lower.includes('edit') || lower.includes('rename') || lower.includes('move') || lower.includes('format')) return '↻';
+    if (lower.includes('test') || lower.includes('lint') || lower.includes('check') || lower.includes('scan')) return '•';
+    if (lower.includes('run') || lower.includes('command') || lower.includes('bash') || lower.includes('exec')) return '›';
+    return '·';
+  };
+
+  const getResultSummary = (tool: ToolCall): string => {
+    if (tool.error) {
+      return truncateResult(tool.error, 92);
+    }
+    if (tool.result) {
+      return truncateResult(tool.result.replace(/\s+/g, ' ').trim(), 92);
+    }
+    if (tool.status === 'running') {
+      return 'Working…';
+    }
+    if (tool.status === 'success') {
+      return 'Done';
+    }
+    return '';
+  };
+
+  const isEditTool = (toolName: string): boolean => {
+    const lower = toolName.toLowerCase();
+    return lower.includes('edit') || lower.includes('write') || lower.includes('rename') || lower.includes('move') || lower.includes('format');
+  };
+
+  const isShellTool = (toolName: string): boolean => {
+    const lower = toolName.toLowerCase();
+    return lower.includes('run') || lower.includes('command') || lower.includes('bash') || lower.includes('exec');
   };
 
   const truncateResult = (result?: string, maxLength = 60): string => {
@@ -127,119 +168,107 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(
   const runningTools = tools.filter(t => t.status === 'running').length;
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-      paddingY={0}
-      marginY={1}
-    >
-      {/* Header */}
-      <Box justifyContent="space-between" paddingY={0}>
-        <Box gap={1}>
-          <Text color="cyan" bold>🛠️  Tools</Text>
-          {isParallel && (
-            <Text color="magenta">⚡ Parallel</Text>
-          )}
-          <Text color="dim">
-            [{completedTools}/{tools.length}]
-          </Text>
-        </Box>
-        {completedTools === tools.length && totalDuration > 0 && (
-          <Text color="dim">
-            {formatDuration(totalDuration)} total
-          </Text>
-        )}
-      </Box>
-
-      {/* Progress summary */}
-      {!collapsed && runningTools > 0 && (
-        <Box marginTop={0} marginBottom={1}>
-          <Text color="cyan">
-            {runningTools} running · {successTools} success · {errorTools} failed
-          </Text>
-        </Box>
-      )}
-
-      {/* Tool list */}
+    <Box flexDirection="column" marginY={1}>
       {!collapsed && (
-        <Box flexDirection="column" marginTop={0} gap={0}>
+        <Box flexDirection="column">
           {tools.map((tool: ToolCall, idx: number) => {
-            const isExpanded = expandedTools.has(tool.id);
-            const hasDetails = tool.args || tool.result || tool.error;
             const showConnector = idx < tools.length - 1;
+            const argsSummary = summarizeArgs(tool.args);
+            const resultSummary = getResultSummary(tool);
+            const toolLabel = getToolLabel(tool.name);
+            const diffText = tool.result && tool.result.includes('@@ ') ? tool.result : '';
+            const diffHunks = diffText ? parseDiff(diffText) : [];
+            const shellCommand =
+              isShellTool(tool.name) && tool.args?.command
+                ? formatValue(tool.args.command)
+                : '';
+            const backgroundColor =
+              tool.status === 'error'
+                ? 'red'
+                : tool.status === 'success'
+                  ? 'green'
+                  : 'gray';
+            const foregroundColor =
+              tool.status === 'success'
+                ? 'black'
+                : 'white';
 
             return (
               <React.Fragment key={tool.id}>
-                <Box flexDirection="column">
-                  {/* Tool header */}
+                <Box
+                  flexDirection="column"
+                  paddingX={1}
+                  paddingY={0}
+                  backgroundColor={backgroundColor}
+                >
                   <Box justifyContent="space-between">
                     <Box gap={1}>
                       {tool.status === 'running' ? (
                         <>
-                          <Text color={getColor(tool.status)}>
+                          <Text color={foregroundColor}>
                             <Spinner type="dots" />
                           </Text>
-                          <Text color={getColor(tool.status)} bold>
-                            {tool.name}
+                          <Text color={foregroundColor}>
+                            {getToolIcon(tool.name)}
+                          </Text>
+                          <Text color={foregroundColor} bold>
+                            {toolLabel}
                           </Text>
                         </>
                       ) : (
                         <>
-                          <Text color={getColor(tool.status)}>
+                          <Text color={foregroundColor}>
                             {getIcon(tool.status)}
                           </Text>
-                          <Text
-                            color={getColor(tool.status)}
-                            dimColor={tool.status === 'pending'}
-                          >
-                            {tool.name}
+                          <Text color={foregroundColor}>
+                            {getToolIcon(tool.name)}
+                          </Text>
+                          <Text color={foregroundColor}>
+                            {toolLabel}
                           </Text>
                         </>
                       )}
-                      {tool.args && !isExpanded && (
-                        <Text color="dim">
-                          ({formatArgs(tool.args)})
+                      {argsSummary && (
+                        <Text color={foregroundColor}>
+                          {argsSummary}
                         </Text>
                       )}
                     </Box>
-                    <Text
-                      color={tool.status === 'running' ? 'cyan' : 'dim'}
-                      dimColor={tool.status !== 'running'}
-                    >
+                    <Text color={foregroundColor}>
                       {getDuration(tool)}
                     </Text>
                   </Box>
 
-                  {/* Tool details (when expanded or on error) */}
-                  {(isExpanded || tool.error) && hasDetails && (
-                    <Box flexDirection="column" marginLeft={2} marginTop={0}>
-                      {tool.error && (
-                        <Text color="red">
-                          ↳ Error: {truncateResult(tool.error, 80)}
-                        </Text>
-                      )}
-                      {isExpanded && tool.result && (
-                        <Text color="green">
-                          ↳ {truncateResult(tool.result, 80)}
-                        </Text>
-                      )}
-                      {isExpanded && tool.args && (
-                        <Text color="dim">
-                          ↳ Args: {JSON.stringify(tool.args, null, 2).substring(0, 100)}
-                        </Text>
-                      )}
+                  {shellCommand && (
+                    <Box marginLeft={4}>
+                      <Text color={foregroundColor}>
+                        $ {truncateResult(shellCommand, 96)}
+                      </Text>
+                    </Box>
+                  )}
+
+                  {resultSummary && (
+                    <Box marginLeft={4}>
+                      <Text color={foregroundColor}>
+                        {resultSummary}
+                      </Text>
+                    </Box>
+                  )}
+
+                  {diffHunks.length > 0 && isEditTool(tool.name) && (
+                    <Box marginLeft={4}>
+                      <DiffViewer
+                        filePath={String(tool.args?.path || tool.args?.filePath || tool.name)}
+                        hunks={diffHunks.slice(0, 2)}
+                        showActions={false}
+                      />
                     </Box>
                   )}
                 </Box>
 
-                {/* Connector line */}
                 {showConnector && (
-                  <Box paddingLeft={0}>
-                    <Text color={tool.status === 'success' ? 'green' : tool.status === 'error' ? 'red' : 'dim'}>
-                      │
-                    </Text>
+                  <Box paddingLeft={2}>
+                    <Text color="dim">│</Text>
                   </Box>
                 )}
               </React.Fragment>
@@ -248,35 +277,28 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(
         </Box>
       )}
 
-      {/* Collapsed summary */}
-      {collapsed && tools.length > 0 && (
-        <Box marginTop={1} gap={2}>
-          <Text color="dim">
-            {completedTools}/{tools.length} done
-          </Text>
-          {errorTools > 0 && (
-            <Text color="red">
-              {errorTools} failed
-            </Text>
-          )}
-        </Box>
-      )}
-
-      {/* Footer */}
-      {!collapsed && completedTools === tools.length && tools.length > 0 && (
-        <Box marginTop={1} justifyContent="space-between">
-          <Text color="dim">
-            {successTools} succeeded · {errorTools} failed
-          </Text>
-          {errorTools === 0 && (
-            <Text color="green">
-              ✨ All tools succeeded
-            </Text>
-          )}
-        </Box>
-      )}
+      <Box marginTop={1} justifyContent="space-between">
+        <Text color="dim">
+          {runningTools > 0
+            ? `${runningTools} running`
+            : `${successTools} succeeded · ${errorTools} failed`}
+        </Text>
+        <Text color="dim">
+          {completedTools}/{tools.length}
+          {completedTools === tools.length && totalDuration > 0
+            ? ` · ${formatDuration(totalDuration)}`
+            : ""}
+        </Text>
+      </Box>
     </Box>
   );
 });
+
+function formatValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value.replace(/\s+/g, ' ').trim();
+  }
+  return JSON.stringify(value);
+}
 
 export default ToolExecutionPanel;

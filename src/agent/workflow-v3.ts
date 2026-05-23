@@ -30,6 +30,7 @@ export interface AgentConfig {
   cwd: string;
   maxIterations?: number;
   enableMemory?: boolean;
+  autoCollectContext?: boolean;
   providerType?: string;
   model?: string;
   timeouts?: {
@@ -44,6 +45,9 @@ export interface AgentConfig {
   onStreamingStart?: () => void;
   onStreamingChunk?: (chunk: string) => void;
   onStreamingEnd?: () => void;
+  onAssistantMessage?: (content: string) => void;
+  onTurnStart?: () => void;
+  onTurnEnd?: (result: { success: boolean; error?: string }) => void;
   onToolStart?: (tool: string, args: any) => void;
   onToolUpdate?: (tool: string, status: string, result?: string) => void;
   onToolEnd?: () => void;
@@ -80,6 +84,7 @@ export class AgentWorkflowV3 {
   private cwd: string;
   private maxIterations: number;
   private enableMemory: boolean;
+  private autoCollectContext: boolean;
   private providerType: string;
   private model: string;
   private mcpManager = MCPManager.getInstance();
@@ -99,12 +104,17 @@ export class AgentWorkflowV3 {
   private currentIteration = 0;
   private isRunning = false;
   private abortController: AbortController | null = null;
+  private autoApproveRemaining = false;
+  private autoSkipRemaining = false;
 
   // Callbacks
   private callbacks: {
     onStreamingStart?: () => void;
     onStreamingChunk?: (chunk: string) => void;
     onStreamingEnd?: () => void;
+    onAssistantMessage?: (content: string) => void;
+    onTurnStart?: () => void;
+    onTurnEnd?: (result: { success: boolean; error?: string }) => void;
     onToolStart?: (tool: string, args: any) => void;
     onToolUpdate?: (tool: string, status: string, result?: string) => void;
     onToolEnd?: () => void;
@@ -117,6 +127,7 @@ export class AgentWorkflowV3 {
     this.cwd = config.cwd;
     this.maxIterations = config.maxIterations || 10;
     this.enableMemory = config.enableMemory ?? true;
+    this.autoCollectContext = config.autoCollectContext ?? false;
     this.providerType = config.providerType || "unknown";
     this.model = config.model || "unknown";
     this.sessionTracker = config.sessionTracker;
@@ -140,6 +151,9 @@ export class AgentWorkflowV3 {
       onStreamingStart: config.onStreamingStart,
       onStreamingChunk: config.onStreamingChunk,
       onStreamingEnd: config.onStreamingEnd,
+      onAssistantMessage: config.onAssistantMessage,
+      onTurnStart: config.onTurnStart,
+      onTurnEnd: config.onTurnEnd,
       onToolStart: config.onToolStart,
       onToolUpdate: config.onToolUpdate,
       onToolEnd: config.onToolEnd,
@@ -201,16 +215,20 @@ export class AgentWorkflowV3 {
 
     this.isRunning = true;
     this.abortController = new AbortController();
-    
+    this.autoApproveRemaining = false;
+    this.autoSkipRemaining = false;
+    this.callbacks.onTurnStart?.();
+
     try {
       this.updateStatus("Processing request...");
       
-      // Auto-gather relevant context (optional feature)
-      const relevantFiles = await this.contextPreprocessor.gatherContext(userMessage);
-      if (relevantFiles.length > 0) {
-        const contextPrompt = this.contextPreprocessor.buildContextPrompt(relevantFiles);
-        this.messages.push({ role: 'system', content: contextPrompt });
-        this.updateStatus(`Auto-loaded ${relevantFiles.length} relevant files`);
+      // Auto-gather relevant context only when explicitly enabled.
+      if (this.autoCollectContext) {
+        const relevantFiles = await this.contextPreprocessor.gatherContext(userMessage);
+        if (relevantFiles.length > 0) {
+          const contextPrompt = this.contextPreprocessor.buildContextPrompt(relevantFiles);
+          this.messages.push({ role: 'system', content: contextPrompt });
+        }
       }
 
       // Add user message
@@ -227,6 +245,8 @@ export class AgentWorkflowV3 {
 
       let fullResponse = "";
       let iteration = 0;
+      let completedTurn = false;
+      let interimContinuationCount = 0;
 
       while (iteration < this.maxIterations && !this.abortController.signal.aborted) {
         iteration++;
@@ -234,7 +254,7 @@ export class AgentWorkflowV3 {
         this.metrics.iterations = iteration;
 
         if (iteration > 1) {
-          this.updateStatus(`Iteration ${iteration}/${this.maxIterations}`);
+          this.updateStatus("Working…");
         }
 
         // Check session limits
@@ -248,8 +268,9 @@ export class AgentWorkflowV3 {
         const displayResponse = this.filterXML(response).trim();
 
         if (!response || !response.trim()) {
-          this.updateStatus("Received empty response, stopping");
-          break;
+          throw new Error(
+            `Provider returned an empty response for ${this.providerType}/${this.model}.`
+          );
         }
 
         fullResponse += response;
@@ -258,18 +279,9 @@ export class AgentWorkflowV3 {
         if (this.shouldStopAfterResponse(response)) {
           const assistantContent =
             displayResponse || "Waiting for your input…";
-          this.messages.push({ role: "assistant", content: assistantContent });
-          
-          if (this.enableMemory) {
-            memory.addToSession({
-              timestamp: Date.now(),
-              role: "assistant",
-              content: assistantContent,
-              metadata: { provider: this.providerType, model: this.model },
-            });
-          }
-
-          this.updateStatus("Waiting for user input");
+          this.commitFinalAssistantMessage(assistantContent);
+          this.updateStatus("");
+          completedTurn = true;
           break;
         }
 
@@ -277,35 +289,58 @@ export class AgentWorkflowV3 {
         const toolCalls = parseToolCalls(response);
 
         if (toolCalls.length === 0) {
+          if (
+            this.shouldContinueWorking(displayResponse, userMessage) &&
+            interimContinuationCount < 2
+          ) {
+            interimContinuationCount += 1;
+            this.messages.push({
+              role: "assistant",
+              content: displayResponse,
+            });
+            this.messages.push({
+              role: "system",
+              content:
+                "Continue the task. Do not stop after stating intent. Execute the next concrete step or provide the final result.",
+            });
+            this.updateStatus("Working…");
+            continue;
+          }
+
           // No tools, we're done
           const assistantContent =
             displayResponse || "Ready for your next command.";
-          this.messages.push({ role: "assistant", content: assistantContent });
-          
-          if (this.enableMemory) {
-            memory.addToSession({
-              timestamp: Date.now(),
-              role: "assistant",
-              content: assistantContent,
-              metadata: { provider: this.providerType, model: this.model },
-            });
-          }
-
+          this.commitFinalAssistantMessage(assistantContent);
+          this.updateStatus("");
+          completedTurn = true;
           break;
         }
 
         // Execute tools
-        this.updateStatus(`Executing ${toolCalls.length} tool(s)`);
+        this.updateStatus("Working with tools…");
         const toolResults = await this.executeTools(toolCalls);
+        interimContinuationCount = 0;
 
-        // Add tool results to conversation
-        const assistantContent =
-          displayResponse || "Working with tools…";
-        this.messages.push({ role: "assistant", content: assistantContent });
+        // Keep intermediate assistant narration in model context, but do not
+        // commit it to the transcript until the turn actually completes.
+        this.messages.push({
+          role: "assistant",
+          content: displayResponse || "(tool calls executed)",
+        });
         this.messages.push({
           role: "user",
           content: `Tool Results:\n\n${toolResults.join("\n\n")}`
         });
+      }
+
+      if (this.abortController.signal.aborted) {
+        throw new Error("Request aborted.");
+      }
+
+      if (!completedTurn) {
+        throw new Error(
+          `Workflow stopped without a final assistant response after ${iteration} iteration(s).`
+        );
       }
 
       // Run related tests if files were edited
@@ -314,9 +349,13 @@ export class AgentWorkflowV3 {
       }
 
       this.metrics.endTime = Date.now();
+      this.callbacks.onTurnEnd?.({ success: true });
       return fullResponse;
 
     } catch (error) {
+      this.updateStatus("");
+      const message = error instanceof Error ? error.message : String(error);
+      this.callbacks.onTurnEnd?.({ success: false, error: message });
       this.callbacks.onError?.(error as Error);
       throw error;
     } finally {
@@ -368,24 +407,31 @@ export class AgentWorkflowV3 {
     this.sessionTracker?.trackContextUsage(promptTokens);
     this.warnIfContextHigh(promptTokens);
 
-    this.updateStatus("Thinking...");
+    this.updateStatus("Working…");
 
     this.callbacks.onStreamingStart?.();
 
     let response = "";
     let streamStarted = false;
     let bufferedContent = "";
-    let xmlStarted = false;
+    let ended = false;
+    const streamAbortController = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+      streamAbortController.abort(
+        new Error(`Request timed out after ${this.chatTimeout}ms`)
+      );
+    }, this.chatTimeout);
+    const abortListener = () => {
+      streamAbortController.abort(new Error("Request aborted."));
+    };
+    this.abortController?.signal.addEventListener("abort", abortListener);
 
     try {
-      const chunks: string[] = [];
-      
       for await (const chunk of this.provider.stream(this.messages, {
-        signal: this.abortController?.signal,
+        signal: streamAbortController.signal,
       })) {
         if (!streamStarted) {
           streamStarted = true;
-          this.updateStatus("Streaming response");
         }
 
         if (chunk?.trim()) {
@@ -402,12 +448,31 @@ export class AgentWorkflowV3 {
         }
       }
 
+      if (!bufferedContent.trim()) {
+        const fallbackResponse = await this.provider.chat(this.messages, {
+          signal: streamAbortController.signal,
+        } as any);
+        const fallbackDisplay = this.filterXML(fallbackResponse).trim();
+        if (fallbackDisplay) {
+          response = fallbackResponse;
+          this.callbacks.onStreamingChunk?.(fallbackDisplay);
+          bufferedContent = fallbackDisplay;
+        }
+      }
+
       // If the provider streamed nothing (or only XML tool calls), emit a single
       // fallback chunk so the UI isn't left blank.
       if ((!streamStarted || !bufferedContent.trim()) && response.trim()) {
         const fallbackChunk =
           this.filterXML(response).trim() || "(executing tool calls)";
         this.callbacks.onStreamingChunk?.(fallbackChunk);
+        bufferedContent = fallbackChunk;
+      }
+
+      if (!response.trim() || !bufferedContent.trim()) {
+        throw new Error(
+          `Provider returned no displayable content for ${this.providerType}/${this.model}.`
+        );
       }
 
       // Track tokens
@@ -416,12 +481,20 @@ export class AgentWorkflowV3 {
       this.metrics.totalTokens += promptTokens + completionTokens;
 
       this.callbacks.onStreamingEnd?.();
+      ended = true;
       
       return response;
 
     } catch (error) {
+      if (!ended) {
+        this.callbacks.onStreamingEnd?.();
+        ended = true;
+      }
       this.callbacks.onError?.(error as Error);
       throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      this.abortController?.signal.removeEventListener("abort", abortListener);
     }
   }
 
@@ -1329,6 +1402,57 @@ export class AgentWorkflowV3 {
     return false;
   }
 
+  private shouldContinueWorking(response: string, userMessage: string): boolean {
+    const normalizedResponse = response.trim();
+    const normalizedUser = userMessage.trim().toLowerCase();
+
+    if (!normalizedResponse) {
+      return false;
+    }
+
+    const actionRequestPatterns = [
+      /\breview\b/,
+      /\bcheck\b/,
+      /\binspect\b/,
+      /\baudit\b/,
+      /\banaly[sz]e\b/,
+      /\bfind\b/,
+      /\bsearch\b/,
+      /\bfix\b/,
+      /\blook at\b/,
+      /\bscan\b/,
+    ];
+
+    const planningResponsePatterns = [
+      /^i(?:'| wi)ll\b/i,
+      /^let me\b/i,
+      /^first,?\s+i(?:'| wi)ll\b/i,
+      /^to start,?\s+i(?:'| wi)ll\b/i,
+      /^i need to\b/i,
+    ];
+
+    const concreteFindingPatterns = [
+      /\b(found|identified|discovered|detected)\b/i,
+      /\bsecurity issue\b/i,
+      /\bvulnerability\b/i,
+      /\brecommend(?:ation|ed)\b/i,
+      /\bhere (?:are|is)\b/i,
+      /\bsummary\b/i,
+    ];
+
+    const isActionRequest = actionRequestPatterns.some((pattern) =>
+      pattern.test(normalizedUser)
+    );
+    const isPlanningOnly = planningResponsePatterns.some((pattern) =>
+      pattern.test(normalizedResponse)
+    );
+    const hasConcreteFinding = concreteFindingPatterns.some((pattern) =>
+      pattern.test(normalizedResponse)
+    );
+
+    return isActionRequest && isPlanningOnly && !hasConcreteFinding;
+  }
+
   private getSystemPrompt(): string {
     return buildAgentSystemPrompt({
       cwd: this.cwd,
@@ -1403,27 +1527,41 @@ export class AgentWorkflowV3 {
     this.callbacks.onStatusChange?.(status);
   }
 
-  private async reviewSingleEdit(edit: FileEdit): Promise<boolean> {
-    // Use updateStatus instead of console.log to avoid interfering with Ink TUI
-    this.updateStatus(`📝 Reviewing edit: ${edit.path}`);
-    
-    const diff = generateDiff(edit.oldContent, edit.newContent);
-    if (diff.length > 0) {
-      // Show a brief preview of the diff
-      const previewLines = diff.slice(0, 10);
-      const preview = previewLines.join('\n');
-      this.updateStatus(`Changes preview:\n${preview}${diff.length > 10 ? `\n... and ${diff.length - 10} more lines` : ''}`);
-    } else {
-      this.updateStatus(`No textual diff (new or identical file): ${edit.path}`);
+  private commitFinalAssistantMessage(content: string): void {
+    this.messages.push({ role: "assistant", content });
+
+    if (this.enableMemory) {
+      memory.addToSession({
+        timestamp: Date.now(),
+        role: "assistant",
+        content,
+        metadata: { provider: this.providerType, model: this.model },
+      });
     }
 
-    // Create checkpoint before applying changes
-    await this.transactionManager.createCheckpoint(`edit-${edit.path.replace(/[^a-zA-Z0-9]/g, '-')}`);
+    this.callbacks.onAssistantMessage?.(content);
+  }
 
-    // Prompt for approval with retry option
+  private async reviewSingleEdit(edit: FileEdit): Promise<boolean> {
+    await this.transactionManager.createCheckpoint(
+      `edit-${edit.path.replace(/[^a-zA-Z0-9]/g, "-")}`
+    );
+
+    const diff = generateDiff(edit.oldContent, edit.newContent);
+
     if (this.config.promptChoice) {
+      // Build a human-readable diff block for the TUI transcript
+      const previewLines = diff.slice(0, 20);
+      const more = diff.length > 20 ? `\n… ${diff.length - 20} more lines` : "";
+      const diffBlock = previewLines.join("\n") + more;
+
+      const message =
+        `**Proposed edit:** \`${edit.path}\`\n` +
+        (edit.description ? `${edit.description}\n` : "") +
+        `\`\`\`diff\n${diffBlock}\n\`\`\``;
+
       const choice = await this.config.promptChoice(
-        `Apply changes to ${edit.path}?`,
+        message,
         [
           { label: "Apply", value: "apply" },
           { label: "Skip", value: "skip" },
@@ -1439,8 +1577,23 @@ export class AgentWorkflowV3 {
       return choice === "apply";
     }
 
-    // Default to applying changes if no prompt choice callback
-    return true;
+    // No TUI — fall back to terminal approval
+    const { promptEditApproval } = await import("../ui/approval.js");
+    const decision = await promptEditApproval(
+      edit.path,
+      diff,
+      edit.description
+    );
+
+    if (decision === "apply-all") {
+      this.autoApproveRemaining = true;
+      return true;
+    }
+    if (decision === "skip-all") {
+      this.autoSkipRemaining = true;
+      return false;
+    }
+    return decision === "apply";
   }
 
   private async confirmCommand(command: string): Promise<boolean> {
@@ -1448,41 +1601,32 @@ export class AgentWorkflowV3 {
       /^npm\s+run\s+(build|test|lint|check|compile|typecheck)$/i,
       /^npm\s+test$/i,
       /^npm\s+run\s+lint$/i,
-      /^yarn\s+build$/i,
-      /^yarn\s+test$/i,
-      /^pnpm\s+build$/i,
-      /^pnpm\s+test$/i,
-      /^git\s+status$/i,
-      /^git\s+diff/i,
-      /^git\s+log/i,
-      /^git\s+branch$/i,
-      /^npm\s+install$/i,
-      /^npm\s+i$/i,
-      /^yarn\s+install$/i,
-      /^yarn$/i,
-      /^pnpm\s+install$/i,
+      /^yarn\s+(build|test|install)?$/i,
+      /^pnpm\s+(build|test|install)$/i,
+      /^git\s+(status|diff|log|branch)$/i,
+      /^npm\s+(install|i)$/i,
     ];
 
-    for (const pattern of safeCommands) {
-      if (pattern.test(command.trim())) {
-        return true;
-      }
+    if (safeCommands.some((p) => p.test(command.trim()))) {
+      return true;
     }
 
     if (this.config.promptChoice) {
       const choice = await this.config.promptChoice(
-        `Run shell command: ${command}`,
+        `**Run shell command:**\n\`\`\`\n${command}\n\`\`\``,
         [
-          { label: "Run command", value: "run" },
+          { label: "Run", value: "run" },
           { label: "Cancel", value: "cancel" },
         ],
-        "run"
+        "cancel"
       );
       return choice === "run";
     }
 
-    // Default to cancel if no prompt choice callback (safer default)
-    return false;
+    // No TUI — fall back to terminal approval
+    const { promptCommandApproval } = await import("../ui/approval.js");
+    const decision = await promptCommandApproval(command);
+    return decision === "apply" || decision === "apply-all";
   }
 
   private async confirmToolAction(message: string): Promise<boolean> {

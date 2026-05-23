@@ -24,7 +24,7 @@ import {
   type AgentToolEvent,
 } from "../../agent/eventBus.js";
 import { debounce } from "./utils/debounce.js";
-import { BUILT_IN_SLASH_COMMANDS } from "../../slash/builtins.js";
+import { getAllCommands } from "../../slash/registry.js";
 
 interface Message {
   id: string;
@@ -32,6 +32,12 @@ interface Message {
   content: string;
   toolName?: string;
   timestamp?: number;
+}
+
+interface ChoicePromptState {
+  message: string;
+  options: Array<{ label: string; value: string }>;
+  defaultValue: string;
 }
 
 export interface InkChatConfig {
@@ -47,13 +53,16 @@ type Mode = 'edit' | 'plan';
 export class InkChatAdapter {
   private config: InkChatConfig;
   private messages: Message[] = [];
+  private draftAssistant: Message | null = null;
   private promptResolver: ((value: string) => void) | null = null;
   private promptRejecter: ((reason?: unknown) => void) | null = null;
   private promptActive = false;
+  private choicePrompt: ChoicePromptState | null = null;
+  private choiceResolver: ((value: string) => void) | null = null;
+  private choiceRejecter: ((reason?: unknown) => void) | null = null;
   private instance: any = null;
   private isThinking = false;
   private statusMessage: string | null = null;
-  private currentAssistantIndex: number | null = null;
   private onSubmitCallback?: (text: string) => void;
   private onInterruptCallback?: () => void;
   private mode: Mode = 'edit';
@@ -87,6 +96,10 @@ export class InkChatAdapter {
     this.eventBus = config.eventBus;
     this.attachEventBus();
     this.renderUI();
+  }
+
+  private getSlashSuggestions() {
+    return getAllCommands(this.config.cwd);
   }
 
   setInterruptHandler(handler: () => void): void {
@@ -129,13 +142,13 @@ export class InkChatAdapter {
 
   private renderUI() {
     const handleMessage = (message: string) => {
-      if (this.onSubmitCallback) {
-        this.onSubmitCallback(message);
-      } else if (this.promptActive && this.promptResolver) {
+      if (this.promptResolver) {
         this.promptResolver(message);
         this.promptResolver = null;
         this.promptRejecter = null;
         this.promptActive = false;
+      } else if (this.onSubmitCallback) {
+        this.onSubmitCallback(message);
       }
     };
 
@@ -152,6 +165,18 @@ export class InkChatAdapter {
       }
     };
 
+    const handleChoiceSelect = (value: string) => {
+      if (!this.choiceResolver) {
+        return;
+      }
+      const resolve = this.choiceResolver;
+      this.choicePrompt = null;
+      this.choiceResolver = null;
+      this.choiceRejecter = null;
+      resolve(value);
+      this.updateUI();
+    };
+
     const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
 
     const activeSettings = this.getActiveUiSettings();
@@ -159,6 +184,7 @@ export class InkChatAdapter {
     this.instance = render(
       React.createElement(AppContainer, {
         messages: this.messages,
+        draftAssistant: this.draftAssistant ?? undefined,
         isThinking: this.isThinking,
         status: this.statusMessage || undefined,
         provider: this.config.provider,
@@ -180,7 +206,9 @@ export class InkChatAdapter {
         timelineEvents: this.timelineEvents,
         plan: this.plan ?? undefined,
         uiSettings: activeSettings,
-        slashSuggestions: BUILT_IN_SLASH_COMMANDS.map(c => ({ name: c.command.slice(1), description: c.description })),
+        slashSuggestions: this.getSlashSuggestions(),
+        choicePrompt: this.choicePrompt ?? undefined,
+        onChoiceSelect: handleChoiceSelect,
       }),
     );
   }
@@ -189,13 +217,13 @@ export class InkChatAdapter {
     if (!this.instance) return;
 
     const handleMessage = (message: string) => {
-      if (this.onSubmitCallback) {
-        this.onSubmitCallback(message);
-      } else if (this.promptActive && this.promptResolver) {
+      if (this.promptResolver) {
         this.promptResolver(message);
         this.promptResolver = null;
         this.promptRejecter = null;
         this.promptActive = false;
+      } else if (this.onSubmitCallback) {
+        this.onSubmitCallback(message);
       }
     };
 
@@ -210,6 +238,18 @@ export class InkChatAdapter {
       if (this.onModeChangeCallback) {
         this.onModeChangeCallback(mode);
       }
+    };
+
+    const handleChoiceSelect = (value: string) => {
+      if (!this.choiceResolver) {
+        return;
+      }
+      const resolve = this.choiceResolver;
+      this.choicePrompt = null;
+      this.choiceResolver = null;
+      this.choiceRejecter = null;
+      resolve(value);
+      this.updateUI();
     };
 
     const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
@@ -220,6 +260,7 @@ export class InkChatAdapter {
     this.instance.rerender(
       React.createElement(AppContainer, {
         messages: this.messages,
+        draftAssistant: this.draftAssistant ?? undefined,
         isThinking: this.isThinking,
         status: this.statusMessage || undefined,
         provider: this.config.provider,
@@ -241,7 +282,9 @@ export class InkChatAdapter {
         plan: this.plan ?? undefined,
         timelineEvents: this.timelineEvents,
         uiSettings: activeSettings,
-        slashSuggestions: BUILT_IN_SLASH_COMMANDS.map(c => ({ name: c.command.slice(1), description: c.description })),
+        slashSuggestions: this.getSlashSuggestions(),
+        choicePrompt: this.choicePrompt ?? undefined,
+        onChoiceSelect: handleChoiceSelect,
       }),
     );
   }
@@ -287,27 +330,50 @@ export class InkChatAdapter {
     this.updateUI();
   }
 
+  beginTurn(): void {
+    this.debouncedUpdateUI.cancel();
+    this.draftAssistant = null;
+    this.isThinking = false;
+    this.statusMessage = null;
+    this.tools = [];
+    this.workflowStages = [];
+    this.currentIteration = undefined;
+    this.maxIterations = undefined;
+    this.timelineEvents = [];
+    this.timelineTaskMetadata.clear();
+    this.updateUI();
+  }
+
+  endTurn(): void {
+    this.debouncedUpdateUI.cancel();
+    this.isThinking = false;
+    this.statusMessage = null;
+    this.tools = [];
+    this.workflowStages = [];
+    this.currentIteration = undefined;
+    this.maxIterations = undefined;
+    this.timelineTaskMetadata.clear();
+    this.updateUI();
+  }
+
   startAssistantMessage(): void {
     this.isThinking = true;
-    this.currentAssistantIndex = this.messages.push({
+    this.draftAssistant = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role: 'assistant',
       content: '',
       timestamp: Date.now(),
-    }) - 1;
+    };
     this.updateUI();
   }
 
   appendAssistantChunk(chunk: string): void {
-    if (this.currentAssistantIndex === null) {
+    if (!this.draftAssistant) {
       this.startAssistantMessage();
     }
 
-    if (this.currentAssistantIndex === null) return;
-
-    const message = this.messages[this.currentAssistantIndex];
-    if (message) {
-      message.content += chunk;
+    if (this.draftAssistant) {
+      this.draftAssistant.content += chunk;
       // Use debounced updateUI for streaming to reduce re-renders
       this.debouncedUpdateUI();
     }
@@ -315,22 +381,33 @@ export class InkChatAdapter {
 
   finishAssistantMessage(): void {
     this.isThinking = false;
-
-    // If the assistant message is still empty (e.g., provider only streamed tool
-    // calls or nothing at all), fill it with a friendly status so the UI isn't
-    // blank.
-    if (this.currentAssistantIndex !== null) {
-      const msg = this.messages[this.currentAssistantIndex];
-      if (msg && (!msg.content || msg.content.trim().length === 0)) {
-        msg.content =
-          this.statusMessage?.trim() ||
-          "Waiting for user input…";
-      }
-    }
-
-    this.currentAssistantIndex = null;
     // Cancel any pending debounced updates and render final state immediately
     this.debouncedUpdateUI.cancel();
+    this.updateUI();
+  }
+
+  settleAssistantMessage(content: string): void {
+    const normalized = content.trim() || this.draftAssistant?.content.trim() || "";
+    if (!normalized) {
+      return;
+    }
+
+    const draft = this.draftAssistant;
+    this.messages.push({
+      id: draft?.id ?? `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      role: "assistant",
+      content: normalized,
+      timestamp: draft?.timestamp ?? Date.now(),
+    });
+    this.draftAssistant = null;
+    this.isThinking = false;
+    this.updateUI();
+  }
+
+  discardAssistantMessage(): void {
+    this.debouncedUpdateUI.cancel();
+    this.draftAssistant = null;
+    this.isThinking = false;
     this.updateUI();
   }
 
@@ -351,18 +428,17 @@ export class InkChatAdapter {
   }
 
   setStatus(text: string): void {
-    this.statusMessage = text?.trim() || null;
+    this.statusMessage = sanitizeStatusText(text ?? "") || null;
     this.updateUI();
   }
 
   enableContinuousChat(onSubmit: (text: string) => void): void {
     this.onSubmitCallback = onSubmit;
-    this.promptActive = true;
     this.updateUI();
   }
 
   async prompt(): Promise<string> {
-    if (this.promptActive) {
+    if (this.promptResolver) {
       throw new Error('Prompt already active');
     }
 
@@ -380,35 +456,24 @@ export class InkChatAdapter {
     options: Array<{ label: string; value: T }>,
     defaultValue: T
   ): Promise<T> {
-    // Render a lightweight inline choice prompt in the transcript, then wait for
-    // the user to type a selection (by label or value). Falls back to the
-    // provided defaultValue on empty input.
-    const choiceLine = options.map(o => `${o.label} [${o.value}]`).join(' | ');
-    this.appendSystemMessage(`${message}\n${choiceLine}\nEnter choice (default: ${defaultValue}):`);
-
-    const raw = await this.prompt();
-    const input = raw.trim();
-    if (!input) return defaultValue;
-
-    const normalized = input.toLowerCase();
-    const match =
-      options.find(o => o.value.toLowerCase() === normalized) ||
-      options.find(o => o.label.toLowerCase() === normalized);
-
-    if (match) {
-      return match.value;
+    if (this.choiceResolver || this.promptResolver) {
+      throw new Error("Prompt already active");
     }
 
-    // If the user typed a partial prefix, accept the first matching prefix.
-    const prefixMatch =
-      options.find(o => o.value.toLowerCase().startsWith(normalized)) ||
-      options.find(o => o.label.toLowerCase().startsWith(normalized));
-    if (prefixMatch) {
-      return prefixMatch.value;
-    }
+    this.choicePrompt = {
+      message,
+      options: options.map((option) => ({
+        label: option.label,
+        value: option.value,
+      })),
+      defaultValue,
+    };
+    this.updateUI();
 
-    // Unrecognized input: return default to stay safe.
-    return defaultValue;
+    return new Promise<T>((resolve, reject) => {
+      this.choiceResolver = (value) => resolve(value as T);
+      this.choiceRejecter = reject;
+    });
   }
 
   captureConsole(): void {
@@ -663,7 +728,6 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`??  ${message}`);
       },
       note: (message: string) => {
         this.recordTimelineEvent({
@@ -673,7 +737,6 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`?? ${message}`);
       },
       warn: (message: string) => {
         this.recordTimelineEvent({
@@ -683,7 +746,6 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`??  ${message}`);
       },
       error: (message: string) => {
         this.recordTimelineEvent({
@@ -693,7 +755,6 @@ export class InkChatAdapter {
           message,
           timestamp: Date.now(),
         });
-        this.appendSystemMessage(`? ${message}`);
       },
       close: () => {
         this.setStatus("");
@@ -703,19 +764,33 @@ export class InkChatAdapter {
 
   // Enhanced UI tracking methods
 
-  addTool(toolName: string): string {
+  addTool(toolName: string, args?: Record<string, unknown>): string {
     const id = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     this.tools.push({
       id,
       name: toolName,
       status: 'pending',
+      args,
     });
     this.updateUI();
     return id;
   }
 
+  private findTool(handle: string): ToolCall | undefined {
+    return (
+      this.tools.find((tool) => tool.id === handle) ??
+      [...this.tools]
+        .reverse()
+        .find(
+          (tool) =>
+            tool.name === handle &&
+            (tool.status === "pending" || tool.status === "running")
+        )
+    );
+  }
+
   startTool(id: string): void {
-    const tool = this.tools.find(t => t.id === id);
+    const tool = this.findTool(id);
     if (tool) {
       tool.status = 'running';
       tool.startTime = Date.now();
@@ -724,7 +799,7 @@ export class InkChatAdapter {
   }
 
   completeTool(id: string, result?: string): void {
-    const tool = this.tools.find(t => t.id === id);
+    const tool = this.findTool(id);
     if (tool) {
       tool.status = 'success';
       tool.endTime = Date.now();
@@ -734,7 +809,7 @@ export class InkChatAdapter {
   }
 
   failTool(id: string, error: string): void {
-    const tool = this.tools.find(t => t.id === id);
+    const tool = this.findTool(id);
     if (tool) {
       tool.status = 'error';
       tool.endTime = Date.now();
@@ -814,11 +889,17 @@ export class InkChatAdapter {
     if (this.promptActive && this.promptRejecter) {
       this.promptRejecter(new Error('UI destroyed'));
     }
+    if (this.choiceRejecter) {
+      this.choiceRejecter(new Error("UI destroyed"));
+    }
 
     this.onSubmitCallback = undefined;
     this.promptResolver = null;
     this.promptRejecter = null;
     this.promptActive = false;
+    this.choicePrompt = null;
+    this.choiceResolver = null;
+    this.choiceRejecter = null;
 
     if (this.instance) {
       this.instance.unmount();
@@ -875,15 +956,6 @@ export class InkChatAdapter {
       message: event.message,
       timestamp: event.timestamp,
     });
-    if (event.level === "info") {
-      this.appendSystemMessage(`??  ${event.message}`);
-    } else if (event.level === "note") {
-      this.appendSystemMessage(`?? ${event.message}`);
-    } else if (event.level === "warn") {
-      this.appendSystemMessage(`??  ${event.message}`);
-    } else {
-      this.appendSystemMessage(`? ${event.message}`);
-    }
   }
 
   private handleToolEvent(event: AgentToolEvent): void {
@@ -937,6 +1009,10 @@ export class InkChatAdapter {
     }
     this.timelineEvents = events;
   }
+}
+
+function sanitizeStatusText(text: string): string {
+  return text.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
 export default InkChatAdapter;

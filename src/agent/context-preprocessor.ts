@@ -76,6 +76,7 @@ export class ContextPreprocessor {
     for (const keyword of keywords) {
       const grepResult = grep('.', keyword, this.cwd, {
         maxResults: 10,
+        silent: true,
       });
 
       if (!grepResult.error && grepResult.result) {
@@ -149,7 +150,7 @@ export class ContextPreprocessor {
    */
   private async findInGitDiff(): Promise<RelevantFile[]> {
     const { gitStatus } = await import('../tools/index.js');
-    const result = gitStatus(this.cwd);
+    const result = gitStatus(this.cwd, { silent: true });
 
     if (result.error) return [];
 

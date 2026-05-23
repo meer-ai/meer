@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import chalk from "chalk";
-import { AgentWorkflowV2, type AgentConfig } from "../agent/workflow-v2.js";
+import { AgentWorkflowV3, type AgentConfig } from "../agent/workflow-v3.js";
 import type { ChatMessage } from "../providers/base.js";
 import { logVerbose } from "../logger.js";
 import type {
@@ -23,7 +23,7 @@ import type {
 export class SubAgent {
   private id: string;
   private definition: SubAgentDefinition;
-  private workflow: AgentWorkflowV2;
+  private workflow: AgentWorkflowV3;
   private messages: ChatMessage[] = [];
   private status: AgentStatus = 'idle';
   private result?: string;
@@ -39,10 +39,13 @@ export class SubAgent {
     this.id = this.generateId();
     this.definition = definition;
 
-    // Create isolated workflow instance
-    this.workflow = new AgentWorkflowV2({
+    // Create isolated workflow instance — auto-approve edits since sub-agents
+    // run under explicit user invocation via `meer agents`
+    this.workflow = new AgentWorkflowV3({
       ...config,
       maxIterations: definition.maxIterations || config.maxIterations || 10,
+      promptChoice: async (_msg, choices, defaultChoice) =>
+        defaultChoice ?? choices[0]?.value ?? "",
     });
 
     logVerbose(chalk.blue(`[SubAgent] Created: ${definition.name} (${this.id})`));
@@ -67,9 +70,8 @@ export class SubAgent {
       // Build task message with context
       const taskMessage = this.buildTaskMessage(task, context);
 
-      // Process the task (AgentWorkflowV2 handles the iteration loop)
-      // Note: Auto-context is disabled by default; we provide context explicitly above
-      const response = await this.workflow.processMessage(taskMessage, {});
+      // Process the task (AgentWorkflowV3 handles the iteration loop)
+      const response = await this.workflow.processMessage(taskMessage);
 
       // Mark as completed
       this.status = 'completed';

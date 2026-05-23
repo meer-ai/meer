@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { AgentWorkflowV2, type AgentConfig } from "../agent/workflow-v2.js";
+import { AgentWorkflowV3, type AgentConfig } from "../agent/workflow-v3.js";
 import { logVerbose } from "../logger.js";
 import { SubAgent } from "./subagent.js";
 import { AgentRegistry } from "./registry.js";
@@ -24,7 +24,7 @@ import type {
  * - Aggregates results from sub-agents
  */
 export class AgentOrchestrator {
-  private mainAgent: AgentWorkflowV2;
+  private mainAgent: AgentWorkflowV3;
   private registry: AgentRegistry;
   private activeSubAgents: Map<string, SubAgent> = new Map();
   private config: AgentConfig;
@@ -33,7 +33,7 @@ export class AgentOrchestrator {
   constructor(config: AgentConfig) {
     this.config = config;
     this.cwd = config.cwd;
-    this.mainAgent = new AgentWorkflowV2(config);
+    this.mainAgent = new AgentWorkflowV3(config);
     this.registry = new AgentRegistry(this.cwd);
 
     logVerbose(chalk.blue('[AgentOrchestrator] Initialized'));
@@ -56,13 +56,8 @@ export class AgentOrchestrator {
   /**
    * Process a message (delegates to main agent or sub-agents as needed)
    */
-  async processMessage(
-    userMessage: string,
-    options?: Parameters<AgentWorkflowV2['processMessage']>[1]
-  ): Promise<string> {
-    // For now, delegate to main agent
-    // TODO: Add intelligent delegation based on message content
-    return await this.mainAgent.processMessage(userMessage, options);
+  async processMessage(userMessage: string): Promise<string> {
+    return this.mainAgent.processMessage(userMessage);
   }
 
   /**
@@ -234,14 +229,10 @@ export class AgentOrchestrator {
   // Private helper methods
 
   private createSubAgent(definition: SubAgentDefinition): SubAgent {
-    // Create a new config for the sub-agent
     const subAgentConfig: AgentConfig = {
       ...this.config,
       maxIterations: definition.maxIterations || this.config.maxIterations || 10,
     };
-
-    // TODO: Apply tool access control based on definition.tools
-    // This will be implemented in the next phase
 
     const subAgent = new SubAgent(definition, subAgentConfig);
 

@@ -1305,6 +1305,7 @@ export function grep(
     caseSensitive?: boolean;
     maxResults?: number;
     contextLines?: number;
+    silent?: boolean;
   } = {}
 ): ToolResult {
   try {
@@ -1318,7 +1319,9 @@ export function grep(
       };
     }
 
-    console.log(chalk.gray(`  🔎 Searching in ${filepath} for: "${pattern}"`));
+    if (!options.silent) {
+      console.log(chalk.gray(`  🔎 Searching in ${filepath} for: "${pattern}"`));
+    }
 
     const content = readFileSync(fullPath, "utf-8");
     const lines = content.split("\n");
@@ -1918,9 +1921,11 @@ export function loadMemory(key: string, cwd: string): ToolResult {
 /**
  * Tool: Git Status - Show working tree status
  */
-export function gitStatus(cwd: string): ToolResult {
+export function gitStatus(cwd: string, options: { silent?: boolean } = {}): ToolResult {
   try {
-    console.log(chalk.gray(`  📊 Checking git status`));
+    if (!options.silent) {
+      console.log(chalk.gray(`  📊 Checking git status`));
+    }
 
     // Check if we're in a git repository
     try {
