@@ -22,6 +22,7 @@ export interface WorkflowProgressProps {
     maxIterations?: number;
     startTime?: number;
     collapsed?: boolean;
+    compact?: boolean;
 }
 
 export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
@@ -30,6 +31,7 @@ export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
     maxIterations = 10,
     startTime,
     collapsed = false,
+    compact = false,
 }) => {
     const [elapsed, setElapsed] = useState(0);
 
@@ -95,6 +97,39 @@ export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
 
     if (stages.length === 0) return null;
 
+    const activeStage =
+        [...stages].reverse().find((stage) => stage.status === 'running') ??
+        [...stages].reverse().find((stage) => stage.status === 'pending') ??
+        stages[stages.length - 1];
+
+    if (compact) {
+        return (
+            <Box flexDirection="column" marginY={1} paddingLeft={2}>
+                <Box gap={1}>
+                    <Text color="blue" bold>Workflow</Text>
+                    <Text color="dim">Iteration {currentIteration}/{maxIterations}</Text>
+                    {runningStages > 0 && (
+                        <Text color="cyan">
+                            <Spinner type="dots" />
+                        </Text>
+                    )}
+                </Box>
+                <Box gap={1}>
+                    <Text color={getColor(activeStage.status)}>
+                        {activeStage.status === 'running' ? '◉' : getIcon(activeStage.status)}
+                    </Text>
+                    <Text color={getColor(activeStage.status)} dimColor={activeStage.status === 'pending'}>
+                        {activeStage.name}
+                    </Text>
+                    <Text color="dim">
+                        {completedStages} done · {failedStages} failed · {stages.length - completedStages - failedStages} pending
+                    </Text>
+                    {elapsed > 0 && <Text color="dim">{formatDuration(elapsed)}</Text>}
+                </Box>
+            </Box>
+        );
+    }
+
     // Collapsed view
     if (collapsed) {
         return (
@@ -152,7 +187,7 @@ export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
                     const showConnector = idx < stages.length - 1;
 
                     return (
-                        <React.Fragment key={stage.id}>
+                        <React.Fragment key={stage.id ?? `${stage.name}-${idx}`}>
                             <Box justifyContent="space-between">
                                 <Box gap={1}>
                                     {stage.status === 'running' ? (

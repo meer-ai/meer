@@ -10,7 +10,7 @@ Operate entirely on your machine with local models, or connect to hosted provide
 [![Made with TypeScript](https://img.shields.io/badge/made%20with-TypeScript-blue.svg)](https://www.typescriptlang.org/)
 [![Ollama Supported](https://img.shields.io/badge/Ollama-Supported-green.svg)](https://ollama.ai)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![LangChain](https://img.shields.io/badge/Agent-LangChain-blueviolet.svg)](https://python.langchain.com/)
+[![Structured Agent](https://img.shields.io/badge/Agent-Structured-blueviolet.svg)](#agent-workflows)
 
 </div>
 
@@ -21,7 +21,7 @@ Operate entirely on your machine with local models, or connect to hosted provide
 MeerAI delivers intelligent assistance **inside your terminal** — no browser tabs, no forced SaaS lock-in.
 
 - **Local-first or cloud-smart** – chat with local [Ollama](https://ollama.ai) models, Meer Managed, or remote APIs (OpenAI, Anthropic, Gemini, Hugging Face, vLLM, TGI)
-- **Two agent workflows** – classic streaming agent or LangChain structured agent with 60+ tools and MCP integration
+- **Two agent workflows** – classic streaming agent or structured tool-driven agent with 60+ tools and MCP integration
 - **Rich TUI experience** – Ink-based terminal UI with timelines, diff previews, approval overlays, slash command palette
 - **Workspace-native** – read/edit files, run commands/tests, manage git, scaffold projects, execute semantic search
 - **Private by default** – nothing leaves your machine unless you choose a remote provider
@@ -34,9 +34,9 @@ MeerAI delivers intelligent assistance **inside your terminal** — no browser t
 | Area | Capabilities |
 | ---- | ------------ |
 | **Chat (`meer`)** | Interactive TUI with streaming responses, plan tracking, tool timeline, diff previews |
-| **One-shot Q&A (`meer ask`)** | Repo-aware answers, optional memory, slash command access, classic/LangChain modes |
+| **One-shot Q&A (`meer ask`)** | Repo-aware answers, optional memory, slash command access, classic/structured modes |
 | **Reviews & commits** | `meer review`, `meer commit-msg`, inline suggestions, conventional commit support |
-| **Toolbox (LangChain)** | 60+ structured tools: read/write, git, run_command, semantic_search, scaffold_project, security_scan, generate_tests, etc. |
+| **Toolbox** | 60+ structured tools: read/write, git, run_command, semantic_search, scaffold_project, security_scan, generate_tests, etc. |
 | **Slash commands** | Built-in palette (`/model`, `/setup`, `/history`, …) plus [custom commands](docs/CUSTOM_SLASH_COMMANDS.md) powered by prompt, shell, or Meer CLI actions |
 | **Memory management** | Inspect stats, purge sessions, disable per command |
 | **Semantic search & embeddings** | Optional per-project embedding index with local cache or managed backend |
@@ -70,7 +70,7 @@ Select **Ollama**, **Meer Managed**, or another remote provider. Profiles are st
 ```bash
 meer
 ```
-> Set `MEER_AGENT=langchain` to switch to the LangChain structured agent. Leave unset (or `classic`) for the streaming workflow.
+> Leave `MEER_AGENT` unset for the structured agent. Set `MEER_AGENT=classic` to use the legacy streaming workflow.
 
 ---
 
@@ -78,7 +78,7 @@ meer
 
 ### Conversational coding
 ```bash
-MEER_AGENT=langchain meer
+meer
 ```
 - Timeline view tracks tool execution.
 - Approvals for edits appear as Apply/Skip overlays in the TUI.
@@ -107,7 +107,7 @@ meer ask --no-memory "Refactor this script"
 ### Toggle agent modes
 ```bash
 MEER_AGENT=classic meer ask "Summarize the CLI bootstrap"
-MEER_AGENT=langchain meer ask "Refactor the provider registry"
+meer ask "Refactor the provider registry"
 ```
 
 ### Web search via Brave
@@ -117,29 +117,7 @@ meer ask "Research the latest Node.js LTS dates"
 ```
 - The `google_search` tool now calls the Brave Search API when the key is present.
 - Missing keys fall back to a copyable search URL so you can still continue manually.
-- Combine with the LangChain agent for structured research workflows.
-
----
-
-## Tracing with LangSmith
-
-MeerAI can emit LangChain traces to [LangSmith](https://smith.langchain.com/) (or a self-hosted LangChain endpoint). Set the following environment variables before starting `meer`:
-
-```bash
-export LANGCHAIN_TRACING_V2="true"
-export LANGCHAIN_API_KEY="sk-..."        # LangSmith API key
-export LANGCHAIN_PROJECT="meer-ai-cli"   # optional, defaults to "default"
-# optional for self-hosting:
-# export LANGCHAIN_ENDPOINT="https://api.smith.langchain.com"
-```
-
-Then launch the CLI with the LangChain agent:
-
-```bash
-MEER_AGENT=langchain meer
-```
-
-Every conversation turn is streamed to LangSmith with the built-in callback manager. Disable tracing by unsetting `LANGCHAIN_TRACING_V2`.
+- Combine with the structured agent for research workflows.
 
 ---
 
@@ -150,14 +128,14 @@ Every conversation turn is streamed to LangSmith with the built-in callback mana
 - Ideal for quick iteration and conversational coding.
 - CLI prompts handle approvals and pagination.
 
-### LangChain (`MEER_AGENT=langchain`)
-- Structured agent with LangChain `AgentExecutor` and dynamic toolset.
-- 60+ tools defined in `src/agent/tools/langchain.ts`, including git helpers, scaffolding, formatting, testing, semantic search, documentation generators, security scans, etc.
+### Structured Agent (default)
+- Structured tool-driven agent with Meer-native turn handling and dynamic toolset.
+- 60+ tools defined in `src/agent/tools/agent.ts`, including git helpers, scaffolding, formatting, testing, semantic search, documentation generators, security scans, etc.
 - Model Context Protocol integration via `src/mcp/manager.ts` — automatically loads configured servers and exposes their tools.
 - Session tracker monitors plans, tokens, and costs.
 - Approvals rendered inside the TUI (no garbled output).
 
-Switch between workflows on demand using the `MEER_AGENT` environment variable.
+Use `MEER_AGENT=classic` only if you explicitly want the legacy workflow.
 
 ---
 
@@ -195,7 +173,7 @@ profiles:
 Use per-command overrides:
 ```bash
 DEVAI_PROFILE=ollama-mistral meer review src
-MEER_AGENT=langchain DEVAI_PROFILE=openrouter-claude meer ask "Generate tests for the CLI"
+DEVAI_PROFILE=openrouter-claude meer ask "Generate tests for the CLI"
 ```
 
 ---
@@ -221,7 +199,7 @@ meer ask --no-memory "Explain this file"
 
 ```
 src/
- ├─ agent/            # Classic + LangChain workflows, prompts, tool adapters
+ ├─ agent/            # Classic + structured workflows, prompts, tool adapters
  ├─ commands/         # CLI commands (ask, review, commit, memory…)
  ├─ providers/        # Provider adapters (meer, openrouter, ollama, anthropic, gemini, zai…)
  ├─ tools/            # Core tooling (read/edit, git, run_command, semantic search, MCP bridge)
@@ -232,9 +210,9 @@ src/
 ```
 
 ### Extending MeerAI
-- **New tool (LangChain)**: export a function in `src/tools/index.ts`, wrap it in `src/agent/tools/langchain.ts`.
+- **New tool**: export a function in `src/tools/index.ts`, wrap it in `src/agent/tools/agent.ts`.
 - **New provider**: implement `Provider` interface in `src/providers/` and wire it through `config.ts`.
-- **MCP server**: add to `~/.meer/mcp.yaml`; the LangChain agent autoloads it.
+- **MCP server**: add to `~/.meer/mcp.yaml`; the structured agent autoloads it.
 - **New CLI command**: create a file in `src/commands/` and register it in `src/cli.ts`.
 
 Run `npm run build` and `npm test` to ensure tooling coverage stays intact.

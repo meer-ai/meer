@@ -1,13 +1,11 @@
-import {
-  DynamicStructuredTool,
-  type StructuredToolInterface,
-} from "@langchain/core/tools";
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import type { FileEdit, ToolResult } from "../../tools/index.js";
 import * as tools from "../../tools/index.js";
 import type { Provider } from "../../providers/base.js";
 import type { MCPTool } from "../../mcp/types.js";
-export interface MeerLangChainToolContext {
+import type { AgentTool } from "../runtime/types.js";
+export interface MeerAgentToolContext {
   cwd: string;
   provider?: Provider;
   /**
@@ -27,13 +25,13 @@ export interface MeerLangChainToolContext {
   confirmCommand?: (command: string) => Promise<boolean>;
 }
 
-export interface MeerLangChainToolOptions {
+export interface MeerAgentToolOptions {
   mcpTools?: MCPTool[];
 }
 
 type ToolExecutor<TInput> = (
   input: TInput,
-  context: MeerLangChainToolContext
+  context: MeerAgentToolContext
 ) => Promise<string>;
 
 interface ToolDefinition<TSchema extends z.ZodTypeAny> {
@@ -193,7 +191,7 @@ function unwrap(result: ToolResult): string {
 }
 
 async function ensureEditApproval(
-  context: MeerLangChainToolContext,
+  context: MeerAgentToolContext,
   edit: FileEdit
 ): Promise<boolean> {
   if (!context.reviewFileEdit) {
@@ -205,7 +203,7 @@ async function ensureEditApproval(
 }
 
 async function ensureCommandApproval(
-  context: MeerLangChainToolContext,
+  context: MeerAgentToolContext,
   command: string
 ): Promise<boolean> {
   if (!context.confirmCommand) {
@@ -217,7 +215,7 @@ async function ensureCommandApproval(
 }
 
 async function ensureToolActionApproval(
-  context: MeerLangChainToolContext,
+  context: MeerAgentToolContext,
   action: string
 ): Promise<boolean> {
   if (!context.confirmCommand) {
@@ -231,7 +229,7 @@ async function ensureToolActionApproval(
 async function callMeerTool(
   name: string,
   input: Record<string, unknown>,
-  context: MeerLangChainToolContext
+  context: MeerAgentToolContext
 ): Promise<string> {
   switch (name) {
     case "analyze_project": {
@@ -1823,22 +1821,39 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
 ];
 
-export function createMeerLangChainTools(
-  context: MeerLangChainToolContext,
-  options: MeerLangChainToolOptions = {}
-): StructuredToolInterface[] {
+function toToolInputSchema(name: string, schema: z.ZodTypeAny): Record<string, unknown> {
+  const jsonSchema = zodToJsonSchema(schema, {
+    name,
+    $refStrategy: "none",
+  }) as Record<string, unknown>;
+
+  if ("$ref" in jsonSchema && "definitions" in jsonSchema) {
+    const definitions = jsonSchema.definitions as Record<string, unknown> | undefined;
+    const named = definitions?.[name];
+    if (named && typeof named === "object") {
+      return named as Record<string, unknown>;
+    }
+  }
+
+  return jsonSchema;
+}
+
+export function createMeerAgentTools(
+  context: MeerAgentToolContext,
+  options: MeerAgentToolOptions = {}
+): AgentTool[] {
   const builtinTools = baseToolDefinitions.map(
     ({ name, description, schema, execute }) => {
-      const { schema: lcSchema, validate } = adaptSchemaForAgent(name, schema);
-      return new DynamicStructuredTool({
+      const { validate } = adaptSchemaForAgent(name, schema);
+      return {
         name,
         description,
-        schema: lcSchema,
-        func: async (input) => {
+        inputSchema: toToolInputSchema(name, schema),
+        call: async (input: unknown) => {
           const parsed = validate(input);
           return execute(parsed as Record<string, unknown>, context);
         },
-      });
+      };
     }
   );
 
@@ -1852,14 +1867,15 @@ export function createMeerLangChainTools(
         ? `${tool.description} (MCP:${tool.serverName})`
         : `MCP tool from ${tool.serverName}`;
 
-    return new DynamicStructuredTool({
+    return {
       name: tool.name,
       description,
-      schema:
-        schema instanceof z.ZodObject
-          ? schema.catchall(z.any()).passthrough()
-          : schema,
-      func: async (input) => {
+      inputSchema: tool.inputSchema ?? toToolInputSchema(tool.name, schema),
+      call: async (input: unknown) => {
+        const normalized =
+          typeof input === "object" && input !== null
+            ? (input as Record<string, unknown>)
+            : {};
         if (!context.executeMcpTool) {
           throw new Error(
             `MCP execution is unavailable for tool "${tool.name}".`
@@ -1867,10 +1883,10 @@ export function createMeerLangChainTools(
         }
         return context.executeMcpTool(
           tool.name,
-          (input as Record<string, unknown>) ?? {}
+          normalized
         );
       },
-    });
+    };
   });
 
   return [...builtinTools, ...mcpTools];

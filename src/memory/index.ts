@@ -1,15 +1,19 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, appendFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { homedir } from 'os';
+import { basename } from "path";
+import { SessionStore, type SessionMessageEntry } from "../session/store.js";
+import type { ChatMessage } from "../providers/base.js";
 
 export interface ConversationEntry {
   timestamp: number;
-  role: 'user' | 'assistant' | 'system';
+  role: "user" | "assistant" | "system" | "tool";
   content: string;
   metadata?: {
     model?: string;
     provider?: string;
     tokens?: number;
+    toolName?: string;
+    isError?: boolean;
+    toolCallId?: string;
+    turnId?: string;
   };
 }
 
@@ -20,161 +24,191 @@ export interface MemoryStats {
   diskUsage: string;
 }
 
+export interface SessionView {
+  sessionId: string;
+  sessionPath: string;
+  sessionLabel: string;
+  entries: ConversationEntry[];
+  parentSessionId?: string;
+}
+
 export class Memory {
-  private basePath: string;
-  private sessionsPath: string;
-  private longtermPath: string;
-  private currentSessionId: string;
+  private readonly store: SessionStore;
 
-  constructor() {
-    this.basePath = join(homedir(), '.meer');
-    this.sessionsPath = join(this.basePath, 'sessions');
-    this.longtermPath = join(this.basePath, 'longterm');
-    this.currentSessionId = this.generateSessionId();
-
-    this.ensureDirectories();
+  constructor(store = new SessionStore()) {
+    this.store = store;
   }
 
-  private ensureDirectories(): void {
-    [this.basePath, this.sessionsPath, this.longtermPath].forEach(dir => {
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-    });
-  }
-
-  private generateSessionId(): string {
-    const now = new Date();
-    return `session-${now.toISOString().split('T')[0]}-${Date.now()}`;
-  }
-
-  private getSessionPath(): string {
-    return join(this.sessionsPath, `${this.currentSessionId}.jsonl`);
-  }
-
-  /**
-   * Append a conversation entry to the current session
-   */
-  addToSession(entry: ConversationEntry): void {
-    const sessionPath = this.getSessionPath();
-    const line = JSON.stringify(entry) + '\n';
-    appendFileSync(sessionPath, line, 'utf-8');
-  }
-
-  /**
-   * Load conversation history from current session
-   */
-  loadCurrentSession(): ConversationEntry[] {
-    const sessionPath = this.getSessionPath();
-
-    if (!existsSync(sessionPath)) {
-      return [];
-    }
-
-    const content = readFileSync(sessionPath, 'utf-8');
-    return content
-      .split('\n')
-      .filter(line => line.trim())
-      .map(line => JSON.parse(line));
-  }
-
-  /**
-   * Load all sessions
-   */
-  loadAllSessions(): Map<string, ConversationEntry[]> {
-    const sessions = new Map<string, ConversationEntry[]>();
-
-    if (!existsSync(this.sessionsPath)) {
-      return sessions;
-    }
-
-    const files = readdirSync(this.sessionsPath).filter(f => f.endsWith('.jsonl'));
-
-    for (const file of files) {
-      const sessionId = file.replace('.jsonl', '');
-      const content = readFileSync(join(this.sessionsPath, file), 'utf-8');
-      const entries = content
-        .split('\n')
-        .filter(line => line.trim())
-        .map(line => JSON.parse(line));
-
-      sessions.set(sessionId, entries);
-    }
-
-    return sessions;
-  }
-
-  /**
-   * Get memory statistics
-   */
-  getStats(): MemoryStats {
-    const sessions = this.loadAllSessions();
-    let totalMessages = 0;
-
-    sessions.forEach(entries => {
-      totalMessages += entries.length;
-    });
-
-    // Calculate disk usage
-    let totalBytes = 0;
-    if (existsSync(this.sessionsPath)) {
-      const files = readdirSync(this.sessionsPath);
-      files.forEach(file => {
-        const stat = readFileSync(join(this.sessionsPath, file), 'utf-8');
-        totalBytes += stat.length;
-      });
-    }
-
-    const diskUsage = totalBytes > 1024 * 1024
-      ? `${(totalBytes / 1024 / 1024).toFixed(2)} MB`
-      : `${(totalBytes / 1024).toFixed(2)} KB`;
-
+  startSession(cwd = process.cwd()): { sessionId: string; sessionPath: string } {
+    const session = this.store.startSession(cwd);
     return {
-      sessionCount: sessions.size,
-      totalMessages,
-      longtermFacts: 0, // TODO: Implement longterm facts
-      diskUsage
+      sessionId: session.id,
+      sessionPath: session.path,
     };
   }
 
-  /**
-   * Purge all sessions
-   */
-  purgeSessions(): void {
-    if (!existsSync(this.sessionsPath)) {
-      return;
+  resumeSession(sessionPath: string): { sessionId: string; sessionPath: string } | null {
+    const session = this.store.openSession(sessionPath);
+    if (!session) {
+      return null;
+    }
+    return {
+      sessionId: session.id,
+      sessionPath: session.path,
+    };
+  }
+
+  forkSession(sourcePath: string, cwd = process.cwd()): { sessionId: string; sessionPath: string } | null {
+    const session = this.store.forkSession(sourcePath, cwd);
+    if (!session) {
+      return null;
+    }
+    return {
+      sessionId: session.id,
+      sessionPath: session.path,
+    };
+  }
+
+  addToSession(entry: ConversationEntry, cwd = process.cwd()): void {
+    this.store.appendMessage(entry, cwd);
+  }
+
+  loadCurrentSession(cwd = process.cwd()): ConversationEntry[] {
+    const active = this.store.resolveViewSession(cwd);
+    if (!active) {
+      return [];
     }
 
-    const files = readdirSync(this.sessionsPath);
-    files.forEach(file => {
-      unlinkSync(join(this.sessionsPath, file));
+    return this.store
+      .loadSession(active.path)
+      .filter((entry): entry is SessionMessageEntry => entry.type === "message")
+      .map(({ type: _type, ...message }) => message);
+  }
+
+  loadCurrentSessionView(cwd = process.cwd()): SessionView | null {
+    const active = this.store.resolveViewSession(cwd);
+    if (!active) {
+      return null;
+    }
+
+    return {
+      sessionId: active.id,
+      sessionPath: active.path,
+      sessionLabel: basename(active.path),
+      entries: this.loadCurrentSession(cwd),
+      parentSessionId: active.parentSessionId,
+    };
+  }
+
+  loadSessionView(sessionPath: string): SessionView | null {
+    const session = this.store.getSessionInfoByPath(sessionPath);
+    if (!session) {
+      return null;
+    }
+
+    return {
+      sessionId: session.id,
+      sessionPath: session.path,
+      sessionLabel: basename(session.path),
+      entries: this.store
+        .loadSession(session.path)
+        .filter((entry): entry is SessionMessageEntry => entry.type === "message")
+        .map(({ type: _type, ...message }) => message),
+      parentSessionId: session.parentSessionId,
+    };
+  }
+
+  loadChatMessages(sessionPath: string, options?: { maxMessages?: number }): ChatMessage[] {
+    const session = this.loadSessionView(sessionPath);
+    if (!session) {
+      return [];
+    }
+
+    const entries =
+      options?.maxMessages && session.entries.length > options.maxMessages
+        ? session.entries.slice(-options.maxMessages)
+        : session.entries;
+
+    return entries.flatMap((entry) => {
+      if (entry.role === "tool") {
+        const label = entry.metadata?.toolName
+          ? `Tool result (${entry.metadata.toolName})`
+          : "Tool result";
+        return [
+          {
+            role: "system" as const,
+            content: `${label}:\n${entry.content}`,
+          },
+        ];
+      }
+
+      return [
+        {
+          role: entry.role,
+          content: entry.content,
+        },
+      ];
     });
   }
 
-  /**
-   * Purge current session
-   */
-  purgeCurrentSession(): void {
-    const sessionPath = this.getSessionPath();
-    if (existsSync(sessionPath)) {
-      unlinkSync(sessionPath);
+  getStats(cwd?: string): MemoryStats {
+    const sessions = this.store.listSessions(cwd);
+    const totalMessages = cwd
+      ? sessions.reduce((sum, session) => sum + session.messageCount, 0)
+      : this.store.getTotalMessageCount();
+    const bytes = this.store.getDiskUsageBytes(cwd);
+
+    const diskUsage =
+      bytes > 1024 * 1024
+        ? `${(bytes / 1024 / 1024).toFixed(2)} MB`
+        : `${(bytes / 1024).toFixed(2)} KB`;
+
+    return {
+      sessionCount: sessions.length,
+      totalMessages,
+      longtermFacts: 0,
+      diskUsage,
+    };
+  }
+
+  purgeSessions(cwd?: string): void {
+    this.store.purgeSessions(cwd);
+  }
+
+  purgeCurrentSession(cwd = process.cwd()): void {
+    const current = this.store.resolveViewSession(cwd);
+    if (!current) {
+      return;
     }
+    this.store.purgeSessionFile(current.path);
   }
 
-  /**
-   * Start a new session
-   */
-  newSession(): void {
-    this.currentSessionId = this.generateSessionId();
+  buildRecentContext(
+    cwd = process.cwd(),
+    options?: { excludeCurrent?: boolean; maxMessages?: number }
+  ): string | null {
+    return this.store.buildRecentContext(cwd, options);
   }
 
-  /**
-   * Get current session ID
-   */
+  buildSessionContext(sessionPath: string, maxMessages = 8): string | null {
+    return this.store.buildContextFromSessionPath(sessionPath, maxMessages);
+  }
+
+  listSessions(cwd?: string) {
+    return this.store.listSessions(cwd);
+  }
+
+  resolveSession(query: string, cwd = process.cwd()) {
+    return this.store.resolveSession(query, cwd);
+  }
+
   getCurrentSessionId(): string {
-    return this.currentSessionId;
+    return this.store.getCurrentSessionId() ?? "no-active-session";
+  }
+
+  getCurrentSessionPath(): string | null {
+    return this.store.getCurrentSessionPath();
   }
 }
 
-// Singleton instance
 export const memory = new Memory();

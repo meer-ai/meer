@@ -60,6 +60,11 @@ export interface AgentConfig {
   ) => Promise<string>;
 }
 
+export interface WorkflowInitializationOptions {
+  contextPrompt?: string;
+  priorMessages?: ChatMessage[];
+}
+
 export interface WorkflowEvent {
   type: 'thinking' | 'streaming' | 'tool_start' | 'tool_update' | 'tool_end' | 'error' | 'complete';
   timestamp: number;
@@ -179,7 +184,7 @@ export class AgentWorkflowV3 {
   // Public API
   // ============================================================================
 
-  async initialize(contextPrompt?: string): Promise<void> {
+  async initialize(options?: string | WorkflowInitializationOptions): Promise<void> {
     // Initialize MCP tools
     if (!this.mcpManager.isInitialized()) {
       try {
@@ -196,12 +201,26 @@ export class AgentWorkflowV3 {
     }
 
     // Initialize system prompt
+    const normalized =
+      typeof options === "string" ? { contextPrompt: options } : options ?? {};
     const systemPrompt = this.getSystemPrompt();
-    const fullPrompt = contextPrompt
-      ? `${systemPrompt}\n\n${contextPrompt}`
+    const fullPrompt = normalized.contextPrompt
+      ? `${systemPrompt}\n\n${normalized.contextPrompt}`
       : systemPrompt;
 
     this.messages = [{ role: "system", content: fullPrompt }];
+
+    if (normalized.priorMessages?.length) {
+      this.messages.push(
+        ...normalized.priorMessages.filter(
+          (message): message is ChatMessage =>
+            Boolean(message?.content?.trim()) &&
+            (message.role === "user" ||
+              message.role === "assistant" ||
+              message.role === "system")
+        )
+      );
+    }
   }
 
   /**

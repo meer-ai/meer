@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { createMeerLangChainTools } from "../src/agent/tools/langchain.js";
+import { createMeerAgentTools } from "../src/agent/tools/agent.js";
 
 const context = {
   cwd: process.cwd(),
   reviewFileEdit: async () => true,
 };
 
-const toolkit = createMeerLangChainTools(context);
+const toolkit = createMeerAgentTools(context);
 const exportedNames = toolkit.map((tool) => tool.name).sort();
 
 const expectedNames = [
@@ -89,4 +89,4 @@ assert.deepEqual(
   `Unexpected tool wrappers exported: ${unexpected.join(", ")}`
 );
 
-console.log("✅ LangChain tool wrappers cover all core CLI tools.");
+console.log("✅ Agent tool wrappers cover all core CLI tools.");

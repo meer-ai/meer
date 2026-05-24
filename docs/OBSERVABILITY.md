@@ -335,7 +335,7 @@ Retries automatically emit:
 
 ### Implementation
 
-Location: `src/agent/langchainWorkflow.ts`
+Location: `src/agent/structured-workflow.ts`
 
 Automatic context window pruning to prevent token limit errors.
 
@@ -504,7 +504,7 @@ All telemetry is automatically integrated at:
    - Trip events
    - Recovery events
 
-4. **Langchain Workflow** (`src/agent/langchainWorkflow.ts`)
+4. **Structured Workflow** (`src/agent/structured-workflow.ts`)
    - LLM request success/failure
    - Token usage tracking
    - Context window usage

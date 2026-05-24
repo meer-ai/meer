@@ -19,6 +19,7 @@ import type {
   MCPClientInfo,
 } from './types.js';
 import { resolveEnvVars } from './config.js';
+import { shouldLogMCPToConsole } from './console.js';
 import { CircuitBreaker } from './circuitBreaker.js';
 import { retryWithBackoff, RetryPredicates } from '../utils/retry.js';
 import {
@@ -88,7 +89,9 @@ export class MCPClient {
    */
   async connect(): Promise<void> {
     try {
-      console.log(chalk.gray(`  🔌 Connecting to MCP server: ${this.serverName}...`));
+      if (shouldLogMCPToConsole()) {
+        console.log(chalk.gray(`  🔌 Connecting to MCP server: ${this.serverName}...`));
+      }
 
       if (this.config.url) {
         await this.connectViaUrl();
@@ -101,11 +104,13 @@ export class MCPClient {
       // Load capabilities
       await this.loadCapabilities();
 
-      console.log(
-        chalk.green(
-          `  ✓ Connected to ${this.serverName} (${this.tools.length} tools, ${this.resources.length} resources)`
-        )
-      );
+      if (shouldLogMCPToConsole()) {
+        console.log(
+          chalk.green(
+            `  ✓ Connected to ${this.serverName} (${this.tools.length} tools, ${this.resources.length} resources)`
+          )
+        );
+      }
     } catch (error) {
       this.connected = false;
       throw new Error(
@@ -141,10 +146,12 @@ export class MCPClient {
 
         // Setup process error handler
         this.processErrorHandler = (error: Error) => {
-          console.error(
-            chalk.red(`  ❌ Failed to start ${this.serverName}:`),
-            error.message
-          );
+          if (shouldLogMCPToConsole()) {
+            console.error(
+              chalk.red(`  ❌ Failed to start ${this.serverName}:`),
+              error.message
+            );
+          }
           this.connected = false;
           reject(error);
         };
@@ -155,11 +162,13 @@ export class MCPClient {
           const exitCode = this.process?.exitCode;
           const signal = this.process?.signalCode;
 
-          console.error(
-            chalk.red(
-              `  ❌ MCP server ${this.serverName} exited unexpectedly: code=${exitCode}, signal=${signal}`
-            )
-          );
+          if (shouldLogMCPToConsole()) {
+            console.error(
+              chalk.red(
+                `  ❌ MCP server ${this.serverName} exited unexpectedly: code=${exitCode}, signal=${signal}`
+              )
+            );
+          }
 
           this.connected = false;
 
@@ -168,26 +177,32 @@ export class MCPClient {
             this.reconnectAttempts++;
             const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
 
-            console.log(
-              chalk.yellow(
-                `  🔄 Attempting to reconnect to ${this.serverName} (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`
-              )
-            );
+            if (shouldLogMCPToConsole()) {
+              console.log(
+                chalk.yellow(
+                  `  🔄 Attempting to reconnect to ${this.serverName} (${this.reconnectAttempts}/${this.maxReconnectAttempts}) in ${delay}ms...`
+                )
+              );
+            }
 
             setTimeout(() => {
               this.reconnect().catch((error) => {
-                console.error(
-                  chalk.red(`  ❌ Reconnection failed for ${this.serverName}:`),
-                  error instanceof Error ? error.message : String(error)
-                );
+                if (shouldLogMCPToConsole()) {
+                  console.error(
+                    chalk.red(`  ❌ Reconnection failed for ${this.serverName}:`),
+                    error instanceof Error ? error.message : String(error)
+                  );
+                }
               });
             }, delay);
           } else {
-            console.error(
-              chalk.red(
-                `  ❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for ${this.serverName}. Giving up.`
-              )
-            );
+            if (shouldLogMCPToConsole()) {
+              console.error(
+                chalk.red(
+                  `  ❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for ${this.serverName}. Giving up.`
+                )
+              );
+            }
           }
         };
 
@@ -198,7 +213,10 @@ export class MCPClient {
           const message = data.toString();
           if (message.trim()) {
             // Filter out debug messages unless in verbose mode
-            if (!message.toLowerCase().includes('debug') || process.env.MCP_VERBOSE) {
+            if (
+              shouldLogMCPToConsole() &&
+              (!message.toLowerCase().includes('debug') || process.env.MCP_VERBOSE)
+            ) {
               console.error(chalk.yellow(`  ⚠️  ${this.serverName}:`), message.trim());
             }
           }
@@ -206,7 +224,7 @@ export class MCPClient {
 
         // Optional: Setup stdout logging (some servers output to stdout)
         this.process.stdout?.on('data', (data) => {
-          if (process.env.MCP_VERBOSE) {
+          if (shouldLogMCPToConsole()) {
             const message = data.toString();
             console.log(chalk.gray(`  📤 ${this.serverName}:`), message.trim());
           }
@@ -301,9 +319,11 @@ export class MCPClient {
       // Attempt connection
       await this.connect();
 
-      console.log(
-        chalk.green(`  ✅ Successfully reconnected to ${this.serverName}`)
-      );
+      if (shouldLogMCPToConsole()) {
+        console.log(
+          chalk.green(`  ✅ Successfully reconnected to ${this.serverName}`)
+        );
+      }
 
       // Track successful reconnection
       mcpReconnections.inc({ server_name: this.serverName, success: 'true' });
@@ -387,9 +407,11 @@ export class MCPClient {
         this.prompts = [];
       }
     } catch (error) {
-      console.error(
-        chalk.yellow(`  ⚠️  Failed to load capabilities for ${this.serverName}`)
-      );
+      if (shouldLogMCPToConsole()) {
+        console.error(
+          chalk.yellow(`  ⚠️  Failed to load capabilities for ${this.serverName}`)
+        );
+      }
     }
   }
 
@@ -446,12 +468,14 @@ export class MCPClient {
 
       // Check if error is from circuit breaker
       if (errorMessage.includes('Circuit breaker is OPEN')) {
-        console.log(
-          chalk.red(
-            `  ⚡ Circuit breaker OPEN for ${this.serverName}. ` +
-            `Use 'meer /mcp status' to check server health.`
-          )
-        );
+        if (shouldLogMCPToConsole()) {
+          console.log(
+            chalk.red(
+              `  ⚡ Circuit breaker OPEN for ${this.serverName}. ` +
+              `Use 'meer /mcp status' to check server health.`
+            )
+          );
+        }
       }
 
       return {
@@ -479,9 +503,11 @@ export class MCPClient {
    */
   resetCircuitBreaker(): void {
     this.circuitBreaker.reset();
-    console.log(
-      chalk.green(`  ✅ Circuit breaker reset for ${this.serverName}`)
-    );
+    if (shouldLogMCPToConsole()) {
+      console.log(
+        chalk.green(`  ✅ Circuit breaker reset for ${this.serverName}`)
+      );
+    }
   }
 
   /**

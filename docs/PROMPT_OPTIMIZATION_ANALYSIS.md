@@ -192,7 +192,7 @@ The optimized prompt brings Meer AI in line with industry standards.
 
 1. **Immediate:** Test optimized prompt with comprehensive test suite
 2. **Short-term:** Deploy optimized version with monitoring
-3. **Medium-term:** Consider further optimization of LangChain prompt (currently 75 lines)
+3. **Medium-term:** Consider further optimization of the structured agent prompt (currently 75 lines)
 4. **Long-term:** Implement dynamic prompt generation (only include relevant tools based on context)
 
 ## Next Steps

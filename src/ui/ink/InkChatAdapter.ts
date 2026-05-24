@@ -86,6 +86,7 @@ export class InkChatAdapter {
   private eventBus?: AgentEventBus;
   private busUnsubscribers: Array<() => void> = [];
   private plan: Plan | null = null;
+  private pendingUserMessages = new Set<string>();
 
   // Debounced updateUI for streaming - reduces re-renders from 100+/sec to ~20/sec
   private debouncedUpdateUI = debounce(() => this.updateUI(), { delay: 50, maxWait: 200 });
@@ -148,6 +149,10 @@ export class InkChatAdapter {
         this.promptRejecter = null;
         this.promptActive = false;
       } else if (this.onSubmitCallback) {
+        const trimmed = message.trim();
+        if (trimmed && !trimmed.startsWith("/")) {
+          this.appendUserMessage(trimmed, { optimistic: true });
+        }
         this.onSubmitCallback(message);
       }
     };
@@ -223,6 +228,10 @@ export class InkChatAdapter {
         this.promptRejecter = null;
         this.promptActive = false;
       } else if (this.onSubmitCallback) {
+        const trimmed = message.trim();
+        if (trimmed && !trimmed.startsWith("/")) {
+          this.appendUserMessage(trimmed, { optimistic: true });
+        }
         this.onSubmitCallback(message);
       }
     };
@@ -323,10 +332,56 @@ export class InkChatAdapter {
 
   // Compatibility methods for existing agent system
 
-  appendUserMessage(content: string): void {
-    if (!content.trim()) return;
-    this.messages.push({ id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, role: 'user', content, timestamp: Date.now() });
+  appendUserMessage(
+    content: string,
+    options?: { optimistic?: boolean; consumeOptimistic?: boolean }
+  ): void {
+    const normalized = content.trim();
+    if (!normalized) return;
+
+    if (options?.consumeOptimistic && this.pendingUserMessages.delete(normalized)) {
+      return;
+    }
+
+    this.messages.push({
+      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      role: "user",
+      content: normalized,
+      timestamp: Date.now(),
+    });
+    if (options?.optimistic) {
+      this.pendingUserMessages.add(normalized);
+    }
     this.messageCount++;
+    this.updateUI();
+  }
+
+  replayTranscript(
+    entries: Array<{
+      role: 'user' | 'assistant' | 'system' | 'tool';
+      content: string;
+      timestamp?: number;
+      metadata?: {
+        toolName?: string;
+      };
+    }>
+  ): void {
+    const restored = entries
+      .filter((entry) => entry.content.trim().length > 0)
+      .map((entry) => ({
+        id: `msg-${entry.timestamp ?? Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        role: entry.role,
+        content: entry.content,
+        toolName: entry.metadata?.toolName,
+        timestamp: entry.timestamp ?? Date.now(),
+      }));
+
+    if (restored.length === 0) {
+      return;
+    }
+
+    this.messages.push(...restored);
+    this.messageCount += restored.length;
     this.updateUI();
   }
 

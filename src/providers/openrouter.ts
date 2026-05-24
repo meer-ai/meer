@@ -5,7 +5,10 @@ import type {
   ChatOptions,
   EmbedOptions,
   ProviderMetadata,
+  ProviderEvent,
+  ProviderStructuredTurn,
 } from "./base.js";
+import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 
 export interface OpenRouterConfig {
   apiKey: string;
@@ -34,11 +37,14 @@ export class OpenRouterProvider implements Provider {
     };
   }
 
+  private shouldPreferStructuredTurns(): boolean {
+    return (process.env.MEER_AGENT || "").toLowerCase() !== "classic";
+  }
+
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-    const responseFormat =
-      (process.env.MEER_AGENT || "").toLowerCase() === "langchain"
-        ? { type: "json_object" }
-        : undefined;
+    const responseFormat = this.shouldPreferStructuredTurns()
+      ? { type: "json_object" }
+      : undefined;
 
     const payload: Record<string, unknown> = {
       model: this.config.model,
@@ -63,10 +69,9 @@ export class OpenRouterProvider implements Provider {
     messages: ChatMessage[],
     options?: ChatOptions
   ): AsyncIterable<string> {
-    const responseFormat =
-      (process.env.MEER_AGENT || "").toLowerCase() === "langchain"
-        ? { type: "json_object" }
-        : undefined;
+    const responseFormat = this.shouldPreferStructuredTurns()
+      ? { type: "json_object" }
+      : undefined;
 
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -136,6 +141,20 @@ export class OpenRouterProvider implements Provider {
     } finally {
       reader.releaseLock();
     }
+  }
+
+  async chatStructured(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): Promise<ProviderStructuredTurn> {
+    return parseStructuredTurn(await this.chat(messages, options));
+  }
+
+  async *streamEvents(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): AsyncIterable<ProviderEvent> {
+    yield* textStreamToStructuredEvents(this.stream(messages, options));
   }
 
   async embed(texts: string[], options?: EmbedOptions): Promise<number[][]> {

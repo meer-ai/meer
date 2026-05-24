@@ -5,7 +5,10 @@ import type {
   ChatOptions,
   EmbedOptions,
   ProviderMetadata,
+  ProviderEvent,
+  ProviderStructuredTurn,
 } from "./base.js";
+import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -103,6 +106,20 @@ export class AnthropicProvider implements Provider {
     } finally {
       reader.releaseLock();
     }
+  }
+
+  async chatStructured(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): Promise<ProviderStructuredTurn> {
+    return parseStructuredTurn(await this.chat(messages, options));
+  }
+
+  async *streamEvents(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): AsyncIterable<ProviderEvent> {
+    yield* textStreamToStructuredEvents(this.stream(messages, options));
   }
 
   async embed(texts: string[], options?: EmbedOptions): Promise<number[][]> {

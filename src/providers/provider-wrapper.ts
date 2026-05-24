@@ -8,8 +8,17 @@
  * - Request timeout management
  */
 
-import type { Provider, ChatMessage, ChatOptions, EmbedOptions, ProviderMetadata } from './base.js';
+import type {
+  Provider,
+  ChatMessage,
+  ChatOptions,
+  EmbedOptions,
+  ProviderMetadata,
+  ProviderEvent,
+  ProviderStructuredTurn,
+} from './base.js';
 import { retryWithBackoff, RetryPredicates } from '../utils/retry.js';
+import { parseStructuredTurn, textStreamToStructuredEvents } from './structured.js';
 import chalk from 'chalk';
 
 export interface ProviderWrapperConfig {
@@ -79,6 +88,52 @@ export class ProviderWrapper implements Provider {
     for await (const chunk of streamGenerator) {
       yield chunk;
     }
+  }
+
+  async chatStructured(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): Promise<ProviderStructuredTurn> {
+    if (this.provider.chatStructured) {
+      return retryWithBackoff(
+        () => this.provider.chatStructured!(messages, options),
+        {
+          maxRetries: this.config.maxRetries,
+          baseDelay: this.config.baseDelay,
+          maxDelay: this.config.maxDelay,
+          shouldRetry: this.shouldRetryError.bind(this),
+          name: `${this.config.name} structured chat`,
+        }
+      );
+    }
+
+    const text = await this.chat(messages, options);
+    return parseStructuredTurn(text);
+  }
+
+  async *streamEvents(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): AsyncIterable<ProviderEvent> {
+    if (this.provider.streamEvents) {
+      const streamGenerator = await retryWithBackoff(
+        async () => this.provider.streamEvents!(messages, options),
+        {
+          maxRetries: this.config.maxRetries,
+          baseDelay: this.config.baseDelay,
+          maxDelay: this.config.maxDelay,
+          shouldRetry: this.shouldRetryError.bind(this),
+          name: `${this.config.name} event stream`,
+        }
+      ) as AsyncIterable<ProviderEvent>;
+
+      for await (const event of streamGenerator) {
+        yield event;
+      }
+      return;
+    }
+
+    yield* textStreamToStructuredEvents(this.stream(messages, options));
   }
 
   /**

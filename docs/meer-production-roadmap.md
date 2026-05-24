@@ -185,7 +185,7 @@ Legend: P0 = user-visible difference this cycle, P1 = queued next, 🟡 = active
 
 **Goals**
 - Surface context summary, approval/auto-apply state, slash command hints, and queued operations without leaving the prompt.
-- Provide inline todo progress (tie-in with LangChain plan) and session stats (tokens, cost ceiling).
+- Provide inline todo progress (tie-in with the structured agent plan) and session stats (tokens, cost ceiling).
 
 **Proposed Architecture**
 1. **Composer data pipeline**
@@ -215,7 +215,7 @@ Legend: P0 = user-visible difference this cycle, P1 = queued next, 🟡 = active
 
 **Goals**
 - Present a live workflow timeline with spinners, success/error icons, and tool outputs (diff previews, command logs).
-- Track plan steps (from `/plan` or LangChain plan) so users can approve/skip per step.
+- Track plan steps (from `/plan` or the structured agent plan) so users can approve/skip per step.
 
 **Proposed Architecture**
 1. **Event bus**

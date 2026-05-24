@@ -3,6 +3,42 @@ import chalk from 'chalk';
 import inquirer from 'inquirer';
 import { memory } from '../memory/index.js';
 
+function formatRole(role: 'user' | 'assistant' | 'system' | 'tool') {
+  if (role === 'user') {
+    return { color: chalk.cyan, label: 'You' };
+  }
+  if (role === 'system') {
+    return { color: chalk.yellow, label: 'System' };
+  }
+  if (role === 'tool') {
+    return { color: chalk.magenta, label: 'Tool' };
+  }
+  return { color: chalk.green, label: 'AI' };
+}
+
+function printSessionSummary(limit = 20): void {
+  const sessions = memory.listSessions(process.cwd()).slice(0, limit);
+
+  console.log(chalk.bold.blue('\n🗂️  Project Sessions:\n'));
+  if (sessions.length === 0) {
+    console.log(chalk.gray('  No saved sessions for this project.\n'));
+    return;
+  }
+
+  sessions.forEach((session, index) => {
+    const created = new Date(session.createdAt).toLocaleString();
+    const parent = session.parentSessionId
+      ? chalk.gray(` ← fork of ${session.parentSessionId.slice(0, 8)}`)
+      : '';
+    console.log(
+      `${chalk.cyan(String(index + 1).padStart(2, ' '))}. ` +
+        `${chalk.yellow(session.id.slice(0, 8))} ` +
+        `${chalk.gray(`(${session.messageCount} msgs • ${created})`)}${parent}`
+    );
+  });
+  console.log('');
+}
+
 export function createMemoryCommand(): Command {
   const memoryCmd = new Command('memory')
     .description('View or manage local memory')
@@ -46,21 +82,41 @@ export function createMemoryCommand(): Command {
     });
 
   memoryCmd
+    .command('list')
+    .description('List saved sessions for the current project')
+    .action(() => {
+      printSessionSummary();
+    });
+
+  memoryCmd
     .command('view')
     .description('View current session')
-    .action(() => {
-      const session = memory.loadCurrentSession();
+    .argument('[session]', 'Optional session id prefix or session file path')
+    .action((sessionArg?: string) => {
+      const session = sessionArg
+        ? (() => {
+            const resolved = memory.resolveSession(sessionArg, process.cwd());
+            return resolved ? memory.loadSessionView(resolved.path) : null;
+          })()
+        : memory.loadCurrentSessionView();
 
-      if (session.length === 0) {
-        console.log(chalk.yellow('\n⚠️  No messages in current session\n'));
+      if (!session || session.entries.length === 0) {
+        console.log(
+          chalk.yellow(
+            sessionArg
+              ? `\n⚠️  No messages found for session '${sessionArg}'\n`
+              : '\n⚠️  No messages in current session\n'
+          )
+        );
         return;
       }
 
-      console.log(chalk.bold.blue(`\n📝 Current Session (${memory.getCurrentSessionId()}):\n`));
+      console.log(chalk.bold.blue(`\n📝 Current Session (${session.sessionId}):\n`));
+      console.log(chalk.gray(`  ${session.sessionLabel}`));
+      console.log('');
 
-      session.forEach((entry, i) => {
-        const roleColor = entry.role === 'user' ? chalk.cyan : chalk.green;
-        const roleLabel = entry.role === 'user' ? 'You' : 'AI';
+      session.entries.forEach((entry, i) => {
+        const { color: roleColor, label: roleLabel } = formatRole(entry.role);
         const timestamp = new Date(entry.timestamp).toLocaleTimeString();
 
         console.log(roleColor(`${i + 1}. [${timestamp}] ${roleLabel}:`));
@@ -88,6 +144,7 @@ async function showMemoryMenu(): Promise<void> {
       message: 'What would you like to do?',
       choices: [
         { name: '📊 View statistics', value: 'stats' },
+        { name: '🗂️  List project sessions', value: 'list' },
         { name: '📝 View current session', value: 'view' },
         { name: '🗑️  Purge all sessions', value: 'purge' },
         new inquirer.Separator(),
@@ -107,14 +164,15 @@ async function showMemoryMenu(): Promise<void> {
       break;
 
     case 'view':
-      const session = memory.loadCurrentSession();
-      if (session.length === 0) {
+      const session = memory.loadCurrentSessionView();
+      if (!session || session.entries.length === 0) {
         console.log(chalk.yellow('\n⚠️  No messages in current session\n'));
       } else {
-        console.log(chalk.bold.blue(`\n📝 Current Session (${memory.getCurrentSessionId()}):\n`));
-        session.forEach((entry, i) => {
-          const roleColor = entry.role === 'user' ? chalk.cyan : chalk.green;
-          const roleLabel = entry.role === 'user' ? 'You' : 'AI';
+        console.log(chalk.bold.blue(`\n📝 Current Session (${session.sessionId}):\n`));
+        console.log(chalk.gray(`  ${session.sessionLabel}`));
+        console.log('');
+        session.entries.forEach((entry, i) => {
+          const { color: roleColor, label: roleLabel } = formatRole(entry.role);
           const timestamp = new Date(entry.timestamp).toLocaleTimeString();
 
           console.log(roleColor(`${i + 1}. [${timestamp}] ${roleLabel}:`));
@@ -122,6 +180,10 @@ async function showMemoryMenu(): Promise<void> {
           console.log('');
         });
       }
+      break;
+
+    case 'list':
+      printSessionSummary();
       break;
 
     case 'purge':

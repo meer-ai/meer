@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo } from "react";
 import ansiEscapes from "ansi-escapes";
-import { MeerChatV2, type MeerChatV2Props } from "./MeerChatV2.js";
+import { MeerChat, type MeerChatProps } from "./MeerChat.js";
 import {
   shouldUseAlternateBuffer,
   shouldUseScreenReaderLayout,
@@ -8,7 +8,7 @@ import {
   type UISettings,
 } from "../ui-settings.js";
 
-export interface AppContainerProps extends MeerChatV2Props {
+export interface AppContainerProps extends MeerChatProps {
   uiSettings: UISettings;
 }
 
@@ -31,7 +31,7 @@ export const AppContainer: React.FC<AppContainerProps> = ({
   useAlternateBuffer(layoutPreferences.alternateBuffer);
 
   return (
-    <MeerChatV2
+    <MeerChat
       {...chatProps}
       screenReader={layoutPreferences.screenReader}
       virtualizeHistory={layoutPreferences.virtualizeHistory}

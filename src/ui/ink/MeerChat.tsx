@@ -1,34 +1,42 @@
 /**
- * Minimal Gemini-style layout for Meer.
- * Keeps the Meer logo idea but adopts a clean header > history > input structure.
- * Now with slash command autocomplete support.
+ * MeerChat - Production-ready TUI component
+ * Optimized with Context API, memoization, and smooth UX
  */
 
-import React, { useCallback, useMemo, useState } from "react";
-import { Box, Text, useApp, useInput, Static } from "ink";
-import TextInput from "ink-text-input";
-import Gradient from "ink-gradient";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+} from "react";
+import { Box, Text, useInput, useApp } from "ink";
 import Spinner from "ink-spinner";
-import { StatusHeader } from "./components/core/index.js";
+import TextInput from "ink-text-input";
+import SelectInput from "ink-select-input";
+import {
+  getAllCommands,
+  type SlashCommandListEntry,
+} from "../../slash/registry.js";
+import { getSlashCommandBadges } from "../../slash/utils.js";
+import type { Plan } from "../../plan/types.js";
 import { ToolExecutionPanel, type ToolCall } from "./components/tools/index.js";
+import { PlanPanel } from "./components/plan/index.js";
+import {
+  WorkflowProgress,
+  type WorkflowStage,
+} from "./components/workflow/index.js";
+import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
+import type { Message } from "./contexts/ChatContext.js";
+import { debounce } from "./utils/debounce.js";
 
-type Mode = "edit" | "plan";
-
-interface Message {
-  role: "user" | "assistant" | "system" | "tool";
-  content: string;
-  toolName?: string;
-  timestamp?: number;
-}
-
-export interface SlashCommandSuggestion {
-  name: string;
-  description?: string;
-}
+// ============================================================================
+// Types
+// ============================================================================
 
 export interface MeerChatProps {
   onMessage: (message: string) => void;
   messages: Message[];
+  draftAssistant?: Message;
   isThinking: boolean;
   status?: string;
   provider?: string;
@@ -36,173 +44,553 @@ export interface MeerChatProps {
   cwd?: string;
   onExit?: () => void;
   onInterrupt?: () => void;
-  mode?: Mode;
-  onModeChange?: (mode: Mode) => void;
+  mode?: "edit" | "plan";
+  onModeChange?: (mode: "edit" | "plan") => void;
   tools?: ToolCall[];
-  workflowStages?: import('./components/workflow/index.js').WorkflowStage[];
+  workflowStages?: WorkflowStage[];
   currentIteration?: number;
   maxIterations?: number;
-  tokens?: { used: number; limit?: number };
-  cost?: { current: number; limit?: number };
+  tokens?: {
+    used: number;
+    limit?: number;
+  };
+  cost?: {
+    current: number;
+    limit?: number;
+  };
   messageCount?: number;
   sessionUptime?: number;
+  virtualizeHistory?: boolean;
+  screenReader?: boolean;
   timelineEvents?: any[];
-  plan?: import('../../plan/types.js').Plan | null;
-  slashSuggestions?: SlashCommandSuggestion[];
-  onSlashSelect?: (command: string) => void;
+  plan?: Plan | null;
+  slashSuggestions?: SlashCommandListEntry[];
+  choicePrompt?: {
+    message: string;
+    options: Array<{ label: string; value: string }>;
+    defaultValue: string;
+  };
+  onChoiceSelect?: (value: string) => void;
 }
 
-const Hero = ({
-  provider,
-  model,
-}: {
-  provider?: string;
-  model?: string;
-}) => (
-  <Box flexDirection="column" gap={0} marginBottom={1}>
-    <Text color="dim">
-      Tips: Ask questions, edit files, or run commands. Use /help for commands.
-    </Text>
-  </Box>
+// ============================================================================
+// Constants
+// ============================================================================
+
+const SCROLL_WINDOW_SIZE = 20;
+const MAX_HISTORY_SIZE = 500;
+const STREAM_DEBOUNCE_MS = 50;
+const SLASH_DEBOUNCE_MS = 150;
+
+// ============================================================================
+// Helper Components (Memoized)
+// ============================================================================
+
+// Code Block Component - Optimized with memo
+const CodeBlock: React.FC<{ code: string; language?: string }> = React.memo(
+  ({ code, language }) => {
+    const getLanguageIcon = (lang?: string): string => {
+      if (!lang) return "📄";
+      const lower = lang.toLowerCase();
+      if (lower.includes("typescript") || lower === "ts") return "🔷";
+      if (lower.includes("javascript") || lower === "js") return "🟨";
+      if (lower.includes("python") || lower === "py") return "🐍";
+      if (lower.includes("rust") || lower === "rs") return "🦀";
+      if (lower.includes("go")) return "🔵";
+      if (lower.includes("java")) return "☕";
+      if (lower.includes("c++") || lower === "cpp") return "⚡";
+      if (lower.includes("shell") || lower === "bash" || lower === "sh")
+        return "🐚";
+      if (lower.includes("json")) return "📦";
+      if (lower.includes("yaml") || lower === "yml") return "📋";
+      return "📝";
+    };
+
+    return (
+      <Box flexDirection="column" paddingLeft={0}>
+        {language && (
+          <Box marginBottom={0}>
+            <Text color="dim" dimColor>
+              {getLanguageIcon(language)} {language}
+            </Text>
+          </Box>
+        )}
+        <Box
+          flexDirection="column"
+          borderLeft={true}
+          paddingLeft={2}
+          marginTop={language ? 0 : 0}
+        >
+          <Text color="white" dimColor>
+            {code}
+          </Text>
+        </Box>
+      </Box>
+    );
+  },
+  (prev, next) => prev.code === next.code && prev.language === next.language
 );
 
-const MessageItem: React.FC<{ message: Message }> = ({ message }) => {
-  const color =
-    message.role === "assistant"
-      ? "cyan"
-      : message.role === "user"
-        ? "green"
-        : message.role === "tool"
-          ? "magenta"
-          : "dim";
-  return (
-    <Box gap={1}>
-      <Text color={color}>{message.role === "assistant" ? "Meer AI" : message.role}</Text>
-      <Text color="white">{message.content || "(no content)"}</Text>
-    </Box>
-  );
-};
+// Tool Call Component - Optimized with memo
+const ToolCallView: React.FC<{ toolName: string; content: string }> =
+  React.memo(
+    ({ toolName, content }) => {
+      const getToolIcon = (name: string): string => {
+        const lower = name.toLowerCase();
+        if (lower.includes("read") || lower.includes("file")) return "📖";
+        if (lower.includes("write") || lower.includes("edit")) return "✍️";
+        if (lower.includes("bash") || lower.includes("exec")) return "⚡";
+        if (lower.includes("search") || lower.includes("grep")) return "🔍";
+        if (lower.includes("web") || lower.includes("fetch")) return "🌐";
+        if (lower.includes("task") || lower.includes("agent")) return "🤖";
+        return "🛠️";
+      };
 
-const History = ({
-  messages,
-  isThinking,
-  status,
-}: {
-  messages: Message[];
-  isThinking: boolean;
-  status?: string;
-}) => {
-  const staticMessages = messages.slice(0, Math.max(0, messages.length - 1));
-  const liveMessage = messages[messages.length - 1];
+      const displayContent =
+        content.length > 200
+          ? `${content.substring(0, 200)}... (${content.length} chars total)`
+          : content;
 
-  return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="gray"
-      paddingX={1}
-      paddingY={0}
-      marginBottom={1}
-      gap={0}
-    >
-      <Static items={staticMessages}>
-        {(item, index) => <MessageItem key={item.timestamp ?? index} message={item} />}
-      </Static>
-      {liveMessage && <MessageItem message={liveMessage} />}
-      {isThinking && (
-        <Box gap={1} marginTop={0}>
-          <Text color="cyan">
-            <Spinner type="dots" />
-          </Text>
-          <Text color="cyan">{status || "Thinking..."}</Text>
+      return (
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          marginBottom={2}
+          paddingLeft={0}
+        >
+          <Box gap={1}>
+            <Text color="magenta">▎</Text>
+            <Box gap={1}>
+              <Text color="magenta">{getToolIcon(toolName)}</Text>
+              <Text color="magenta" bold>
+                {toolName}
+              </Text>
+            </Box>
+          </Box>
+          <Box paddingLeft={2} marginTop={0}>
+            <Text color="dim" dimColor>
+              {displayContent}
+            </Text>
+          </Box>
         </Box>
-      )}
-    </Box>
+      );
+    },
+    (prev, next) =>
+      prev.toolName === next.toolName && prev.content === next.content
   );
-};
 
-const SlashSuggestionsOverlay: React.FC<{
-  suggestions: SlashCommandSuggestion[];
-  selectedIndex: number;
-}> = ({ suggestions, selectedIndex }) => {
-  if (suggestions.length === 0) return null;
+// Message Component - Optimized with memo
+const MessageView: React.FC<{ message: Message; isDraft?: boolean }> = React.memo(
+  ({ message, isDraft = false }) => {
+    const parseContent = (content: string) => {
+      const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
+      const parts: Array<{
+        type: "text" | "code";
+        content: string;
+        language?: string;
+      }> = [];
+      let lastIndex = 0;
+      let match;
 
-  return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="yellow"
-      paddingX={1}
-      paddingY={0}
-      marginBottom={1}
-    >
-      <Box gap={1} marginBottom={0}>
-        <Text color="yellow" bold>⚡ Commands</Text>
-        <Text color="dim">({suggestions.length} found)</Text>
-      </Box>
-      {suggestions.slice(0, 8).map((cmd, idx) => (
-        <Box key={cmd.name} gap={1}>
-          <Text color={idx === selectedIndex ? "cyan" : "dim"}>
-            {idx === selectedIndex ? "❯" : " "}
+      while ((match = codeBlockRegex.exec(content)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push({
+            type: "text",
+            content: content.slice(lastIndex, match.index),
+          });
+        }
+        parts.push({ type: "code", content: match[2], language: match[1] });
+        lastIndex = codeBlockRegex.lastIndex;
+      }
+
+      if (lastIndex < content.length) {
+        parts.push({ type: "text", content: content.slice(lastIndex) });
+      }
+
+      return parts.length > 0 ? parts : [{ type: "text", content }];
+    };
+
+    const normalizedContent = message.content.trim();
+    const parts = useMemo(
+      () => parseContent(message.content),
+      [message.content]
+    );
+
+    if (message.role === "tool") {
+      return (
+        <ToolCallView
+          toolName={message.toolName || "unknown"}
+          content={message.content}
+        />
+      );
+    }
+
+    const getColor = () => {
+      switch (message.role) {
+        case "user":
+          return "cyan";
+        case "assistant":
+          return "green";
+        case "system":
+          return "yellow";
+        default:
+          return "white";
+      }
+    };
+
+    const getName = () => {
+      switch (message.role) {
+        case "user":
+          return "You";
+        case "assistant":
+          return "Meer";
+        case "system":
+          return "System";
+        default:
+          return message.role;
+      }
+    };
+
+    return (
+      <Box flexDirection="column" marginBottom={1}>
+        <Box gap={1}>
+          <Text color={getColor()} bold>
+            {getName()}
           </Text>
-          <Text color={idx === selectedIndex ? "cyan" : "white"} bold={idx === selectedIndex}>
-            /{cmd.name}
-          </Text>
-          {cmd.description && (
-            <Text color="dim">{cmd.description}</Text>
+          {isDraft && (
+            <Text color="dim" dimColor>
+              streaming
+            </Text>
+          )}
+          {message.timestamp && (
+            <Text color="dim" dimColor>
+              {formatTimestamp(message.timestamp)}
+            </Text>
           )}
         </Box>
-      ))}
-      {suggestions.length > 8 && (
-        <Text color="dim" italic>... and {suggestions.length - 8} more</Text>
-      )}
-      <Box marginTop={0}>
-        <Text color="dim">↑↓ navigate · Enter select · Esc cancel</Text>
+        <Box flexDirection="column" paddingLeft={2}>
+          {isDraft && normalizedContent.length === 0 && (
+            <Text color="dim">Waiting for first visible tokens…</Text>
+          )}
+          {parts.map((part, idx) =>
+            part.type === "code" ? (
+              <Box key={idx} marginTop={1} marginBottom={1}>
+                <CodeBlock
+                  code={part.content}
+                  language={"language" in part ? part.language : undefined}
+                />
+              </Box>
+            ) : (
+              part.content.trim().length > 0 ? (
+                <Box key={idx} marginTop={0}>
+                  <Text>{part.content.trim()}</Text>
+                </Box>
+              ) : null
+            )
+          )}
+        </Box>
       </Box>
-    </Box>
-  );
+    );
+  },
+  (prev, next) =>
+    prev.message.id === next.message.id &&
+    prev.message.content === next.message.content
+);
+
+const formatTimestamp = (timestamp?: number): string => {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  const hours = date.getHours().toString().padStart(2, "0");
+  const minutes = date.getMinutes().toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
 };
 
-const InputBar: React.FC<{
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
-  cwd?: string;
-  mode: Mode;
-}> = ({ value, onChange, onSubmit, cwd, mode }) => {
-  const { exit } = useApp();
-  useInput((input, key) => {
-    if (key.ctrl && input === "c") {
-      exit();
-    }
-  });
+// Thinking Indicator - Memoized
+const ThinkingIndicator: React.FC = React.memo(() => {
+  const [dots, setDots] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots((prev) => (prev + 1) % 4);
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  const messages = ["Thinking", "Processing", "Analyzing", "Working"];
+  const currentMessage =
+    messages[Math.floor(Date.now() / 2000) % messages.length];
+
   return (
-    <Box flexDirection="column" gap={0} borderStyle="round" borderColor="blue" paddingX={1} paddingY={0}>
+    <Box marginBottom={2} marginTop={1} paddingLeft={0}>
       <Box gap={1}>
-        <Text color="dim">{cwd || ""}</Text>
-        <Text color="dim">·</Text>
-        <Text color={mode === "plan" ? "blue" : "green"}>{mode === "plan" ? "PLAN" : "EDIT"}</Text>
-      </Box>
-      <Box gap={1} alignItems="center">
-        <Text color="blue">❯</Text>
-        <TextInput value={value} onChange={onChange} onSubmit={onSubmit} placeholder="Type your message or path/to/file" />
-      </Box>
-      <Box gap={1} marginTop={0}>
-        <Text color="dim">Press / for commands · Ctrl+C to exit · Ctrl+P to toggle mode</Text>
+        <Text color="cyan">▎</Text>
+        <Text color="cyan">
+          <Spinner type="dots" />
+        </Text>
+        <Text color="cyan" dimColor>
+          {currentMessage}
+          {".".repeat(dots)}
+        </Text>
       </Box>
     </Box>
   );
-};
+});
+
+// Input Component - Optimized with memo
+const InputArea: React.FC<{
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  placeholder?: string;
+  isThinking: boolean;
+  queuedMessages: number;
+  queuedPreview: string[];
+  mode?: "edit" | "plan";
+  slashSuggestions: SlashCommandListEntry[];
+  selectedSuggestion: number;
+  choicePrompt?: {
+    message: string;
+    options: Array<{ label: string; value: string }>;
+    defaultValue: string;
+  };
+  onChoiceSelect?: (value: string) => void;
+}> = React.memo(
+  ({
+    value,
+    onChange,
+    onSubmit,
+    placeholder,
+    isThinking,
+    queuedMessages,
+    queuedPreview,
+    mode = "edit",
+    slashSuggestions,
+    selectedSuggestion,
+    choicePrompt,
+    onChoiceSelect,
+  }) => {
+    const getPlaceholder = () => {
+      if (mode === "plan") {
+        return "Ask for analysis and planning";
+      }
+      return placeholder || "Explain this codebase";
+    };
+
+    return (
+      <Box flexDirection="column" marginTop={1} paddingX={1}>
+        {queuedPreview.length > 0 && (
+          <Box flexDirection="column" marginBottom={1}>
+            <Text color="magenta">Queued</Text>
+            {queuedPreview.slice(0, 3).map((message, index) => (
+              <Box key={`${index}-${message}`} paddingLeft={2}>
+                <Text color="dim">
+                  {truncateLine(message, 90)}
+                </Text>
+              </Box>
+            ))}
+            {queuedMessages > queuedPreview.length && (
+              <Box paddingLeft={2}>
+                <Text color="dim">
+                  +{queuedMessages - queuedPreview.length} more queued message
+                  {queuedMessages - queuedPreview.length === 1 ? "" : "s"}
+                </Text>
+              </Box>
+            )}
+          </Box>
+        )}
+        <Box
+          flexDirection="row"
+          paddingX={1}
+          paddingY={0}
+          marginTop={0}
+          borderStyle="single"
+          borderColor="gray"
+        >
+          <Text color={isThinking ? "yellow" : "white"} bold>
+            ›
+          </Text>
+          <Text color="dim"> </Text>
+          <Box flexGrow={1}>
+            <TextInput
+              value={value}
+              onChange={onChange}
+              onSubmit={onSubmit}
+              placeholder={getPlaceholder()}
+              showCursor={true}
+            />
+          </Box>
+          {value.startsWith("/") && (
+            <Box marginLeft={1}>
+              <Text color="yellow">command</Text>
+            </Box>
+          )}
+          {queuedMessages > 0 && (
+            <Box marginLeft={1}>
+              <Text color="magenta">queued {queuedMessages}</Text>
+            </Box>
+          )}
+        </Box>
+
+        {choicePrompt && onChoiceSelect && (
+          <InlineChoicePrompt
+            message={choicePrompt.message}
+            options={choicePrompt.options}
+            defaultValue={choicePrompt.defaultValue}
+            onSelect={onChoiceSelect}
+          />
+        )}
+
+        {slashSuggestions.length > 0 && (
+          <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+            <Text color="yellow">Commands</Text>
+            <Box flexDirection="column">
+              {slashSuggestions.slice(0, 5).map((item, index) => {
+                const badges = getSlashCommandBadges(item);
+                const isSelected = index === selectedSuggestion;
+                return (
+                  <Box key={item.command}>
+                    <Box flexDirection="row" gap={1}>
+                      <Text
+                        color={isSelected ? "cyan" : "yellow"}
+                        bold={isSelected}
+                      >
+                        {isSelected ? "▶" : "●"}
+                      </Text>
+                      <Text
+                        color={isSelected ? "cyan" : "white"}
+                        bold={isSelected}
+                      >
+                        {item.command}
+                      </Text>
+                      {badges.length > 0 && (
+                        <Text color="magenta" dimColor>
+                          {" "}
+                          [{badges.join(", ")}]
+                        </Text>
+                      )}
+                    </Box>
+                    <Box paddingLeft={2}>
+                      <Text color="gray" dimColor>
+                        {item.description.substring(0, 60)}
+                        {item.description.length > 60 ? "..." : ""}
+                      </Text>
+                    </Box>
+                  </Box>
+                );
+              })}
+              {slashSuggestions.length > 5 && (
+                <Box>
+                  <Text color="dim" italic>
+                    ... and {slashSuggestions.length - 5} more commands
+                  </Text>
+                </Box>
+              )}
+            </Box>
+            <Text color="dim">Tab insert · ↑↓ navigate · Enter run</Text>
+          </Box>
+        )}
+
+        <Box marginTop={1}>
+          <Text color="dim">
+            Enter send · Esc interrupt · Ctrl+P mode · Ctrl+C exit
+          </Text>
+        </Box>
+      </Box>
+    );
+  },
+  (prev, next) =>
+    prev.value === next.value && prev.isThinking === next.isThinking
+);
+
+// Status Bar - Memoized
+const StatusBar: React.FC<{ status?: string }> = React.memo(({ status }) => {
+  if (!status) return null;
+
+  return (
+    <Box paddingX={1} marginBottom={1}>
+      <Text color="yellow">
+        <Spinner type="dots" />
+      </Text>
+      <Text color="yellow"> {status}</Text>
+    </Box>
+  );
+});
+
+const FooterBar: React.FC<{
+  provider?: string;
+  model?: string;
+  cwd?: string;
+  mode: "edit" | "plan";
+  tokens?: {
+    used: number;
+    limit?: number;
+  };
+  cost?: {
+    current: number;
+    limit?: number;
+  };
+  messageCount?: number;
+  sessionUptime?: number;
+  liveResponseVisible: boolean;
+}> = React.memo(({
+  provider,
+  model,
+  cwd,
+  mode,
+  tokens,
+  cost,
+  messageCount,
+  sessionUptime,
+  liveResponseVisible,
+}) => {
+  const location = cwd || process.cwd();
+  const modeLabel = mode === "plan" ? "plan" : "edit";
+  const tokenLabel = tokens?.used ? `${formatCompactNumber(tokens.used)} tok` : null;
+  const costLabel =
+    cost && cost.current > 0 ? `$${cost.current.toFixed(3)}` : null;
+  const uptimeLabel =
+    typeof sessionUptime === "number" ? formatDurationSeconds(sessionUptime) : null;
+
+  return (
+    <Box flexDirection="column" paddingX={1} marginTop={1}>
+      <Text color="dim">{truncateLine(location, 140)}</Text>
+      <Box justifyContent="space-between">
+        <Box gap={2} flexShrink={1}>
+          <Text color="cyan">Meer</Text>
+          <Text color="dim">{provider || "unknown"}/{model || "unknown"}</Text>
+          <Text color={mode === "plan" ? "blue" : "green"}>{modeLabel}</Text>
+          <Text color="dim">live {liveResponseVisible ? "on" : "off"}</Text>
+        </Box>
+        <Box gap={2} flexShrink={0}>
+          {tokenLabel && <Text color="dim">{tokenLabel}</Text>}
+          {costLabel && <Text color="dim">{costLabel}</Text>}
+          {typeof messageCount === "number" && <Text color="dim">{messageCount} msgs</Text>}
+          {uptimeLabel && <Text color="dim">{uptimeLabel}</Text>}
+        </Box>
+      </Box>
+      <Text color="dim">
+        Enter send · Esc interrupt · Ctrl+P mode · Ctrl+T live response · Ctrl+C exit
+      </Text>
+    </Box>
+  );
+});
+
+// ============================================================================
+// Main Chat Component
+// ============================================================================
 
 export const MeerChat: React.FC<MeerChatProps> = ({
   onMessage,
   messages,
+  draftAssistant,
   isThinking,
   status,
   provider,
   model,
   cwd,
-  mode = "edit",
+  onExit,
+  onInterrupt,
+  mode: externalMode,
   onModeChange,
   tools,
   workflowStages,
@@ -212,105 +600,751 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   cost,
   messageCount,
   sessionUptime,
+  virtualizeHistory = false,
+  screenReader = false,
   timelineEvents,
   plan,
-  slashSuggestions = [],
-  onSlashSelect,
+  slashSuggestions: providedSlashSuggestions,
+  choicePrompt,
+  onChoiceSelect,
 }) => {
   const [input, setInput] = useState("");
+  const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  const [internalMode, setInternalMode] = useState<"edit" | "plan">("edit");
+  const [slashSuggestions, setSlashSuggestions] = useState<
+    SlashCommandListEntry[]
+  >([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const [showLiveResponse, setShowLiveResponse] = useState(true);
+  const { exit } = useApp();
+  const slashCommandEntries = useMemo(
+    () =>
+      providedSlashSuggestions && providedSlashSuggestions.length > 0
+        ? providedSlashSuggestions
+        : getAllCommands(),
+    [providedSlashSuggestions]
+  );
+  const isScreenReader = Boolean(screenReader);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [scrollAnchor, setScrollAnchor] = useState<"end" | "manual">("end");
 
-  // Filter suggestions based on input
-  const filteredSuggestions = useMemo(() => {
-    if (!input.startsWith("/")) return [];
-    const query = input.slice(1).toLowerCase();
-    return slashSuggestions.filter(cmd =>
-      cmd.name.toLowerCase().includes(query)
-    );
-  }, [input, slashSuggestions]);
+  const mode = externalMode !== undefined ? externalMode : internalMode;
+  const queuedPreview = useMemo(() => messageQueue.slice(0, 3), [messageQueue]);
+  const hasDraftContent = Boolean(draftAssistant?.content.trim());
 
-  const handleChange = useCallback((value: string) => {
-    setInput(value);
-    setSelectedSuggestion(0); // Reset selection when input changes
+  const toggleMode = useCallback(() => {
+    const newMode: "edit" | "plan" = mode === "edit" ? "plan" : "edit";
+    if (onModeChange) {
+      onModeChange(newMode);
+    } else {
+      setInternalMode(newMode);
+    }
+  }, [mode, onModeChange]);
+
+  const clearSlashSuggestions = useCallback(() => {
+    setSlashSuggestions([]);
+    setSelectedSuggestion(0);
   }, []);
 
-  const handleSubmit = useCallback(() => {
-    const trimmed = input.trim();
-    if (!trimmed) return;
+  // Debounced slash suggestions update
+  const updateSlashSuggestionsImmediate = useCallback(
+    (value: string) => {
+      const trimmedLeading = value.trimStart();
 
-    // If showing suggestions and one is selected, expand to the full command
-    if (filteredSuggestions.length > 0 && input.startsWith("/")) {
-      const selected = filteredSuggestions[selectedSuggestion];
-      if (selected) {
-        onMessage("/" + selected.name);
-        setInput("");
+      if (!trimmedLeading.startsWith("/")) {
+        clearSlashSuggestions();
+        return;
+      }
+
+      const firstSpace = trimmedLeading.indexOf(" ");
+      const commandToken =
+        firstSpace === -1
+          ? trimmedLeading
+          : trimmedLeading.slice(0, firstSpace);
+      const hasArguments =
+        firstSpace !== -1 &&
+        trimmedLeading.slice(firstSpace + 1).trim().length > 0;
+
+      if (hasArguments) {
+        clearSlashSuggestions();
+        return;
+      }
+
+      const normalized = commandToken.toLowerCase();
+      const options =
+        commandToken === "/"
+          ? slashCommandEntries
+          : slashCommandEntries.filter((entry) =>
+              entry.command.toLowerCase().startsWith(normalized)
+            );
+
+      if (options.length === 0) {
+        clearSlashSuggestions();
+        return;
+      }
+
+      setSlashSuggestions(options);
+      setSelectedSuggestion((prev) => (prev < options.length ? prev : 0));
+    },
+    [clearSlashSuggestions, slashCommandEntries]
+  );
+
+  const updateSlashSuggestions = useMemo(
+    () =>
+      debounce(updateSlashSuggestionsImmediate, { delay: SLASH_DEBOUNCE_MS }),
+    [updateSlashSuggestionsImmediate]
+  );
+
+  const handleInputChange = useCallback(
+    (value: string) => {
+      setInput(value);
+      updateSlashSuggestions(value);
+    },
+    [updateSlashSuggestions]
+  );
+
+  const sendMessage = useCallback(
+    (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      if (isThinking) {
+        setMessageQueue((prev) => [...prev, trimmed]);
+      } else {
+        setScrollAnchor("end");
+        onMessage(trimmed);
+      }
+    },
+    [isThinking, onMessage]
+  );
+
+  const applySlashSuggestion = useCallback(
+    (mode: "insert" | "send" = "insert") => {
+      if (slashSuggestions.length === 0) return;
+      const suggestion = slashSuggestions[selectedSuggestion];
+
+      if (mode === "send") {
+        clearSlashSuggestions();
+        handleInputChange("");
+        sendMessage(suggestion.command);
+        return;
+      }
+
+      setInput(`${suggestion.command} `);
+      clearSlashSuggestions();
+    },
+    [
+      clearSlashSuggestions,
+      handleInputChange,
+      sendMessage,
+      slashSuggestions,
+      selectedSuggestion,
+    ]
+  );
+
+  const hasSlashSuggestions = slashSuggestions.length > 0;
+  const hasChoicePrompt =
+    Boolean(choicePrompt) &&
+    Boolean(onChoiceSelect) &&
+    (choicePrompt?.options.length ?? 0) > 0;
+
+  // Handle keyboard shortcuts
+  useInput((inputKey, key) => {
+    if (key.ctrl && inputKey === "c") {
+      onExit?.();
+      exit();
+      return;
+    }
+    if (key.ctrl && inputKey === "p") {
+      toggleMode();
+      return;
+    }
+    if (key.ctrl && inputKey === "t") {
+      setShowLiveResponse((prev) => !prev);
+      return;
+    }
+
+    if (key.escape) {
+      if (hasSlashSuggestions) {
+        clearSlashSuggestions();
+        return;
+      }
+      if (isThinking && onInterrupt) {
+        onInterrupt();
         return;
       }
     }
 
-    onMessage(trimmed);
-    setInput("");
-  }, [input, filteredSuggestions, selectedSuggestion, onMessage]);
-
-  useInput((inputKey, key) => {
-    if (key.ctrl && inputKey === "p") {
-      onModeChange?.(mode === "edit" ? "plan" : "edit");
-    }
-
-    // Navigate slash suggestions
-    if (filteredSuggestions.length > 0) {
+    if (hasSlashSuggestions) {
+      if (key.tab) {
+        applySlashSuggestion("insert");
+        return;
+      }
       if (key.upArrow) {
-        setSelectedSuggestion(prev =>
-          (prev - 1 + filteredSuggestions.length) % filteredSuggestions.length
+        setSelectedSuggestion(
+          (prev) =>
+            (prev - 1 + slashSuggestions.length) % slashSuggestions.length
         );
+        return;
       }
       if (key.downArrow) {
-        setSelectedSuggestion(prev =>
-          (prev + 1) % filteredSuggestions.length
-        );
-      }
-      if (key.tab) {
-        // Tab complete the selected suggestion
-        const selected = filteredSuggestions[selectedSuggestion];
-        if (selected) {
-          setInput(`/${selected.name} `);
-        }
-      }
-      if (key.escape) {
-        setInput("");
+        setSelectedSuggestion((prev) => (prev + 1) % slashSuggestions.length);
+        return;
       }
     }
-  });
 
-  const runningStage = workflowStages?.find((s) => s.status === "running");
+    if (!virtualizeHistory || hasSlashSuggestions) {
+      return;
+    }
+
+    if (key.pageUp) {
+      adjustScroll(-Math.max(1, Math.floor(scrollWindowSize * 0.75)));
+      return;
+    }
+
+    if (key.pageDown) {
+      adjustScroll(Math.max(1, Math.floor(scrollWindowSize * 0.75)));
+      return;
+    }
+
+    if (key.home) {
+      setScrollAnchor("manual");
+      setScrollOffset(0);
+      return;
+    }
+
+    if (key.end) {
+      jumpToLatest();
+    }
+  }, { isActive: !hasChoicePrompt });
+
+  const handleSubmit = useCallback(() => {
+    const trimmed = input.trim();
+
+    const commandToken = trimmed.split(/\s+/)[0] ?? "";
+    const suggestion = slashSuggestions[selectedSuggestion];
+    const shouldApplySlash =
+      hasSlashSuggestions &&
+      commandToken.startsWith("/") &&
+      trimmed === commandToken &&
+      suggestion &&
+      suggestion.command.toLowerCase().startsWith(commandToken.toLowerCase());
+
+    if (shouldApplySlash) {
+      applySlashSuggestion("send");
+      return;
+    }
+
+    if (!trimmed) {
+      return;
+    }
+
+    if (isThinking) {
+      handleInputChange("");
+      sendMessage(trimmed);
+      return;
+    }
+
+    sendMessage(trimmed);
+    handleInputChange("");
+  }, [
+    applySlashSuggestion,
+    handleInputChange,
+    input,
+    isThinking,
+    hasSlashSuggestions,
+    sendMessage,
+    selectedSuggestion,
+    slashSuggestions,
+  ]);
+
+  // Process queued messages when agent finishes
+  useEffect(() => {
+    if (!isThinking && messageQueue.length > 0) {
+      const nextMessage = messageQueue[0];
+      setMessageQueue((prev) => prev.slice(1));
+      onMessage(nextMessage);
+    }
+  }, [isThinking, messageQueue, onMessage]);
+
+  const terminalHeight =
+    process.stdout.isTTY && process.stdout.rows ? process.stdout.rows : 24;
+
+  const maxVisibleMessages = useMemo(() => {
+    if (!virtualizeHistory) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return Math.max(terminalHeight * 4, 200);
+  }, [virtualizeHistory, terminalHeight]);
+
+  const { visibleMessages, hiddenCount } = useMemo(() => {
+    if (!virtualizeHistory) {
+      return { visibleMessages: messages, hiddenCount: 0 };
+    }
+    if (
+      !Number.isFinite(maxVisibleMessages) ||
+      messages.length <= maxVisibleMessages
+    ) {
+      return { visibleMessages: messages, hiddenCount: 0 };
+    }
+    return {
+      visibleMessages: messages.slice(-maxVisibleMessages),
+      hiddenCount: messages.length - maxVisibleMessages,
+    };
+  }, [messages, virtualizeHistory, maxVisibleMessages]);
+
+  const scrollWindowSize = Math.max(
+    1,
+    Math.min(visibleMessages.length, terminalHeight * 3)
+  );
+  const maxScrollOffset = Math.max(
+    0,
+    Math.max(0, visibleMessages.length - scrollWindowSize)
+  );
+
+  useEffect(() => {
+    if (!virtualizeHistory || scrollAnchor === "end") {
+      setScrollOffset(maxScrollOffset);
+      return;
+    }
+    setScrollOffset((prev) => Math.max(0, Math.min(prev, maxScrollOffset)));
+  }, [
+    virtualizeHistory,
+    scrollAnchor,
+    maxScrollOffset,
+    visibleMessages.length,
+  ]);
+
+  useEffect(() => {
+    if (!virtualizeHistory) {
+      setScrollAnchor("end");
+      setScrollOffset(0);
+    }
+  }, [virtualizeHistory]);
+
+  const adjustScroll = useCallback(
+    (delta: number) => {
+      if (!virtualizeHistory) return;
+      setScrollAnchor("manual");
+      setScrollOffset((prev) =>
+        Math.max(0, Math.min(prev + delta, maxScrollOffset))
+      );
+    },
+    [virtualizeHistory, maxScrollOffset]
+  );
+
+  const jumpToLatest = useCallback(() => {
+    setScrollAnchor("end");
+    setScrollOffset(maxScrollOffset);
+  }, [maxScrollOffset]);
+
+  if (isScreenReader) {
+    return (
+      <ScreenReaderLayout
+        provider={provider}
+        model={model}
+        cwd={cwd}
+        mode={mode}
+        status={status}
+        isThinking={isThinking}
+        tokens={tokens}
+        cost={cost}
+        hiddenCount={hiddenCount}
+        totalMessages={messages.length}
+        tools={tools}
+        workflowStages={workflowStages}
+        messages={visibleMessages}
+        plan={plan}
+      >
+      <InputArea
+        value={input}
+        onChange={handleInputChange}
+        onSubmit={handleSubmit}
+        isThinking={isThinking}
+        queuedMessages={messageQueue.length}
+        queuedPreview={queuedPreview}
+        mode={mode}
+        slashSuggestions={slashSuggestions}
+        selectedSuggestion={selectedSuggestion}
+        choicePrompt={choicePrompt}
+        onChoiceSelect={onChoiceSelect}
+      />
+    </ScreenReaderLayout>
+  );
+  }
 
   return (
-    <Box flexDirection="column" height="100%" width="100%" paddingX={1} paddingY={0} gap={1}>
-      <Hero provider={provider} model={model} />
-      <StatusHeader
+    <Box flexDirection="column" height="100%" width="100%">
+      {plan && plan.tasks.length > 0 && <PlanPanel plan={plan} />}
+
+      {status && !isThinking && <StatusBar status={status} />}
+
+      <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
+        {messages.length === 0 ? (
+          <Box
+            flexDirection="column"
+            alignItems="center"
+            justifyContent="center"
+            paddingY={2}
+          >
+            <Text color="gray" dimColor>
+              Welcome to Meer AI! Ask me anything about your code.
+            </Text>
+            <Text color="gray" dimColor>
+              Try: "list files in src/" or "explain how authentication works"
+            </Text>
+            <Text color="gray" dimColor>
+              Type / for slash commands (e.g., /help, /model, /setup)
+            </Text>
+            <Text color={mode === "plan" ? "blue" : "green"} dimColor>
+              Press Ctrl+P to toggle between Plan and Edit modes
+            </Text>
+          </Box>
+        ) : (
+          <Box flexDirection="column">
+            {hiddenCount > 0 && (
+              <Box marginBottom={1} marginLeft={2}>
+                <Text color="gray" dimColor>
+                  Showing last {visibleMessages.length} of {messages.length}{" "}
+                  messages. Older entries hidden for performance.
+                </Text>
+              </Box>
+            )}
+            <Box flexDirection="row">
+              <Box flexGrow={1}>
+                {(() => {
+                  const displayMessages =
+                    draftAssistant && showLiveResponse && hasDraftContent
+                      ? [...visibleMessages, draftAssistant]
+                      : visibleMessages;
+                  const displayWindowSize = Math.max(
+                    1,
+                    Math.min(displayMessages.length, terminalHeight * 3)
+                  );
+
+                  return (
+                <VirtualizedList
+                  items={displayMessages}
+                  scroll={{
+                    offset: scrollOffset,
+                    windowSize: displayWindowSize,
+                    totalCount: displayMessages.length,
+                  }}
+                  renderGap={(position, hidden) => (
+                    <Box marginY={1} paddingLeft={2}>
+                      <Text color="dim">
+                        {position === "top"
+                          ? `${hidden} earlier message${hidden === 1 ? "" : "s"}`
+                          : `${hidden} later message${hidden === 1 ? "" : "s"}`}
+                      </Text>
+                    </Box>
+                  )}
+                  renderItem={(msg, idx) => (
+                    <MessageView
+                      message={msg}
+                      isDraft={Boolean(draftAssistant && showLiveResponse && msg.id === draftAssistant.id)}
+                    />
+                  )}
+                />
+                  );
+                })()}
+              </Box>
+              {virtualizeHistory && (visibleMessages.length > 0 || (draftAssistant && showLiveResponse)) && (
+                <Box marginLeft={1}>
+                  {(() => {
+                    const displayMessagesCount =
+                      draftAssistant && showLiveResponse && hasDraftContent
+                        ? visibleMessages.length + 1
+                        : visibleMessages.length;
+                    const displayWindowSize = Math.max(
+                      1,
+                      Math.min(displayMessagesCount, terminalHeight * 3)
+                    );
+
+                    return (
+                  <ScrollIndicator
+                    offset={scrollOffset}
+                    windowSize={displayWindowSize}
+                    totalCount={displayMessagesCount}
+                  />
+                    );
+                  })()}
+                </Box>
+              )}
+            </Box>
+            {virtualizeHistory && scrollAnchor === "manual" && (
+              <Box marginLeft={2}>
+                <Text color="gray" dimColor>
+                  Manual scroll active — PageUp/PageDown to browse, Home for
+                  oldest, End for latest.
+                </Text>
+              </Box>
+            )}
+            {workflowStages && workflowStages.length > 0 && (
+              <WorkflowProgress
+                stages={workflowStages}
+                currentIteration={currentIteration}
+                maxIterations={maxIterations}
+                compact={true}
+              />
+            )}
+            {tools && tools.length > 0 && <ToolExecutionPanel tools={tools} />}
+            {isThinking && (!hasDraftContent || !showLiveResponse) && <ThinkingIndicator />}
+          </Box>
+        )}
+      </Box>
+
+      <InputArea
+        value={input}
+        onChange={handleInputChange}
+        onSubmit={handleSubmit}
+        isThinking={isThinking}
+        queuedMessages={messageQueue.length}
+        queuedPreview={queuedPreview}
+        mode={mode}
+        slashSuggestions={slashSuggestions}
+        selectedSuggestion={selectedSuggestion}
+        choicePrompt={choicePrompt}
+        onChoiceSelect={onChoiceSelect}
+      />
+
+      <FooterBar
         provider={provider}
         model={model}
         cwd={cwd}
         mode={mode}
         tokens={tokens}
         cost={cost}
-        messages={messageCount}
-        uptime={sessionUptime}
-        compact
+        messageCount={messageCount}
+        sessionUptime={sessionUptime}
+        liveResponseVisible={showLiveResponse}
       />
-      {/* Keep the middle clean: history only */}
-      <History messages={messages} isThinking={isThinking} status={status} />
-
-      {/* Slash command suggestions overlay */}
-      {filteredSuggestions.length > 0 && (
-        <SlashSuggestionsOverlay
-          suggestions={filteredSuggestions}
-          selectedIndex={selectedSuggestion}
-        />
-      )}
-
-      <InputBar value={input} onChange={handleChange} onSubmit={handleSubmit} cwd={cwd} mode={mode} />
     </Box>
+  );
+};
+
+const InlineChoicePrompt: React.FC<{
+  message: string;
+  options: Array<{ label: string; value: string }>;
+  defaultValue: string;
+  onSelect: (value: string) => void;
+}> = ({ message, options, defaultValue, onSelect }) => {
+  const items = useMemo(
+    () =>
+      options.map((option) => ({
+        label: option.label,
+        value: option.value,
+      })),
+    [options]
+  );
+
+  const initialIndex = useMemo(() => {
+    const index = options.findIndex((option) => option.value === defaultValue);
+    return index >= 0 ? index : 0;
+  }, [defaultValue, options]);
+
+  return (
+    <Box flexDirection="column" marginTop={1} paddingLeft={2}>
+      <Text color="yellow">
+        {message}
+      </Text>
+      <Text color="dim">
+        Use ↑↓ or j/k to navigate, Enter to select, or press a number key.
+      </Text>
+      <Box marginTop={1}>
+        <SelectInput
+          items={items}
+          initialIndex={initialIndex}
+          onSelect={(item) => onSelect(String(item.value))}
+        />
+      </Box>
+    </Box>
+  );
+};
+
+function truncateLine(value: string, maxLength: number): string {
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  if (singleLine.length <= maxLength) {
+    return singleLine;
+  }
+  return `${singleLine.slice(0, maxLength - 1)}…`;
+}
+
+function formatCompactNumber(value: number): string {
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}m`;
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(value);
+}
+
+function formatDurationSeconds(value: number): string {
+  const totalSeconds = Math.max(0, Math.floor(value));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m ${seconds}s`;
+}
+
+// Screen Reader Layout Component
+const ScreenReaderLayout: React.FC<{
+  provider?: string;
+  model?: string;
+  cwd?: string;
+  mode: "edit" | "plan";
+  status?: string;
+  isThinking: boolean;
+  tokens?: { used: number; limit?: number };
+  cost?: { current: number; limit?: number };
+  hiddenCount: number;
+  totalMessages: number;
+  tools?: ToolCall[];
+  workflowStages?: WorkflowStage[];
+  messages: Message[];
+  plan?: Plan | null;
+  children: React.ReactNode;
+}> = ({
+  provider,
+  model,
+  cwd,
+  mode,
+  status,
+  isThinking,
+  tokens,
+  cost,
+  hiddenCount,
+  totalMessages,
+  tools,
+  workflowStages,
+  messages,
+  plan,
+  children,
+}) => {
+  const modeLabel = mode === "plan" ? "Plan" : "Edit";
+  const describePlanStatus = (
+    status: Plan["tasks"][number]["status"]
+  ): string => {
+    switch (status) {
+      case "completed":
+        return "completed";
+      case "in_progress":
+        return "in progress";
+      case "skipped":
+        return "skipped";
+      default:
+        return "pending";
+    }
+  };
+
+  return (
+    <Box flexDirection="column" gap={1}>
+      <Text color="cyan" bold>
+        Screen reader mode enabled
+      </Text>
+      <Text>
+        Use Tab to move focus and Enter to send. Run `/screen-reader off` to
+        return to visual layout.
+      </Text>
+      <Text>
+        Profile: {provider ?? "unknown"} / {model ?? "unknown"} · Mode:{" "}
+        {modeLabel}
+      </Text>
+      <Text>Directory: {cwd ?? process.cwd()}</Text>
+      {tokens && (
+        <Text>
+          Tokens used: {tokens.used}
+          {tokens.limit ? ` / ${tokens.limit}` : ""}
+        </Text>
+      )}
+      {cost && typeof cost.current === "number" && cost.current > 0 && (
+        <Text>
+          Estimated cost: ${cost.current.toFixed(4)}
+          {cost.limit ? ` / ${cost.limit}` : ""}
+        </Text>
+      )}
+      {tools && tools.length > 0 && (
+        <Text>
+          Active tools: {tools.map((tool) => tool.name ?? "tool").join(", ")}
+        </Text>
+      )}
+      {workflowStages && workflowStages.length > 0 && (
+        <Box flexDirection="column">
+          <Text>Workflow stages:</Text>
+          {workflowStages.map((stage, index) => (
+            <Text key={stage.name}>
+              {index + 1}. {stage.name} - {stage.status}
+            </Text>
+          ))}
+        </Box>
+      )}
+      {plan && (
+        <Box flexDirection="column">
+          <Text>Plan: {plan.title}</Text>
+          {plan.tasks.slice(0, 5).map((task, index) => (
+            <Text key={task.id}>
+              {index + 1}. {task.description} -{" "}
+              {describePlanStatus(task.status)}
+            </Text>
+          ))}
+          {plan.tasks.length > 5 && (
+            <Text color="dim">
+              +{plan.tasks.length - 5} more task
+              {plan.tasks.length - 5 === 1 ? "" : "s"}
+            </Text>
+          )}
+        </Box>
+      )}
+      <Box flexDirection="column" aria-role="list">
+        {messages.length === 0 ? (
+          <Text>No messages yet. Ask a question to get started.</Text>
+        ) : (
+          messages.map((message, index) => (
+            <ScreenReaderMessage
+              key={index}
+              message={message}
+              ariaRole="listitem"
+            />
+          ))
+        )}
+        {hiddenCount > 0 && (
+          <Text dimColor>
+            Showing last {messages.length} messages of {totalMessages}.{" "}
+            {hiddenCount} older messages hidden for performance.
+          </Text>
+        )}
+        {isThinking && <Text>Assistant is thinking…</Text>}
+        {status && !isThinking && <Text>Status: {status}</Text>}
+      </Box>
+      {children}
+    </Box>
+  );
+};
+
+const ScreenReaderMessage: React.FC<{
+  message: Message;
+  ariaRole?: "listitem";
+}> = ({ message, ariaRole }) => {
+  const roleLabel =
+    message.role === "assistant"
+      ? "Meer"
+      : message.role === "user"
+      ? "You"
+      : message.role === "system"
+      ? "System"
+      : "Tool";
+  const content =
+    message.content?.replace(/\s+/g, " ").trim() || "[no content provided]";
+  const time = formatTimestamp(message.timestamp);
+
+  return (
+    <Text aria-role={ariaRole}>
+      {time ? `[${time}] ` : ""}
+      {roleLabel}: {content}
+    </Text>
   );
 };
 

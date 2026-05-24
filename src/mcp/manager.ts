@@ -14,6 +14,7 @@ import type {
 } from './types.js';
 import { loadMCPConfig, getEnabledServers } from './config.js';
 import { MCPClient } from './client.js';
+import { shouldLogMCPToConsole } from './console.js';
 import { logVerbose } from '../logger.js';
 import {
   withMCPConnectionTelemetry,
@@ -60,9 +61,11 @@ export class MCPManager {
       return;
     }
 
-    console.log(
-      chalk.blue(`\n🔌 Connecting to ${serverNames.length} MCP server(s)...`)
-    );
+    if (shouldLogMCPToConsole()) {
+      console.log(
+        chalk.blue(`\n🔌 Connecting to ${serverNames.length} MCP server(s)...`)
+      );
+    }
 
     const results = await Promise.allSettled(
       serverNames.map((name) => this.connectServer(name))
@@ -77,10 +80,12 @@ export class MCPManager {
       } else {
         failCount++;
         const serverName = serverNames[index];
-        console.error(
-          chalk.red(`  ❌ Failed to connect to ${serverName}:`),
-          result.reason
-        );
+        if (shouldLogMCPToConsole()) {
+          console.error(
+            chalk.red(`  ❌ Failed to connect to ${serverName}:`),
+            result.reason
+          );
+        }
 
         // Track connection failure in metrics
         mcpConnectionsTotal.inc({ server_name: serverName, status: 'failure' });
@@ -88,7 +93,7 @@ export class MCPManager {
       }
     });
 
-    if (successCount > 0) {
+    if (successCount > 0 && shouldLogMCPToConsole()) {
       console.log(
         chalk.green(
           `✓ Connected to ${successCount}/${serverNames.length} MCP server(s)`
@@ -96,7 +101,7 @@ export class MCPManager {
       );
     }
 
-    if (failCount > 0) {
+    if (failCount > 0 && shouldLogMCPToConsole()) {
       console.log(
         chalk.yellow(
           `⚠️  ${failCount} server(s) failed to connect. Check configuration.`

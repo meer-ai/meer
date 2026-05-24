@@ -4,7 +4,10 @@ import type {
   ChatMessage,
   ChatOptions,
   ProviderMetadata,
+  ProviderEvent,
+  ProviderStructuredTurn,
 } from "./base.js";
+import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 
 export interface OpenAIConfig {
   apiKey: string;
@@ -114,6 +117,20 @@ export class OpenAIProvider implements Provider {
     } finally {
       reader.releaseLock();
     }
+  }
+
+  async chatStructured(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): Promise<ProviderStructuredTurn> {
+    return parseStructuredTurn(await this.chat(messages, options));
+  }
+
+  async *streamEvents(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): AsyncIterable<ProviderEvent> {
+    yield* textStreamToStructuredEvents(this.stream(messages, options));
   }
 
   async metadata(): Promise<ProviderMetadata> {

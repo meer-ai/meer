@@ -26,16 +26,26 @@ import { AgentEventRecorder } from "./agent/eventRecorder.js";
 import { BusTimeline } from "./agent/busTimeline.js";
 import { WorkflowTimeline } from "./ui/workflowTimeline.js";
 import { showWelcomeScreen } from "./chat/welcome.js";
+import { memory } from "./memory/index.js";
 import {
   handleSlashCommand,
   type SlashCommandResult,
 } from "./chat/slash.js";
+import type { ChatMessage } from "./providers/base.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const VERSION = JSON.parse(
   readFileSync(join(__dirname, "..", "package.json"), "utf-8")
 ).version;
+
+interface InteractiveAgent {
+  initialize(
+    options?: string | { contextPrompt?: string; priorMessages?: ChatMessage[] }
+  ): Promise<void>;
+  processMessage(userMessage: string): Promise<string>;
+  abort?(): void;
+}
 
 export function createCLI(): Command {
   const program = new Command();
@@ -48,6 +58,8 @@ export function createCLI(): Command {
     .version(VERSION)
     .option("-p, --profile <name>", "Override the active profile")
     .option("-v, --verbose", "Enable verbose logging output")
+    .option("--resume [session]", "Resume the latest or a specific saved session")
+    .option("--fork <session>", "Fork a saved session into a new one")
     .hook("preAction", (thisCommand) => {
       const options = thisCommand.opts();
       if (options.profile) {
@@ -80,7 +92,84 @@ export function createCLI(): Command {
 
       try {
         const config = loadConfig();
+        const cliOptions = program.opts() as {
+          resume?: string | boolean;
+          fork?: string;
+        };
         const providerType = config.providerType ?? "unknown";
+        const currentCwd = process.cwd();
+        if (cliOptions.resume && cliOptions.fork) {
+          throw new Error("Use either --resume or --fork, not both.");
+        }
+
+        let previousSessionContext: string | null = null;
+        let startedSession: { sessionId: string; sessionPath: string } | null = null;
+        let sessionBanner: string | null = null;
+        let restoredTranscript:
+          | Array<{
+              role: "user" | "assistant" | "system" | "tool";
+              content: string;
+              timestamp: number;
+            }>
+          | null = null;
+        let restoredModelMessages:
+          | Array<{ role: "user" | "assistant" | "system"; content: string }>
+          | null = null;
+
+        if (cliOptions.fork) {
+          const source = memory.resolveSession(cliOptions.fork, currentCwd);
+          if (!source) {
+            throw new Error(`Could not find session '${cliOptions.fork}'.`);
+          }
+
+          const forked = memory.forkSession(source.path, currentCwd);
+          if (!forked) {
+            throw new Error(`Failed to fork session '${cliOptions.fork}'.`);
+          }
+
+          startedSession = forked;
+          const sourceView = memory.loadSessionView(source.path);
+          restoredTranscript = sourceView?.entries ?? null;
+          restoredModelMessages = memory.loadChatMessages(source.path, {
+            maxMessages: 24,
+          });
+          sessionBanner = `Forked session ${source.id.slice(0, 8)} into ${forked.sessionId.slice(0, 8)}.`;
+        } else if (cliOptions.resume) {
+          const requested =
+            typeof cliOptions.resume === "string" ? cliOptions.resume : undefined;
+          const source = requested
+            ? memory.resolveSession(requested, currentCwd)
+            : memory.listSessions(currentCwd)[0] ?? null;
+          if (!source) {
+            throw new Error(
+              requested
+                ? `Could not find session '${requested}'.`
+                : "No saved session found to resume in this project."
+            );
+          }
+
+          const resumed = memory.resumeSession(source.path);
+          if (!resumed) {
+            throw new Error(`Failed to resume session '${source.id}'.`);
+          }
+
+          startedSession = resumed;
+          const sourceView = memory.loadSessionView(source.path);
+          restoredTranscript = sourceView?.entries ?? null;
+          restoredModelMessages = memory.loadChatMessages(source.path, {
+            maxMessages: 24,
+          });
+          sessionBanner = `Resumed session ${source.id.slice(0, 8)}.`;
+        } else {
+          previousSessionContext = memory.buildRecentContext(currentCwd, {
+            excludeCurrent: true,
+            maxMessages: 8,
+          });
+          startedSession = memory.startSession(currentCwd);
+          if (previousSessionContext) {
+            sessionBanner = `Loaded recent project context into session ${startedSession.sessionId.slice(0, 8)}.`;
+          }
+        }
 
         ProjectContextManager.getInstance().configureEmbeddings({
           enabled: config.contextEmbedding?.enabled ?? false,
@@ -118,18 +207,22 @@ export function createCLI(): Command {
           ? new InkChatAdapter({
               provider: providerType,
               model: config.model,
-              cwd: process.cwd(),
+              cwd: currentCwd,
               uiSettings: config.ui,
               eventBus,
             })
           : null;
 
-        // ── Agent setup ───────────────────────────────────────────────────────
-        const { AgentWorkflowV3 } = await import("./agent/workflow-v3.js");
+        if (chatUI && restoredTranscript?.length) {
+          chatUI.replayTranscript(restoredTranscript);
+        }
 
-        const agent = new AgentWorkflowV3({
+        // ── Agent setup ───────────────────────────────────────────────────────
+        const useClassicAgent =
+          (process.env.MEER_AGENT || "").toLowerCase() === "classic";
+        const agentConfig = {
           provider: config.provider,
-          cwd: process.cwd(),
+          cwd: currentCwd,
           maxIterations: config.maxIterations,
           autoCollectContext: config.autoCollectContext,
           providerType,
@@ -137,13 +230,22 @@ export function createCLI(): Command {
           sessionTracker,
           eventBus,
           onStreamingStart: () => chatUI?.startAssistantMessage(),
-          onStreamingChunk: (chunk) => chatUI?.appendAssistantChunk(chunk),
+          onStreamingChunk: (chunk: string) => chatUI?.appendAssistantChunk(chunk),
           onStreamingEnd: () => chatUI?.finishAssistantMessage(),
-          onAssistantMessage: (content) => chatUI?.settleAssistantMessage(content),
+          onAssistantMessage: (content: string) => chatUI?.settleAssistantMessage(content),
           onTurnStart: () => chatUI?.beginTurn(),
           onTurnEnd: () => chatUI?.endTurn(),
-          onToolStart: (tool, args) => chatUI?.addTool(tool, args),
-          onToolUpdate: (toolName, status, result) => {
+          onIterationChange: (current: number, max: number) =>
+            chatUI?.setIteration(current, max),
+          onWorkflowStageStart: (name: string) => {
+            chatUI?.addWorkflowStage(name);
+            chatUI?.startWorkflowStage(name);
+          },
+          onWorkflowStageComplete: (name: string) =>
+            chatUI?.completeWorkflowStage(name),
+          onWorkflowStageFail: (name: string) => chatUI?.failWorkflowStage(name),
+          onToolStart: (tool: string, args: any) => chatUI?.addTool(tool, args),
+          onToolUpdate: (toolName: string, status: string, result?: string) => {
             if (status === "running") {
               chatUI?.startTool(toolName);
             } else if (status === "succeeded") {
@@ -152,19 +254,37 @@ export function createCLI(): Command {
               chatUI?.failTool(toolName, result || "Error");
             }
           },
+          onToolMessage: (toolName: string, result: string) => {
+            chatUI?.appendToolMessage(toolName, result);
+          },
           onToolEnd: () => chatUI?.clearTools(),
-          onStatusChange: (status) => chatUI?.setStatus(status),
+          onStatusChange: (status: string) => chatUI?.setStatus(status),
           onError: () => {},
-          promptChoice: async (promptMessage, choices, defaultChoice) => {
+          promptChoice: async (
+            promptMessage: string,
+            choices: Array<{ label: string; value: string }>,
+            defaultChoice?: string
+          ) => {
             if (chatUI) {
               const fallback = defaultChoice ?? choices[0]?.value ?? "";
               return chatUI.promptChoice(promptMessage, choices, fallback);
             }
             return defaultChoice ?? choices[0]?.value ?? "";
           },
+        };
+
+        const agent: InteractiveAgent = useClassicAgent
+          ? new (await import("./agent/workflow-v3.js")).AgentWorkflowV3(agentConfig)
+          : new (await import("./agent/structured-workflow.js")).StructuredAgentWorkflow(agentConfig);
+
+        await agent.initialize({
+          contextPrompt: previousSessionContext ?? undefined,
+          priorMessages: restoredModelMessages ?? undefined,
         });
 
-        await agent.initialize();
+        if (sessionBanner && !chatUI) {
+          console.log(chalk.gray(`${sessionBanner}\n`));
+        }
 
         // ── Plan subscriptions ────────────────────────────────────────────────
         const pushPlanSnapshot = (plan = planStore.getSnapshot()) => {
@@ -283,7 +403,9 @@ export function createCLI(): Command {
           }
 
           // Regular message
-          if (chatUI) chatUI.appendUserMessage(userInput);
+          if (chatUI) {
+            chatUI.appendUserMessage(userInput, { consumeOptimistic: true });
+          }
           sessionTracker.trackMessage();
 
           const timeline = new BusTimeline(

@@ -77,6 +77,10 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     description: "Show current session statistics",
   },
   {
+    command: "/sessions",
+    description: "List saved sessions for the current project",
+  },
+  {
     command: "/version",
     description: "Display installed Meer AI version",
   },

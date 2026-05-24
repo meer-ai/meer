@@ -18,7 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build",
-    "test": "tsx scripts/verify-langchain-tools.ts && tsx scripts/verify-slash-commands.ts",
+    "test": "tsx scripts/verify-agent-tools.ts && tsx scripts/verify-slash-commands.ts",
     "release": "./scripts/release.sh"
   },
   "keywords": [
@@ -42,7 +42,6 @@
     "@babel/parser": "^7.28.4",
     "@babel/traverse": "^7.28.4",
     "@inkjs/ui": "^2.0.0",
-    "@langchain/core": "^0.3.78",
     "@modelcontextprotocol/sdk": "^1.19.1",
     "@types/inquirer": "^9.0.9",
     "@types/react": "^19.2.2",
@@ -65,7 +64,6 @@
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
     "inquirer": "^12.9.6",
-    "langchain": "^0.3.36",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
     "node-fetch": "^3.3.2",

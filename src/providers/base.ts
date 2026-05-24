@@ -24,6 +24,27 @@ export interface ProviderMetadata {
   [key: string]: unknown;
 }
 
+export interface ProviderToolCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ProviderStructuredTurn {
+  assistantMessage: string;
+  toolCalls: ProviderToolCall[];
+  finalAnswer?: string;
+  rawText: string;
+}
+
+export type ProviderEvent =
+  | { type: 'text-delta'; text: string }
+  | { type: 'assistant-message'; text: string }
+  | { type: 'tool-call-delta'; toolCallId: string; toolName?: string; inputTextDelta: string }
+  | { type: 'tool-call'; toolCall: ProviderToolCall }
+  | { type: 'final-answer'; text: string }
+  | { type: 'done'; rawText: string; turn?: ProviderStructuredTurn };
+
 export interface Provider {
   /**
    * Send a chat request and return the complete response
@@ -34,6 +55,24 @@ export interface Provider {
    * Stream a chat response as an async iterable
    */
   stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string>;
+
+  /**
+   * Return a parsed structured turn when the provider can produce one.
+   * Falls back to parsing plain-text responses when implemented by adapters.
+   */
+  chatStructured?(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): Promise<ProviderStructuredTurn>;
+
+  /**
+   * Stream structured assistant events.
+   * Providers may emit text deltas only, or richer turn/tool-call events.
+   */
+  streamEvents?(
+    messages: ChatMessage[],
+    options?: ChatOptions
+  ): AsyncIterable<ProviderEvent>;
 
   /**
    * Generate embeddings for the given texts (optional)

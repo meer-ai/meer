@@ -26,6 +26,7 @@ import type { SessionTracker } from "../session/tracker.js";
 import { ChatBoxUI } from "../ui/chatbox.js";
 import { showSlashHelp } from "../ui/slashHelp.js";
 import { runCommand } from "../tools/index.js";
+import { memory } from "../memory/index.js";
 import {
   resolveCustomCommand,
   getSlashCommandErrors,
@@ -817,6 +818,32 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     } else {
       console.log(chalk.yellow("⚠️  Session tracking not available"));
     }
+    return continueResult();
+  },
+
+  "/sessions": async () => {
+    const sessions = memory.listSessions(process.cwd()).slice(0, 20);
+    console.log(chalk.bold.blue("\n🗂️  Project Sessions:\n"));
+    if (sessions.length === 0) {
+      console.log(chalk.gray("  No saved sessions for this project.\n"));
+      return continueResult();
+    }
+
+    sessions.forEach((session, index) => {
+      const parent = session.parentSessionId
+        ? chalk.gray(` ← fork of ${session.parentSessionId.slice(0, 8)}`)
+        : "";
+      console.log(
+        `${chalk.cyan(`${index + 1}.`)} ${chalk.yellow(session.id.slice(0, 8))} ` +
+          chalk.gray(`(${session.messageCount} msgs • ${new Date(session.createdAt).toLocaleString()})`) +
+          parent
+      );
+    });
+    console.log(
+      chalk.gray(
+        "\nUse `meer --resume <id>` to continue one, or `meer --fork <id>` to branch from it.\n"
+      )
+    );
     return continueResult();
   },
 

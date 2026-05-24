@@ -1,13 +1,13 @@
 import type { MCPTool } from "../../mcp/types.js";
 import { renderMcpToolsSection } from "./systemPrompt.js";
 
-export interface LangChainPromptOptions {
+export interface AgentSystemPromptOptions {
   cwd: string;
   mcpTools: MCPTool[];
 }
 
-export function buildLangChainSystemPrompt(
-  options: LangChainPromptOptions
+export function buildAgentSystemPrompt(
+  options: AgentSystemPromptOptions
 ): string {
   const { cwd, mcpTools } = options;
   const mcpSection = renderMcpToolsSection(mcpTools);
