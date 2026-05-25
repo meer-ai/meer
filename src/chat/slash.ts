@@ -130,6 +130,15 @@ export async function runStandaloneCommand(
   args: string[] = [],
   tui?: InkChatAdapter | null
 ): Promise<void> {
+  const showError = (msg: string) => {
+    const clean = msg.trim();
+    if (tui) {
+      tui.appendSystemMessage(`❌ ${clean}`);
+    } else {
+      console.log(chalk.red(`\n❌ ${clean}\n`));
+    }
+  };
+
   const run = async () => {
     const command = factory();
     command.exitOverride();
@@ -138,31 +147,30 @@ export async function runStandaloneCommand(
       writeErr: (str) => process.stderr.write(str),
       outputError: (str, write) => write(chalk.red(str)),
     });
-
-    try {
-      await command.parseAsync(args, { from: "user" });
-    } catch (error) {
-      const err = error as { code?: string; exitCode?: number; message?: string };
-      if (
-        err?.code === "commander.helpDisplayed" ||
-        err?.code === "commander.version"
-      ) {
-        return;
-      }
-      if (typeof err?.exitCode === "number") {
-        if (err.exitCode === 0) return;
-        const message = err.message ?? "Command exited with an error.";
-        console.log(chalk.red(`\n⚠ ${message.trim()}\n`));
-        return;
-      }
-      throw error;
-    }
+    await command.parseAsync(args, { from: "user" });
   };
 
-  if (tui) {
-    await tui.runWithTerminal(run);
-  } else {
-    await run();
+  try {
+    if (tui) {
+      await tui.runWithTerminal(run);
+    } else {
+      await run();
+    }
+  } catch (error) {
+    const err = error as { code?: string; exitCode?: number; message?: string };
+    // Commander's help/version display — not an error
+    if (
+      err?.code === "commander.helpDisplayed" ||
+      err?.code === "commander.version"
+    ) {
+      return;
+    }
+    // Commander's exitOverride — exit code 0 means success
+    if (typeof err?.exitCode === "number" && err.exitCode === 0) {
+      return;
+    }
+    // All other errors (including explicit throws from action handlers)
+    showError(err?.message ?? String(error));
   }
 }
 
@@ -972,6 +980,25 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
 
   "/whoami": async ({ args, tui }) => {
     await runStandaloneCommand(createWhoamiCommand, args, tui);
+    return continueResult();
+  },
+
+  "/clear": async ({ tui }) => {
+    if (tui) {
+      tui.clearMessages();
+      tui.appendSystemMessage("Conversation cleared.");
+    } else {
+      process.stdout.write("\x1b[2J\x1b[H");
+    }
+    return continueResult();
+  },
+
+  "/compact": async ({ tui }) => {
+    if (tui) {
+      tui.appendSystemMessage("Context compaction is not yet implemented — conversation history is unchanged.");
+    } else {
+      console.log(chalk.gray("Context compaction is not yet implemented."));
+    }
     return continueResult();
   },
 

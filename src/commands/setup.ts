@@ -15,6 +15,12 @@ import {
   ZaiCreditProvider,
   normalizeZaiModel,
 } from '../providers/zai.js';
+import {
+  OPENCODE_ZEN_MODELS,
+  OPENCODE_GO_MODELS,
+  DEFAULT_OPENCODE_ZEN_MODEL,
+  DEFAULT_OPENCODE_GO_MODEL,
+} from '../providers/opencode.js';
 
 export function createSetupCommand(): Command {
   return new Command('setup')
@@ -257,6 +263,14 @@ async function runSetupWizard(): Promise<void> {
         {
           name: chalk.cyan('⚡ Z.ai Credit (PAYG)') + chalk.gray(' - Standard pay-as-you-go API for GLM models'),
           value: 'zaiCredit'
+        },
+        {
+          name: chalk.cyan('🔮 OpenCode Zen') + chalk.gray(' - Premium plan: Claude, GPT-5, DeepSeek, Gemini & more (OPENCODE_API_KEY)'),
+          value: 'opencodeZen'
+        },
+        {
+          name: chalk.cyan('⚡ OpenCode Go') + chalk.gray(' - Go plan: DeepSeek, Kimi, Qwen, GLM & more (OPENCODE_API_KEY)'),
+          value: 'opencodeGo'
         }
       ]
     }
@@ -280,7 +294,7 @@ async function runSetupWizard(): Promise<void> {
     anthropic: {
       apiKey: '',
       baseURL: 'https://api.anthropic.com',
-      maxTokens: 4096
+      maxTokens: 8192
     },
     openrouter: {
       apiKey: '',
@@ -305,6 +319,12 @@ async function runSetupWizard(): Promise<void> {
       apiKey: '',
       baseURL: 'https://api.z.ai/api/paas/v4',
       embeddingBaseURL: 'https://api.z.ai/api/paas/v4'
+    },
+    opencodeZen: {
+      apiKey: '',
+    },
+    opencodeGo: {
+      apiKey: '',
     },
     context: {
       embedding: {
@@ -735,6 +755,66 @@ async function runSetupWizard(): Promise<void> {
     console.log(chalk.blue(`
 ⚡ ${providerLabel}: Advanced reasoning, coding, and agentic capabilities with GLM models!`));
     console.log(chalk.gray('   Context: 128K-200K tokens | Pricing: ~$0.2/$1.1 per 1M tokens'));
+  } else if (provider === 'opencodeZen' || provider === 'opencodeGo') {
+    const isZen = provider === 'opencodeZen';
+    const label = isZen ? 'OpenCode Zen' : 'OpenCode Go';
+    const models = isZen ? OPENCODE_ZEN_MODELS : OPENCODE_GO_MODELS;
+    const defaultModel = isZen ? DEFAULT_OPENCODE_ZEN_MODEL : DEFAULT_OPENCODE_GO_MODEL;
+
+    const { apiKey } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: `Enter your ${label} API key (or press Enter to use OPENCODE_API_KEY env var):`,
+        mask: '*'
+      }
+    ]);
+
+    if (isZen) {
+      config.opencodeZen = { apiKey: apiKey || '' };
+    } else {
+      config.opencodeGo = { apiKey: apiKey || '' };
+    }
+
+    const modelChoices = models.map(m => ({ name: m.name, value: m.id }));
+    modelChoices.push({ name: 'Custom model...', value: 'custom' });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices,
+        default: defaultModel,
+      }
+    ]);
+
+    if (model === 'custom') {
+      const { customModel } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'customModel',
+          message: `Enter model ID (e.g., ${defaultModel}):`,
+        }
+      ]);
+      config.model = customModel || defaultModel;
+    } else {
+      config.model = model;
+    }
+
+    console.log(chalk.green(`\n✅ ${label} configured!`));
+    console.log(chalk.gray(`   Model: ${config.model}`));
+    if (!apiKey) {
+      console.log(chalk.yellow('\n💡 Remember to set your API key:'));
+      console.log(chalk.cyan('   export OPENCODE_API_KEY=your-key-here\n'));
+    }
+    if (isZen) {
+      console.log(chalk.blue('\n🔮 OpenCode Zen: Access Claude, GPT-5, DeepSeek, Gemini & more via a single key!'));
+      console.log(chalk.gray('   Note: Claude models use the Anthropic API format — for best Claude support,'));
+      console.log(chalk.gray('   use the Anthropic provider with baseURL: https://opencode.ai/zen'));
+    } else {
+      console.log(chalk.blue('\n⚡ OpenCode Go: Fast, affordable models — DeepSeek, Kimi, Qwen, GLM & more!'));
+    }
   }
 
   // Step 3: Additional preferences

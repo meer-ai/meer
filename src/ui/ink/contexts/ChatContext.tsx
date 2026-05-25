@@ -13,6 +13,9 @@ export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  isError?: boolean;
+  isCot?: boolean;
   timestamp?: number;
   id: string;
 }

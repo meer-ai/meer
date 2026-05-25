@@ -43,8 +43,7 @@ export function createAgentsCommand(): Command {
     .action(async (options: { scope: string }) => {
       const scope = options.scope as AgentScope;
       if (scope !== 'user' && scope !== 'project') {
-        console.error(chalk.red('Error: scope must be either "user" or "project"'));
-        process.exit(1);
+        throw new Error('scope must be either "user" or "project"');
       }
       await createAgent(scope);
     });
@@ -131,8 +130,7 @@ async function showAgent(name: string): Promise<void> {
   const result = registry.getAgentResult(name);
 
   if (!result) {
-    console.error(chalk.red(`Agent not found: ${name}`));
-    process.exit(1);
+    throw new Error(`Agent not found: ${name}`);
   }
 
   const agent = result.definition;
@@ -273,8 +271,7 @@ async function toggleAgent(name: string, enabled: boolean): Promise<void> {
   const result = registry.getAgentResult(name);
 
   if (!result) {
-    console.error(chalk.red(`Agent not found: ${name}`));
-    process.exit(1);
+    throw new Error(`Agent not found: ${name}`);
   }
 
   const definition = { ...result.definition, enabled };
@@ -291,8 +288,7 @@ async function deleteAgent(name: string, scope: AgentScope): Promise<void> {
   const result = registry.getAgentResult(name);
 
   if (!result) {
-    console.error(chalk.red(`Agent not found: ${name}`));
-    process.exit(1);
+    throw new Error(`Agent not found: ${name}`);
   }
 
   const { confirm } = await inquirer.prompt([

@@ -84,11 +84,7 @@ function createListCommand(): Command {
 
         console.log('');
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -142,11 +138,7 @@ function createToolsCommand(): Command {
 
         await manager.disconnectAll();
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -201,11 +193,7 @@ function createResourcesCommand(): Command {
 
         await manager.disconnectAll();
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -249,11 +237,7 @@ function createConnectCommand(): Command {
 
         await manager.disconnectServer(serverName);
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -276,11 +260,7 @@ function createDisconnectCommand(): Command {
 
         console.log(chalk.green(`✓ Disconnected from ${serverName}\n`));
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -302,11 +282,7 @@ function createEnableCommand(): Command {
         console.log(chalk.green(`✓ Enabled ${serverName}`));
         console.log(chalk.gray('Server will auto-connect on next session\n'));
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -327,11 +303,7 @@ function createDisableCommand(): Command {
         toggleServer(serverName, false);
         console.log(chalk.green(`✓ Disabled ${serverName}\n`));
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -395,11 +367,7 @@ function createStatusCommand(): Command {
 
         await manager.disconnectAll();
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -552,11 +520,7 @@ function createSetupCommand(): Command {
           console.log(chalk.gray('    export POSTGRES_CONNECTION_STRING="postgresql://user:pass@localhost/db"\n'));
         }
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 
@@ -599,11 +563,7 @@ function createResetCommand(): Command {
         console.log(chalk.green('\n✅ MCP configuration reset to defaults successfully!\n'));
         console.log(chalk.cyan('💡 Run `meer mcp setup` to configure servers again\n'));
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 

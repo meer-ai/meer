@@ -31,7 +31,7 @@ export class OpenRouterProvider implements Provider {
       baseURL: config.baseURL || "https://openrouter.ai/api",
       model: config.model,
       temperature: config.temperature ?? 0.7,
-      maxTokens: config.maxTokens ?? 4096,
+      maxTokens: config.maxTokens ?? 8192,
       siteName: config.siteName || "MeerAI CLI",
       siteUrl: config.siteUrl || "https://github.com/anthropics/meer",
     };

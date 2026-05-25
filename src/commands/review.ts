@@ -742,11 +742,10 @@ export function createReviewCommand(): Command {
         }
 
       } catch (error) {
-        console.error(chalk.red('Error:'), error instanceof Error ? error.message : String(error));
-        process.exit(1);
+        throw error;
       }
     });
-  
+
   return command;
 }
 

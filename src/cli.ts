@@ -233,6 +233,7 @@ export function createCLI(): Command {
           onStreamingChunk: (chunk: string) => chatUI?.appendAssistantChunk(chunk),
           onStreamingEnd: () => chatUI?.finishAssistantMessage(),
           onAssistantMessage: (content: string) => chatUI?.settleAssistantMessage(content),
+          onCotMessage: (content: string) => chatUI?.addCotMessage(content),
           onTurnStart: () => chatUI?.beginTurn(),
           onTurnEnd: () => chatUI?.endTurn(),
           onIterationChange: (current: number, max: number) =>
@@ -254,8 +255,8 @@ export function createCLI(): Command {
               chatUI?.failTool(toolName, result || "Error");
             }
           },
-          onToolMessage: (toolName: string, result: string) => {
-            chatUI?.appendToolMessage(toolName, result);
+          onToolMessage: (toolName: string, result: string, metadata?: { toolCallId?: string; isError?: boolean }) => {
+            chatUI?.appendToolMessage(toolName, result, metadata?.isError);
           },
           onToolEnd: () => chatUI?.clearTools(),
           onStatusChange: (status: string) => chatUI?.setStatus(status),
@@ -275,7 +276,7 @@ export function createCLI(): Command {
 
         const agent: InteractiveAgent = useClassicAgent
           ? new (await import("./agent/workflow-v3.js")).AgentWorkflowV3(agentConfig)
-          : new (await import("./agent/structured-workflow.js")).StructuredAgentWorkflow(agentConfig);
+          : new (await import("./agent/meer-agent.js")).MeerAgent(agentConfig);
 
         await agent.initialize({
           contextPrompt: previousSessionContext ?? undefined,

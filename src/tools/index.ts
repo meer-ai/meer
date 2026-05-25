@@ -812,15 +812,27 @@ export async function runCommand(
           result: stdoutBuffer || "Command executed successfully.",
         });
       } else {
+        // Many tools exit non-zero to signal findings (npm audit, eslint, tsc, etc.)
+        // When stdout has content, treat it as a result not a hard failure.
         const stderrText = stderrBuffer.trim();
-        finalize({
-          tool: "run_command",
-          result: stdoutBuffer,
-          error:
-            stderrText.length > 0
-              ? `Command failed with exit code ${code}: ${stderrText}`
+        if (stdoutBuffer.trim()) {
+          ProjectContextManager.getInstance().invalidate(cwd);
+          const exitNote = stderrText
+            ? `\n[exit ${code}: ${stderrText}]`
+            : `\n[exit ${code}]`;
+          finalize({
+            tool: "run_command",
+            result: stdoutBuffer + exitNote,
+          });
+        } else {
+          finalize({
+            tool: "run_command",
+            result: stdoutBuffer,
+            error: stderrText.length > 0
+              ? `Command failed (exit ${code}): ${stderrText}`
               : `Command failed with exit code ${code}.`,
-        });
+          });
+        }
       }
     });
   });
@@ -4083,59 +4095,68 @@ export function dependencyAudit(
           ? 'npm audit --production --json'
           : 'npm audit --json';
 
-        const output = execSync(auditCmd, {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe']
-        });
-
-        if (options?.fix) {
-          results.push(`✓ npm audit fix completed\n${output}`);
-        } else {
-          // Parse JSON output
-          try {
-            const auditData = JSON.parse(output);
-            const vulns = auditData.metadata?.vulnerabilities || {};
-            const total = Object.values(vulns).reduce((sum: number, count: any) => sum + (count || 0), 0);
-
-            results.push(`\n📦 npm Audit Results:\n`);
-            results.push(`Total vulnerabilities: ${total}`);
-            if (vulns.critical) results.push(`  🔴 Critical: ${vulns.critical}`);
-            if (vulns.high) results.push(`  🟠 High: ${vulns.high}`);
-            if (vulns.moderate) results.push(`  🟡 Moderate: ${vulns.moderate}`);
-            if (vulns.low) results.push(`  🟢 Low: ${vulns.low}`);
-
-            if (total > 0) {
-              results.push(`\nRun with fix: true to auto-fix vulnerabilities`);
-            }
-          } catch {
-            results.push(output);
+        let auditOutput: string;
+        try {
+          auditOutput = execSync(auditCmd, {
+            cwd,
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe']
+          });
+        } catch (error: any) {
+          // npm audit exits 1 when vulnerabilities exist — stdout still has JSON
+          auditOutput = error.stdout?.toString() || '';
+          if (!auditOutput.trim()) {
+            results.push(`npm audit: ${error.stderr?.toString() || error.message}`);
+            auditOutput = '';
           }
         }
-      } catch (error: any) {
-        const stderr = error.stderr?.toString() || error.message;
-        results.push(`npm audit: ${stderr}`);
-      }
 
-      // Also check for outdated packages
-      try {
-        const outdatedOutput = execSync('npm outdated --json', {
-          cwd,
-          encoding: 'utf-8',
-          stdio: ['pipe', 'pipe', 'pipe']
-        });
+        if (auditOutput) {
+          if (options?.fix) {
+            results.push(`npm audit fix completed\n${auditOutput}`);
+          } else {
+            try {
+              const auditData = JSON.parse(auditOutput);
+              const vulns = auditData.metadata?.vulnerabilities || {};
+              const total = Object.values(vulns).reduce((sum: number, count: any) => sum + (count || 0), 0);
 
-        try {
-          const outdated = JSON.parse(outdatedOutput);
-          const count = Object.keys(outdated).length;
-          if (count > 0) {
-            results.push(`\n📊 Outdated Packages: ${count}`);
+              results.push(`npm Audit Results:`);
+              results.push(`Total vulnerabilities: ${total}`);
+              if (vulns.critical) results.push(`  Critical: ${vulns.critical}`);
+              if (vulns.high) results.push(`  High: ${vulns.high}`);
+              if (vulns.moderate) results.push(`  Moderate: ${vulns.moderate}`);
+              if (vulns.low) results.push(`  Low: ${vulns.low}`);
+              if (total > 0) {
+                results.push(`Run dependency_audit with fix:true to auto-fix`);
+              } else {
+                results.push(`No vulnerabilities found.`);
+              }
+            } catch {
+              results.push(auditOutput);
+            }
           }
-        } catch {
-          // No outdated packages or parsing error
         }
       } catch {
-        // npm outdated returns non-zero if packages are outdated
+        // outer audit try — errors already captured above
+      }
+
+      // Also check for outdated packages (npm outdated exits 1 when packages are outdated)
+      try {
+        let outdatedRaw: string;
+        try {
+          outdatedRaw = execSync('npm outdated --json', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch (err: any) {
+          outdatedRaw = err.stdout?.toString() || '';
+        }
+        if (outdatedRaw.trim()) {
+          const outdated = JSON.parse(outdatedRaw);
+          const count = Object.keys(outdated).length;
+          if (count > 0) {
+            results.push(`Outdated packages: ${count}`);
+          }
+        }
+      } catch {
+        // ignore if outdated check fails
       }
     }
 

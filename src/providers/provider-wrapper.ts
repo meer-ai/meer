@@ -16,6 +16,8 @@ import type {
   ProviderMetadata,
   ProviderEvent,
   ProviderStructuredTurn,
+  AgentMessage,
+  ToolDefinition,
 } from './base.js';
 import { retryWithBackoff, RetryPredicates } from '../utils/retry.js';
 import { parseStructuredTurn, textStreamToStructuredEvents } from './structured.js';
@@ -136,6 +138,112 @@ export class ProviderWrapper implements Provider {
     yield* textStreamToStructuredEvents(this.stream(messages, options));
   }
 
+  async *streamWithTools(
+    messages: AgentMessage[],
+    tools: ToolDefinition[],
+    signal?: AbortSignal
+  ): AsyncIterable<ProviderEvent> {
+    if (this.provider.streamWithTools) {
+      yield* this.provider.streamWithTools(messages, tools, signal);
+      return;
+    }
+
+    // XML fallback: inject tool descriptions into system message, convert to ChatMessage[]
+    const chatMessages = this.agentMessagesToChat(messages, tools);
+
+    let rawText = "";
+    let turn: ProviderStructuredTurn | undefined;
+
+    for await (const event of this.provider.streamEvents
+      ? this.provider.streamEvents(chatMessages)
+      : textStreamToStructuredEvents(this.provider.stream(chatMessages))) {
+      if (event.type === "text-delta") {
+        rawText += event.text;
+      } else if (event.type === "tool-call") {
+        yield event;
+      } else if (event.type === "done") {
+        turn = event.turn;
+      } else if (event.type === "assistant-message") {
+        yield { type: "text-delta", text: event.text };
+        rawText = event.text;
+      }
+    }
+
+    if (turn?.toolCalls?.length) {
+      for (const toolCall of turn.toolCalls) {
+        yield { type: "tool-call", toolCall };
+      }
+    }
+
+    yield { type: "done", rawText, turn };
+  }
+
+  private agentMessagesToChat(
+    messages: AgentMessage[],
+    tools: ToolDefinition[]
+  ): ChatMessage[] {
+    const result: ChatMessage[] = [];
+    const systemParts: string[] = [];
+
+    if (tools.length > 0) {
+      const toolsXml = tools
+        .map(
+          (t) =>
+            `<tool name="${t.name}" description="${t.description}">\nInput schema: ${JSON.stringify(t.inputSchema)}\n</tool>`
+        )
+        .join("\n");
+      systemParts.push(
+        `## Available Tools\nCall tools using: <tool_call><tool_name>NAME</tool_name><tool_input>JSON</tool_input></tool_call>\n\n${toolsXml}`
+      );
+    }
+
+    let i = 0;
+    while (i < messages.length) {
+      const msg = messages[i];
+
+      if (msg.role === "system") {
+        systemParts.push(msg.content);
+        i++;
+        continue;
+      }
+
+      if (msg.role === "user") {
+        result.push({ role: "user", content: msg.content });
+        i++;
+        continue;
+      }
+
+      if (msg.role === "assistant") {
+        let content = msg.content;
+        for (const tc of msg.toolCalls ?? []) {
+          content += `\n<tool_call><tool_name>${tc.name}</tool_name><tool_input>${JSON.stringify(tc.input)}</tool_input></tool_call>`;
+        }
+        result.push({ role: "assistant", content });
+        i++;
+        continue;
+      }
+
+      if (msg.role === "tool_result") {
+        const parts: string[] = [];
+        while (i < messages.length && messages[i].role === "tool_result") {
+          const tr = messages[i] as Extract<AgentMessage, { role: "tool_result" }>;
+          parts.push(`Tool: ${tr.toolName ?? "unknown"}\nResult:\n${tr.content}`);
+          i++;
+        }
+        result.push({ role: "user", content: parts.join("\n\n") });
+        continue;
+      }
+
+      i++;
+    }
+
+    if (systemParts.length > 0) {
+      result.unshift({ role: "system", content: systemParts.join("\n\n") });
+    }
+
+    return result;
+  }
+
   /**
    * Embed with automatic retry
    */
@@ -168,6 +276,32 @@ export class ProviderWrapper implements Provider {
     }
 
     return this.provider.metadata();
+  }
+
+  // Forward optional methods to the underlying provider so callers
+  // (e.g. /model slash command) can reach them through the wrapper.
+
+  async listModels(): Promise<Array<{ name: string; id: string }>> {
+    const inner = this.provider as any;
+    if (typeof inner.listModels === 'function') {
+      return inner.listModels();
+    }
+    return [];
+  }
+
+  getCurrentModel(): string {
+    const inner = this.provider as any;
+    if (typeof inner.getCurrentModel === 'function') {
+      return inner.getCurrentModel();
+    }
+    return '';
+  }
+
+  switchModel(modelName: string): void {
+    const inner = this.provider as any;
+    if (typeof inner.switchModel === 'function') {
+      inner.switchModel(modelName);
+    }
   }
 
   /**

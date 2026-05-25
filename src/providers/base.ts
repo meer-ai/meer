@@ -1,3 +1,6 @@
+import type { AgentMessage, ToolDefinition } from '../agent/core/types.js';
+export type { AgentMessage, ToolDefinition };
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -83,4 +86,14 @@ export interface Provider {
    * Get provider metadata and capabilities
    */
   metadata?(): Promise<ProviderMetadata>;
+
+  /**
+   * Stream a response with native tool calling support.
+   * Messages use structured AgentMessage format with tool call/result types.
+   */
+  streamWithTools?(
+    messages: AgentMessage[],
+    tools: ToolDefinition[],
+    signal?: AbortSignal
+  ): AsyncIterable<ProviderEvent>;
 }

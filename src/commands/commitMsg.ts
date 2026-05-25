@@ -42,14 +42,12 @@ export function createCommitMsgCommand(): Command {
         let diff: string;
         try {
           diff = execSync('git diff --staged', { encoding: 'utf-8' });
-        } catch (error) {
-          console.error(chalk.red('Error: No staged changes found. Please stage some changes first with `git add`.'));
-          process.exit(1);
+        } catch {
+          throw new Error('No staged changes found. Please stage some changes first with `git add`.');
         }
-        
+
         if (!diff.trim()) {
-          console.error(chalk.red('Error: No staged changes found. Please stage some changes first with `git add`.'));
-          process.exit(1);
+          throw new Error('No staged changes found. Please stage some changes first with `git add`.');
         }
         
         const config = loadConfig();
@@ -307,10 +305,9 @@ export function createCommitMsgCommand(): Command {
         }
         
       } catch (error) {
-        console.error(chalk.red('Error:'), error instanceof Error ? error.message : String(error));
-        process.exit(1);
+        throw error;
       }
     });
-  
+
   return command;
 }

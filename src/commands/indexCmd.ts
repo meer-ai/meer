@@ -32,13 +32,7 @@ export function createIndexCommand(): Command {
         const provider = config.provider;
 
         if (!provider.embed) {
-          console.log(chalk.red('❌ Error: Current provider does not support embeddings'));
-          console.log(chalk.yellow('\n💡 Tip: Switch to a provider that supports embeddings:'));
-          console.log(chalk.gray('  • Ollama (free, local)'));
-          console.log(chalk.gray('  • OpenRouter'));
-          console.log(chalk.gray('  • OpenAI'));
-          console.log(chalk.gray(`\nRun: ${chalk.cyan('meer setup')} to change providers\n`));
-          process.exit(1);
+          throw new Error('Current provider does not support embeddings. Switch to Ollama, OpenRouter, or OpenAI via `meer setup`.');
         }
 
         const embeddingModel = options.model || 'nomic-embed-text';
@@ -96,21 +90,11 @@ export function createIndexCommand(): Command {
 
         } catch (error) {
           spinner.fail(chalk.red('Failed to index project'));
-          console.log(chalk.red('\n❌ Error:'), error instanceof Error ? error.message : String(error));
-          console.log(chalk.yellow('\n💡 Common issues:'));
-          console.log(chalk.gray('  • Provider not running (e.g., Ollama)'));
-          console.log(chalk.gray('  • Invalid API key'));
-          console.log(chalk.gray('  • Network connectivity issues'));
-          console.log(chalk.gray('  • Model not available\n'));
-          process.exit(1);
+          throw error;
         }
 
       } catch (error) {
-        console.error(
-          chalk.red('Error:'),
-          error instanceof Error ? error.message : String(error)
-        );
-        process.exit(1);
+        throw error;
       }
     });
 

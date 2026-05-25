@@ -31,6 +31,9 @@ interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  isError?: boolean;
+  isCot?: boolean;
   timestamp?: number;
 }
 
@@ -67,6 +70,9 @@ export class InkChatAdapter {
   private onInterruptCallback?: () => void;
   private mode: Mode = 'edit';
   private onModeChangeCallback?: (mode: Mode) => void;
+
+  // Cache most-recent args per tool name for inline block rendering
+  private recentToolArgs = new Map<string, Record<string, unknown>>();
 
   // Enhanced UI state
   private tools: ToolCall[] = [];
@@ -388,7 +394,7 @@ export class InkChatAdapter {
   beginTurn(): void {
     this.debouncedUpdateUI.cancel();
     this.draftAssistant = null;
-    this.isThinking = false;
+    this.isThinking = true;
     this.statusMessage = null;
     this.tools = [];
     this.workflowStages = [];
@@ -471,14 +477,37 @@ export class InkChatAdapter {
     this.updateUI();
   }
 
-  appendToolMessage(toolName: string, content: string): void {
+  addCotMessage(content: string): void {
+    const normalized = content.trim();
+    if (!normalized) return;
+    this.messages.push({
+      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      role: 'assistant',
+      content: normalized,
+      isCot: true,
+      timestamp: Date.now(),
+    });
+    this.updateUI();
+  }
+
+  appendToolMessage(toolName: string, content: string, isError?: boolean): void {
+    const toolArgs = this.recentToolArgs.get(toolName);
     this.messages.push({
       id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role: 'tool',
       content,
       toolName,
+      toolArgs,
+      isError,
       timestamp: Date.now(),
     });
+    this.updateUI();
+  }
+
+  clearMessages(): void {
+    this.messages = [];
+    this.draftAssistant = null;
+    this.messageCount = 0;
     this.updateUI();
   }
 
@@ -821,6 +850,9 @@ export class InkChatAdapter {
 
   addTool(toolName: string, args?: Record<string, unknown>): string {
     const id = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    if (args && Object.keys(args).length > 0) {
+      this.recentToolArgs.set(toolName, args);
+    }
     this.tools.push({
       id,
       name: toolName,

@@ -7,74 +7,46 @@ export interface PlanPanelProps {
   maxVisibleTasks?: number;
 }
 
-const STATUS_META = {
-  pending: { icon: "📌", color: "gray" as const },
-  in_progress: { icon: "⏳", color: "yellow" as const },
-  completed: { icon: "✅", color: "green" as const },
-  skipped: { icon: "⏭️", color: "magenta" as const },
+const STATUS_MARK: Record<string, { mark: string; color: "gray" | "yellow" | "green" | "magenta" }> = {
+  pending:     { mark: "·", color: "gray" },
+  in_progress: { mark: "◆", color: "yellow" },
+  completed:   { mark: "✓", color: "green" },
+  skipped:     { mark: "–", color: "magenta" },
 };
 
 export const PlanPanel: React.FC<PlanPanelProps> = React.memo(({
   plan,
-  maxVisibleTasks = 6,
+  maxVisibleTasks = 8,
 }) => {
   if (!plan || plan.tasks.length === 0) {
     return null;
   }
 
-  const completed = plan.tasks.filter((task) => task.status === "completed").length;
+  const completed = plan.tasks.filter((t) => t.status === "completed").length;
   const visibleTasks = plan.tasks.slice(0, maxVisibleTasks);
   const hiddenCount = plan.tasks.length - visibleTasks.length;
 
   return (
-    <Box
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="magenta"
-      paddingX={1}
-      paddingY={0}
-      marginBottom={1}
-    >
-      <Box justifyContent="space-between" alignItems="center">
-        <Text color="magenta" bold>
-          📋 {plan.title}
-        </Text>
-        <Text color="gray" dimColor>
-          {completed}/{plan.tasks.length} complete
-        </Text>
+    <Box flexDirection="column" marginBottom={1} paddingX={1}>
+      <Box gap={1} marginBottom={0}>
+        <Text color="blue" bold>{plan.title}</Text>
+        <Text color="gray" dimColor>({completed}/{plan.tasks.length})</Text>
       </Box>
-
-      <Box flexDirection="column" marginTop={1} gap={0}>
-        {visibleTasks.map((task, index) => {
-          const meta = STATUS_META[task.status];
-          return (
-            <Box key={task.id} flexDirection="column" marginBottom={0}>
-              <Box gap={1}>
-                <Text color={meta.color}>{meta.icon}</Text>
-                <Text
-                  color={meta.color}
-                  dimColor={task.status === "pending"}
-                >
-                  {index + 1}. {task.description}
-                </Text>
-              </Box>
-              {task.notes && (
-                <Box marginLeft={4}>
-                  <Text color="gray" dimColor>
-                    Note: {task.notes}
-                  </Text>
-                </Box>
-              )}
-            </Box>
-          );
-        })}
-      </Box>
-
+      {visibleTasks.map((task, index) => {
+        const meta = STATUS_MARK[task.status] ?? STATUS_MARK.pending;
+        const dimmed = task.status === "pending" || task.status === "skipped";
+        return (
+          <Box key={task.id} gap={1}>
+            <Text color={meta.color} dimColor={dimmed}>{meta.mark}</Text>
+            <Text color={meta.color} dimColor={dimmed}>
+              {index + 1}. {task.description}
+            </Text>
+          </Box>
+        );
+      })}
       {hiddenCount > 0 && (
-        <Box marginTop={1}>
-          <Text color="gray" dimColor>
-            +{hiddenCount} more task{hiddenCount === 1 ? "" : "s"}
-          </Text>
+        <Box marginLeft={2}>
+          <Text color="gray" dimColor>+{hiddenCount} more</Text>
         </Box>
       )}
     </Box>
@@ -82,4 +54,3 @@ export const PlanPanel: React.FC<PlanPanelProps> = React.memo(({
 });
 
 export default PlanPanel;
-

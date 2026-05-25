@@ -7,6 +7,8 @@ import type {
   ProviderMetadata,
   ProviderEvent,
   ProviderStructuredTurn,
+  AgentMessage,
+  ToolDefinition,
 } from "./base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 
@@ -27,7 +29,7 @@ export class AnthropicProvider implements Provider {
       baseURL: config.baseURL || "https://api.anthropic.com",
       model: config.model,
       temperature: config.temperature ?? 0.7,
-      maxTokens: config.maxTokens ?? 4096,
+      maxTokens: config.maxTokens ?? 8192,
     };
   }
 
@@ -192,6 +194,228 @@ export class AnthropicProvider implements Provider {
 
   async listModels(): Promise<string[]> {
     return await this.getAvailableModels();
+  }
+
+  async *streamWithTools(
+    messages: AgentMessage[],
+    tools: ToolDefinition[],
+    signal?: AbortSignal
+  ): AsyncIterable<ProviderEvent> {
+    const { system, messages: converted } = this.convertAgentMessages(messages);
+
+    const body: Record<string, unknown> = {
+      model: this.config.model,
+      max_tokens: this.config.maxTokens,
+      messages: converted,
+      stream: true,
+    };
+    if (system) body.system = system;
+    if (tools.length > 0) {
+      body.tools = tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.inputSchema,
+      }));
+    }
+
+    const response = await fetch(`${this.config.baseURL}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": this.config.apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(body),
+      signal: signal as any,
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(
+        `Anthropic API error: ${response.status} ${response.statusText}\n${errText}`
+      );
+    }
+
+    type ToolBlock = { id: string; name: string; inputBuffer: string };
+    const toolBlocks = new Map<number, ToolBlock>();
+    let rawText = "";
+    let stopReason = "";
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No response body");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          // Flush any remaining bytes in the TextDecoder
+          const tail = decoder.decode(undefined, { stream: false });
+          if (tail) buffer += tail;
+          break;
+        }
+        if (signal?.aborted) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6).trim();
+          if (!data || data === "[DONE]") continue;
+
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(data) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+
+          const eventType = parsed.type as string;
+
+          if (eventType === "content_block_start") {
+            const block = parsed.content_block as Record<string, unknown>;
+            if (block?.type === "tool_use") {
+              toolBlocks.set(parsed.index as number, {
+                id: block.id as string,
+                name: block.name as string,
+                inputBuffer: "",
+              });
+            }
+          } else if (eventType === "content_block_delta") {
+            const delta = parsed.delta as Record<string, unknown>;
+            if (delta?.type === "text_delta") {
+              const text = delta.text as string;
+              rawText += text;
+              yield { type: "text-delta", text };
+            } else if (delta?.type === "input_json_delta") {
+              const partial = delta.partial_json as string;
+              const block = toolBlocks.get(parsed.index as number);
+              if (block && partial) {
+                block.inputBuffer += partial;
+                yield {
+                  type: "tool-call-delta",
+                  toolCallId: block.id,
+                  toolName: block.name,
+                  inputTextDelta: partial,
+                };
+              }
+            }
+          } else if (eventType === "content_block_stop") {
+            const block = toolBlocks.get(parsed.index as number);
+            if (block) {
+              let input: Record<string, unknown> = {};
+              try {
+                input = JSON.parse(block.inputBuffer) as Record<string, unknown>;
+              } catch {
+                input = { raw: block.inputBuffer };
+              }
+              yield {
+                type: "tool-call",
+                toolCall: { id: block.id, name: block.name, input },
+              };
+              toolBlocks.delete(parsed.index as number);
+            }
+          } else if (eventType === "message_delta") {
+            const delta = parsed.delta as Record<string, unknown>;
+            if (delta?.stop_reason) {
+              stopReason = delta.stop_reason as string;
+            }
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    // Drain any remaining buffer content (e.g. partial line flushed by the decoder)
+    if (buffer.trim()) {
+      for (const line of buffer.split("\n")) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (!data || data === "[DONE]") continue;
+        try {
+          const parsed = JSON.parse(data) as Record<string, unknown>;
+          if (parsed.type === "message_delta") {
+            const delta = parsed.delta as Record<string, unknown>;
+            if (delta?.stop_reason) stopReason = delta.stop_reason as string;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    // When the model hits the token limit, append a visible continuation note
+    if (stopReason === "max_tokens") {
+      const note = "\n\n*(Response cut short — token limit reached. Send a follow-up to continue.)*";
+      rawText += note;
+      yield { type: "text-delta", text: note };
+    }
+
+    yield { type: "done", rawText };
+  }
+
+  private convertAgentMessages(messages: AgentMessage[]): {
+    system: string;
+    messages: unknown[];
+  } {
+    const systemParts: string[] = [];
+    const converted: unknown[] = [];
+
+    let i = 0;
+    while (i < messages.length) {
+      const msg = messages[i];
+
+      if (msg.role === "system") {
+        systemParts.push(msg.content);
+        i++;
+        continue;
+      }
+
+      if (msg.role === "user") {
+        converted.push({ role: "user", content: msg.content });
+        i++;
+        continue;
+      }
+
+      if (msg.role === "assistant") {
+        const content: unknown[] = [];
+        if (msg.content) {
+          content.push({ type: "text", text: msg.content });
+        }
+        for (const tc of msg.toolCalls ?? []) {
+          content.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+        }
+        converted.push({
+          role: "assistant",
+          content: content.length ? content : [{ type: "text", text: "" }],
+        });
+        i++;
+        continue;
+      }
+
+      if (msg.role === "tool_result") {
+        const batch: unknown[] = [];
+        while (i < messages.length && messages[i].role === "tool_result") {
+          const tr = messages[i] as Extract<AgentMessage, { role: "tool_result" }>;
+          batch.push({
+            type: "tool_result",
+            tool_use_id: tr.toolCallId,
+            content: tr.content,
+            ...(tr.isError ? { is_error: true } : {}),
+          });
+          i++;
+        }
+        converted.push({ role: "user", content: batch });
+        continue;
+      }
+
+      i++;
+    }
+
+    return { system: systemParts.join("\n\n"), messages: converted };
   }
 
   private convertMessages(messages: ChatMessage[]): any[] {

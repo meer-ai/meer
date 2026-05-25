@@ -130,8 +130,7 @@ export function createAskCommand(): Command {
         timeline.close();
       } catch (error) {
         timeline.close();
-        console.error(chalk.red('Error:'), error instanceof Error ? error.message : String(error));
-        process.exit(1);
+        throw error;
       }
     });
   

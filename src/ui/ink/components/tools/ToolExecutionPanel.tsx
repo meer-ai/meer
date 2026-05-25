@@ -277,19 +277,18 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(
         </Box>
       )}
 
-      <Box marginTop={1} justifyContent="space-between">
-        <Text color="dim">
-          {runningTools > 0
-            ? `${runningTools} running`
-            : `${successTools} succeeded · ${errorTools} failed`}
-        </Text>
-        <Text color="dim">
-          {completedTools}/{tools.length}
-          {completedTools === tools.length && totalDuration > 0
-            ? ` · ${formatDuration(totalDuration)}`
-            : ""}
-        </Text>
-      </Box>
+      {(runningTools > 0 || errorTools > 0) && (
+        <Box marginTop={0} gap={2}>
+          <Text color={runningTools > 0 ? "cyan" : "dim"}>
+            {runningTools > 0
+              ? `${runningTools} running`
+              : `${successTools} done · ${errorTools} failed`}
+          </Text>
+          {completedTools === tools.length && totalDuration > 0 && (
+            <Text color="dim">{formatDuration(totalDuration)}</Text>
+          )}
+        </Box>
+      )}
     </Box>
   );
 });

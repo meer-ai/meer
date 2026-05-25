@@ -15,6 +15,12 @@ import {
   DEFAULT_ZAI_MODEL,
   normalizeZaiModel,
 } from "./providers/zai.js";
+import {
+  OpenCodeZenProvider,
+  OpenCodeGoProvider,
+  DEFAULT_OPENCODE_ZEN_MODEL,
+  DEFAULT_OPENCODE_GO_MODEL,
+} from "./providers/opencode.js";
 import type { Provider } from "./providers/base.js";
 import { wrapProvider } from "./providers/provider-wrapper.js";
 import {
@@ -33,6 +39,8 @@ const ConfigSchema = z.object({
     "zai",
     "zaiCodingPlan",
     "zaiCredit",
+    "opencodeZen",
+    "opencodeGo",
   ]),
   model: z.string().optional(),
   temperature: z.number().optional(),
@@ -50,7 +58,8 @@ const ConfigSchema = z.object({
   openai: z.object({
     apiKey: z.string().optional(),
     baseURL: z.string().optional(),
-    organization: z.string().optional()
+    organization: z.string().optional(),
+    maxTokens: z.number().optional(),
   }).optional(),
   // Gemini-specific
   gemini: z.object({
@@ -89,6 +98,15 @@ const ConfigSchema = z.object({
     apiKey: z.string().optional(),
     baseURL: z.string().optional(),
     embeddingBaseURL: z.string().optional()
+  }).optional(),
+  // OpenCode providers
+  opencodeZen: z.object({
+    apiKey: z.string().optional(),
+    maxTokens: z.number().optional(),
+  }).optional(),
+  opencodeGo: z.object({
+    apiKey: z.string().optional(),
+    maxTokens: z.number().optional(),
   }).optional(),
   context: z.object({
     autoCollect: z.boolean().optional(),
@@ -171,7 +189,7 @@ export function loadConfig(): LoadedConfig {
       anthropic: {
         apiKey: '', // Set via ANTHROPIC_API_KEY env var
         baseURL: 'https://api.anthropic.com',
-        maxTokens: 4096
+        maxTokens: 8192
       },
       openrouter: {
         apiKey: '', // Set via OPENROUTER_API_KEY env var
@@ -224,6 +242,11 @@ export function loadConfig(): LoadedConfig {
     }
   }
 
+  // Migrate old Anthropic maxTokens default (4096 → 8192 for modern models)
+  if (config.anthropic && config.anthropic.maxTokens === 4096) {
+    config.anthropic.maxTokens = 8192;
+  }
+
   // Backward compatibility handling for legacy Z.ai configuration
   if (config.zai && !config.zaiCodingPlan) {
     config.zaiCodingPlan = {
@@ -255,7 +278,8 @@ export function loadConfig(): LoadedConfig {
         baseURL: config.openai?.baseURL,
         model: defaultModel,
         temperature: config.temperature,
-        organization: config.openai?.organization
+        organization: config.openai?.organization,
+        maxTokens: config.openai?.maxTokens,
       });
       break;
 
@@ -333,6 +357,26 @@ export function loadConfig(): LoadedConfig {
       });
       break;
     }
+
+    case 'opencodeZen':
+      defaultModel = config.model || DEFAULT_OPENCODE_ZEN_MODEL;
+      provider = new OpenCodeZenProvider({
+        apiKey: config.opencodeZen?.apiKey || process.env.OPENCODE_API_KEY || '',
+        model: defaultModel,
+        temperature: config.temperature,
+        maxTokens: config.opencodeZen?.maxTokens,
+      });
+      break;
+
+    case 'opencodeGo':
+      defaultModel = config.model || DEFAULT_OPENCODE_GO_MODEL;
+      provider = new OpenCodeGoProvider({
+        apiKey: config.opencodeGo?.apiKey || process.env.OPENCODE_API_KEY || '',
+        model: defaultModel,
+        temperature: config.temperature,
+        maxTokens: config.opencodeGo?.maxTokens,
+      });
+      break;
 
     default:
       throw new Error(`Unsupported provider: ${config.provider}`);

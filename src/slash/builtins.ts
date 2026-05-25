@@ -93,6 +93,18 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     description: "View account info and subscription benefits",
   },
   {
+    command: "/timeline",
+    description: "Show or save the agent timeline for this session",
+  },
+  {
+    command: "/clear",
+    description: "Clear the conversation display",
+  },
+  {
+    command: "/compact",
+    description: "Summarize conversation history to free up context",
+  },
+  {
     command: "/help",
     description: "Show slash command help",
     protected: true,
