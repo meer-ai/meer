@@ -11,11 +11,42 @@ import type {
 export interface LoopConfig {
   systemPrompt: string;
   maxTurns?: number;
+  maxRepeatedToolBatches?: number;
+  maxRepeatedToolResults?: number;
+  getSteeringMessages?: () => Promise<AgentMessage[]>;
   beforeToolCall?: (
     toolName: string,
     args: Record<string, unknown>,
     signal?: AbortSignal
   ) => Promise<{ block: boolean; reason?: string } | undefined>;
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(
+      ([a], [b]) => a.localeCompare(b)
+    );
+    return `{${entries
+      .map(([key, val]) => `${JSON.stringify(key)}:${stableStringify(val)}`)
+      .join(",")}}`;
+  }
+
+  return JSON.stringify(value);
+}
+
+function toolBatchSignature(
+  toolCalls: Array<{ name: string; input: Record<string, unknown> }>
+): string {
+  return stableStringify(
+    toolCalls.map((toolCall) => ({
+      name: toolCall.name,
+      input: toolCall.input,
+    }))
+  );
 }
 
 function buildToolDefinitions(tools: AgentTool[]): ToolDefinition[] {
@@ -64,14 +95,32 @@ export async function runLoop(
   const toolMap = new Map(tools.map((t) => [t.name, t]));
 
   const maxTurns = config.maxTurns ?? 50;
+  const maxRepeatedToolBatches = config.maxRepeatedToolBatches ?? 3;
+  const maxRepeatedToolResults = config.maxRepeatedToolResults ?? 2;
   let turns = 0;
   let newMessages: AgentMessage[] = [];
+  let lastToolBatchSignature: string | null = null;
+  let repeatedToolBatchCount = 0;
+  let lastToolResultSignature: string | null = null;
+  let repeatedToolResultCount = 0;
+  let pendingMessages: AgentMessage[] =
+    (await config.getSteeringMessages?.()) ?? [];
 
   try {
     while (turns < maxTurns) {
       if (signal?.aborted) {
         await emit({ type: "aborted" });
         break;
+      }
+
+      if (pendingMessages.length > 0) {
+        messages.push(...pendingMessages);
+        newMessages.push(...pendingMessages);
+        pendingMessages = [];
+        lastToolBatchSignature = null;
+        repeatedToolBatchCount = 0;
+        lastToolResultSignature = null;
+        repeatedToolResultCount = 0;
       }
 
       turns++;
@@ -103,7 +152,6 @@ export async function runLoop(
             await emit({ type: "text_delta", text: event.text });
           } else if (event.type === "assistant-message") {
             assistantText = event.text;
-            await emit({ type: "text_delta", text: event.text });
           } else if (event.type === "tool-call") {
             pendingToolCalls.push(event.toolCall);
           } else if (event.type === "done") {
@@ -113,7 +161,6 @@ export async function runLoop(
             // Prefer the turn's assistantMessage if available
             if (event.turn?.assistantMessage && !assistantText) {
               assistantText = event.turn.assistantMessage;
-              await emit({ type: "text_delta", text: assistantText });
             }
             // rawText is the authoritative accumulated text from the provider;
             // use it if the delta loop somehow missed content
@@ -156,6 +203,31 @@ export async function runLoop(
       await emit({ type: "turn_end" });
 
       if (pendingToolCalls.length === 0) {
+        lastToolBatchSignature = null;
+        repeatedToolBatchCount = 0;
+        lastToolResultSignature = null;
+        repeatedToolResultCount = 0;
+        break;
+      }
+
+      const currentToolBatchSignature = toolBatchSignature(pendingToolCalls);
+      if (currentToolBatchSignature === lastToolBatchSignature) {
+        repeatedToolBatchCount += 1;
+      } else {
+        lastToolBatchSignature = currentToolBatchSignature;
+        repeatedToolBatchCount = 1;
+      }
+
+      if (repeatedToolBatchCount >= maxRepeatedToolBatches) {
+        const guardMessage =
+          "I’m repeating the same tool calls without making progress, so I’m stopping here. Review the latest tool results and send a narrower follow-up if you want me to continue.";
+        const guardAssistantMessage: AgentMessage = {
+          role: "assistant",
+          content: guardMessage,
+          timestamp: Date.now(),
+        };
+        messages.push(guardAssistantMessage);
+        newMessages.push(guardAssistantMessage);
         break;
       }
 
@@ -250,12 +322,47 @@ export async function runLoop(
 
       messages.push(...toolResults);
 
+      const currentToolResultSignature = toolBatchSignature(
+        toolResults.map((result) => {
+          const toolResult = result as Extract<AgentMessage, { role: "tool_result" }>;
+          return {
+            name: toolResult.toolName,
+            input: {
+              content: toolResult.content,
+              isError: toolResult.isError ?? false,
+            },
+          };
+        })
+      );
+
+      if (currentToolResultSignature === lastToolResultSignature) {
+        repeatedToolResultCount += 1;
+      } else {
+        lastToolResultSignature = currentToolResultSignature;
+        repeatedToolResultCount = 1;
+      }
+
+      if (repeatedToolResultCount >= maxRepeatedToolResults) {
+        const guardMessage =
+          "I’m getting the same tool results repeatedly without making progress, so I’m stopping here. Review the latest results and send a narrower follow-up if you want me to continue.";
+        const guardAssistantMessage: AgentMessage = {
+          role: "assistant",
+          content: guardMessage,
+          timestamp: Date.now(),
+        };
+        messages.push(guardAssistantMessage);
+        newMessages.push(guardAssistantMessage);
+        break;
+      }
+
       if (shouldTerminate || signal?.aborted) {
         if (signal?.aborted) {
           await emit({ type: "aborted" });
         }
         break;
       }
+
+      pendingMessages = (await config.getSteeringMessages?.()) ?? [];
     }
   } finally {
     await emit({ type: "agent_end", messages: newMessages });

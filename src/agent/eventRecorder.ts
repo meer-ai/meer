@@ -1,4 +1,4 @@
-import type { AgentEventBus, AgentLogEvent, AgentTaskEvent, AgentToolEvent } from "./eventBus.js";
+import type { AgentEventBus, AgentLogEvent, AgentTaskEvent, AgentToolEvent, AgentQueueEvent } from "./eventBus.js";
 import type { UITimelineEvent } from "../ui/ink/timelineTypes.js";
 import type { Plan } from "../plan/types.js";
 
@@ -23,6 +23,7 @@ export class AgentEventRecorder {
         this.plan = plan ? clonePlan(plan) : null;
       }),
       bus.onTool((event) => this.handleTool(event)),
+      bus.onQueue((event) => this.handleQueue(event)),
     );
   }
 
@@ -84,6 +85,19 @@ export class AgentEventRecorder {
     });
   }
 
+  private handleQueue(event: AgentQueueEvent): void {
+    this.recordEvent({
+      id: event.id,
+      type: "queue",
+      action: event.action,
+      mode: event.mode,
+      message: event.message,
+      pendingSteering: event.pendingSteering,
+      pendingFollowUp: event.pendingFollowUp,
+      timestamp: event.timestamp,
+    });
+  }
+
   private recordEvent(event: UITimelineEvent): void {
     const events = [...this.timelineEvents, event];
     if (events.length > MAX_EVENTS) {
@@ -92,4 +106,3 @@ export class AgentEventRecorder {
     this.timelineEvents = events;
   }
 }
-

@@ -22,6 +22,7 @@ import {
   type AgentTaskEvent,
   type AgentLogLevel,
   type AgentToolEvent,
+  type AgentQueueEvent,
 } from "../../agent/eventBus.js";
 import { debounce } from "./utils/debounce.js";
 import { getAllCommands } from "../../slash/registry.js";
@@ -93,6 +94,8 @@ export class InkChatAdapter {
   private busUnsubscribers: Array<() => void> = [];
   private plan: Plan | null = null;
   private pendingUserMessages = new Set<string>();
+  private queuedMessages: string[] = [];
+  private queueMode: "steer" | "followUp" = "steer";
 
   // Debounced updateUI for streaming - reduces re-renders from 100+/sec to ~20/sec
   private debouncedUpdateUI = debounce(() => this.updateUI(), { delay: 50, maxWait: 200 });
@@ -216,6 +219,12 @@ export class InkChatAdapter {
         sessionUptime,
         timelineEvents: this.timelineEvents,
         plan: this.plan ?? undefined,
+        queuedMessages: this.queuedMessages,
+        queueMode: this.queueMode,
+        onQueueModeChange: (mode: "steer" | "followUp") => {
+          this.queueMode = mode;
+          this.updateUI();
+        },
         uiSettings: activeSettings,
         slashSuggestions: this.getSlashSuggestions(),
         choicePrompt: this.choicePrompt ?? undefined,
@@ -296,6 +305,12 @@ export class InkChatAdapter {
         sessionUptime,
         plan: this.plan ?? undefined,
         timelineEvents: this.timelineEvents,
+        queuedMessages: this.queuedMessages,
+        queueMode: this.queueMode,
+        onQueueModeChange: (mode: "steer" | "followUp") => {
+          this.queueMode = mode;
+          this.updateUI();
+        },
         uiSettings: activeSettings,
         slashSuggestions: this.getSlashSuggestions(),
         choicePrompt: this.choicePrompt ?? undefined,
@@ -514,6 +529,23 @@ export class InkChatAdapter {
   setStatus(text: string): void {
     this.statusMessage = sanitizeStatusText(text ?? "") || null;
     this.updateUI();
+  }
+
+  setQueueState(queue: { steering: string[]; followUp: string[] }): void {
+    this.queuedMessages = [
+      ...queue.steering.map((message) => `[steer] ${message}`),
+      ...queue.followUp.map((message) => `[follow-up] ${message}`),
+    ];
+    this.updateUI();
+  }
+
+  setQueueMode(mode: "steer" | "followUp"): void {
+    this.queueMode = mode;
+    this.updateUI();
+  }
+
+  getQueueMode(): "steer" | "followUp" {
+    return this.queueMode;
   }
 
   enableContinuousChat(onSubmit: (text: string) => void): void {
@@ -910,6 +942,22 @@ export class InkChatAdapter {
     this.updateUI();
   }
 
+  private findLatestWorkflowStage(
+    name: string,
+    statuses?: Array<WorkflowStage["status"]>
+  ): WorkflowStage | undefined {
+    for (let i = this.workflowStages.length - 1; i >= 0; i--) {
+      const stage = this.workflowStages[i];
+      if (stage.name !== name) {
+        continue;
+      }
+      if (!statuses || statuses.includes(stage.status)) {
+        return stage;
+      }
+    }
+    return undefined;
+  }
+
   addWorkflowStage(name: string): void {
     this.workflowStages.push({
       name,
@@ -919,16 +967,20 @@ export class InkChatAdapter {
   }
 
   startWorkflowStage(name: string): void {
-    const stage = this.workflowStages.find(s => s.name === name);
+    const stage =
+      this.findLatestWorkflowStage(name, ['pending']) ??
+      this.findLatestWorkflowStage(name);
     if (stage) {
       stage.status = 'running';
-      stage.startTime = Date.now();
+      stage.startTime ??= Date.now();
       this.updateUI();
     }
   }
 
   completeWorkflowStage(name: string): void {
-    const stage = this.workflowStages.find(s => s.name === name);
+    const stage =
+      this.findLatestWorkflowStage(name, ['running', 'pending']) ??
+      this.findLatestWorkflowStage(name);
     if (stage) {
       stage.status = 'complete';
       stage.endTime = Date.now();
@@ -937,7 +989,9 @@ export class InkChatAdapter {
   }
 
   failWorkflowStage(name: string): void {
-    const stage = this.workflowStages.find(s => s.name === name);
+    const stage =
+      this.findLatestWorkflowStage(name, ['running', 'pending']) ??
+      this.findLatestWorkflowStage(name);
     if (stage) {
       stage.status = 'error';
       stage.endTime = Date.now();
@@ -1004,6 +1058,7 @@ export class InkChatAdapter {
       this.eventBus.onLog((event) => this.handleLogEvent(event)),
       this.eventBus.onPlan(({ plan }) => this.setPlan(plan)),
       this.eventBus.onTool((event) => this.handleToolEvent(event)),
+      this.eventBus.onQueue((event) => this.handleQueueEvent(event)),
     );
   }
 
@@ -1043,6 +1098,29 @@ export class InkChatAdapter {
       message: event.message,
       timestamp: event.timestamp,
     });
+  }
+
+  private handleQueueEvent(event: AgentQueueEvent): void {
+    this.recordTimelineEvent({
+      id: event.id,
+      type: "queue",
+      action: event.action,
+      mode: event.mode,
+      message: event.message,
+      pendingSteering: event.pendingSteering,
+      pendingFollowUp: event.pendingFollowUp,
+      timestamp: event.timestamp,
+    });
+
+    const modeLabel = event.mode === "followUp" ? "follow-up" : "steer";
+    const verb = event.action === "queued" ? "Queued" : "Delivered";
+    this.messages.push({
+      id: `msg-${event.timestamp}-${event.id}`,
+      role: "system",
+      content: `${verb} ${modeLabel}: ${event.message}`,
+      timestamp: event.timestamp,
+    });
+    this.updateUI();
   }
 
   private handleToolEvent(event: AgentToolEvent): void {

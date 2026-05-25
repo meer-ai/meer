@@ -11,6 +11,7 @@ import type {
   ToolDefinition,
 } from "./base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
+import { createProviderToolNameRegistry } from "./toolNames.js";
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -201,7 +202,10 @@ export class AnthropicProvider implements Provider {
     tools: ToolDefinition[],
     signal?: AbortSignal
   ): AsyncIterable<ProviderEvent> {
-    const { system, messages: converted } = this.convertAgentMessages(messages);
+    const toolRegistry = createProviderToolNameRegistry(tools);
+    const { system, messages: converted } = this.convertAgentMessages(
+      toolRegistry.convertAgentMessages(messages)
+    );
 
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -210,8 +214,8 @@ export class AnthropicProvider implements Provider {
       stream: true,
     };
     if (system) body.system = system;
-    if (tools.length > 0) {
-      body.tools = tools.map((t) => ({
+    if (toolRegistry.providerTools.length > 0) {
+      body.tools = toolRegistry.providerTools.map((t) => ({
         name: t.name,
         description: t.description,
         input_schema: t.inputSchema,
@@ -299,7 +303,7 @@ export class AnthropicProvider implements Provider {
                 yield {
                   type: "tool-call-delta",
                   toolCallId: block.id,
-                  toolName: block.name,
+                  toolName: toolRegistry.toOriginalName(block.name),
                   inputTextDelta: partial,
                 };
               }
@@ -315,7 +319,11 @@ export class AnthropicProvider implements Provider {
               }
               yield {
                 type: "tool-call",
-                toolCall: { id: block.id, name: block.name, input },
+                toolCall: {
+                  id: block.id,
+                  name: toolRegistry.toOriginalName(block.name),
+                  input,
+                },
               };
               toolBlocks.delete(parsed.index as number);
             }

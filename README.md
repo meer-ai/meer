@@ -123,7 +123,7 @@ meer ask "Research the latest Node.js LTS dates"
 
 ## Agent Workflows
 
-### Classic (`MEER_AGENT=classic` or unset)
+### Classic (`MEER_AGENT=classic`)
 - Streaming conversation with incremental tool execution.
 - Ideal for quick iteration and conversational coding.
 - CLI prompts handle approvals and pagination.

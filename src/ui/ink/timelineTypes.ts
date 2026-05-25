@@ -24,4 +24,16 @@ export interface UITimelineLogEvent extends UITimelineEventBase {
   message: string;
 }
 
-export type UITimelineEvent = UITimelineTaskEvent | UITimelineLogEvent;
+export interface UITimelineQueueEvent extends UITimelineEventBase {
+  type: "queue";
+  action: "queued" | "delivered";
+  mode: "steer" | "followUp";
+  message: string;
+  pendingSteering: number;
+  pendingFollowUp: number;
+}
+
+export type UITimelineEvent =
+  | UITimelineTaskEvent
+  | UITimelineLogEvent
+  | UITimelineQueueEvent;

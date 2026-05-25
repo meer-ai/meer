@@ -30,10 +30,14 @@ function printSessionSummary(limit = 20): void {
     const parent = session.parentSessionId
       ? chalk.gray(` ← fork of ${session.parentSessionId.slice(0, 8)}`)
       : '';
+    const depth =
+      typeof session.branchDepth === "number" && session.branchDepth > 0
+        ? chalk.gray(` • branch depth ${session.branchDepth}`)
+        : "";
     console.log(
       `${chalk.cyan(String(index + 1).padStart(2, ' '))}. ` +
         `${chalk.yellow(session.id.slice(0, 8))} ` +
-        `${chalk.gray(`(${session.messageCount} msgs • ${created})`)}${parent}`
+        `${chalk.gray(`(${session.messageCount} msgs • ${created})`)}${parent}${depth}`
     );
   });
   console.log('');
@@ -89,6 +93,25 @@ export function createMemoryCommand(): Command {
     });
 
   memoryCmd
+    .command('compact')
+    .description('Compact the current session into a summary plus recent messages')
+    .option('--keep <count>', 'Number of recent messages to keep', (value) => Number(value))
+    .action((options: { keep?: number }) => {
+      const result = memory.compactCurrentSession(process.cwd(), {
+        keepRecentMessages: options.keep,
+      });
+      if (!result) {
+        console.log(chalk.yellow('\n⚠️  Nothing to compact yet\n'));
+        return;
+      }
+      console.log(
+        chalk.green(
+          `\n✅ Compacted ${result.summarizedMessageCount} messages into a session summary\n`
+        )
+      );
+    });
+
+  memoryCmd
     .command('view')
     .description('View current session')
     .argument('[session]', 'Optional session id prefix or session file path')
@@ -113,6 +136,12 @@ export function createMemoryCommand(): Command {
 
       console.log(chalk.bold.blue(`\n📝 Current Session (${session.sessionId}):\n`));
       console.log(chalk.gray(`  ${session.sessionLabel}`));
+      if (session.parentSessionId) {
+        console.log(chalk.gray(`  parent: ${session.parentSessionId}`));
+      }
+      if (session.branchRootSessionId) {
+        console.log(chalk.gray(`  branch root: ${session.branchRootSessionId}`));
+      }
       console.log('');
 
       session.entries.forEach((entry, i) => {
@@ -146,6 +175,7 @@ async function showMemoryMenu(): Promise<void> {
         { name: '📊 View statistics', value: 'stats' },
         { name: '🗂️  List project sessions', value: 'list' },
         { name: '📝 View current session', value: 'view' },
+        { name: '🧳 Compact current session', value: 'compact' },
         { name: '🗑️  Purge all sessions', value: 'purge' },
         new inquirer.Separator(),
         { name: chalk.gray('Cancel'), value: 'cancel' }
@@ -170,6 +200,12 @@ async function showMemoryMenu(): Promise<void> {
       } else {
         console.log(chalk.bold.blue(`\n📝 Current Session (${session.sessionId}):\n`));
         console.log(chalk.gray(`  ${session.sessionLabel}`));
+        if (session.parentSessionId) {
+          console.log(chalk.gray(`  parent: ${session.parentSessionId}`));
+        }
+        if (session.branchRootSessionId) {
+          console.log(chalk.gray(`  branch root: ${session.branchRootSessionId}`));
+        }
         console.log('');
         session.entries.forEach((entry, i) => {
           const { color: roleColor, label: roleLabel } = formatRole(entry.role);
@@ -184,6 +220,19 @@ async function showMemoryMenu(): Promise<void> {
 
     case 'list':
       printSessionSummary();
+      break;
+
+    case 'compact':
+      const compacted = memory.compactCurrentSession(process.cwd());
+      if (!compacted) {
+        console.log(chalk.yellow('\n⚠️  Nothing to compact yet\n'));
+      } else {
+        console.log(
+          chalk.green(
+            `\n✅ Compacted ${compacted.summarizedMessageCount} messages into a session summary\n`
+          )
+        );
+      }
       break;
 
     case 'purge':

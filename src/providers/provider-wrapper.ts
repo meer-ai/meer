@@ -155,8 +155,10 @@ export class ProviderWrapper implements Provider {
     let turn: ProviderStructuredTurn | undefined;
 
     for await (const event of this.provider.streamEvents
-      ? this.provider.streamEvents(chatMessages)
-      : textStreamToStructuredEvents(this.provider.stream(chatMessages))) {
+      ? this.provider.streamEvents(chatMessages, { signal } as ChatOptions)
+      : textStreamToStructuredEvents(
+          this.provider.stream(chatMessages, { signal } as ChatOptions)
+        )) {
       if (event.type === "text-delta") {
         rawText += event.text;
       } else if (event.type === "tool-call") {

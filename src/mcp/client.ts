@@ -8,7 +8,6 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { WebSocketClientTransport } from '@modelcontextprotocol/sdk/client/websocket.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { spawn, type ChildProcess } from 'child_process';
 import chalk from 'chalk';
 import type {
   MCPServerConfig,
@@ -33,18 +32,16 @@ import {
 export class MCPClient {
   private client: Client;
   private transport?: any;
-  private process?: ChildProcess;
   private connected = false;
   private serverName: string;
   private config: MCPServerConfig;
   private tools: MCPTool[] = [];
   private resources: MCPResource[] = [];
   private prompts: MCPPrompt[] = [];
-  private processExitHandler?: () => void;
-  private processErrorHandler?: (error: Error) => void;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 3;
   private circuitBreaker: CircuitBreaker;
+  private manualDisconnect = false;
 
   constructor(serverName: string, config: MCPServerConfig) {
     this.serverName = serverName;
@@ -89,6 +86,7 @@ export class MCPClient {
    */
   async connect(): Promise<void> {
     try {
+      this.manualDisconnect = false;
       if (shouldLogMCPToConsole()) {
         console.log(chalk.gray(`  🔌 Connecting to MCP server: ${this.serverName}...`));
       }
@@ -135,44 +133,42 @@ export class MCPClient {
     // Create connection promise with timeout
     const connectionPromise = new Promise<void>(async (resolve, reject) => {
       try {
-        // Spawn the server process for logging / lifecycle management
-        this.process = spawn(command, args, {
-          env: {
-            ...process.env,
-            ...this.config.env,
-          },
-          stdio: ['pipe', 'pipe', 'pipe'],
+        const transportEnv: Record<string, string> = {};
+        for (const [key, value] of Object.entries(process.env)) {
+          if (value !== undefined) {
+            transportEnv[key] = value;
+          }
+        }
+        if (this.config.env) {
+          Object.assign(transportEnv, this.config.env);
+        }
+
+        this.transport = new StdioClientTransport({
+          command,
+          args,
+          env: transportEnv,
+          stderr: 'pipe',
         });
 
-        // Setup process error handler
-        this.processErrorHandler = (error: Error) => {
-          if (shouldLogMCPToConsole()) {
-            console.error(
-              chalk.red(`  ❌ Failed to start ${this.serverName}:`),
-              error.message
-            );
-          }
-          this.connected = false;
-          reject(error);
+        const transport = this.transport as StdioClientTransport & {
+          stderr?: NodeJS.ReadableStream | null;
+          onclose?: () => void;
+          onerror?: (error: Error) => void;
         };
-        this.process.on('error', this.processErrorHandler);
 
-        // Setup process exit handler with reconnection logic
-        this.processExitHandler = () => {
-          const exitCode = this.process?.exitCode;
-          const signal = this.process?.signalCode;
+        transport.onclose = () => {
+          if (this.manualDisconnect) {
+            return;
+          }
 
           if (shouldLogMCPToConsole()) {
             console.error(
-              chalk.red(
-                `  ❌ MCP server ${this.serverName} exited unexpectedly: code=${exitCode}, signal=${signal}`
-              )
+              chalk.red(`  ❌ MCP server ${this.serverName} exited unexpectedly`)
             );
           }
 
           this.connected = false;
 
-          // Attempt reconnection if not manually disconnected and within retry limit
           if (this.reconnectAttempts < this.maxReconnectAttempts) {
             this.reconnectAttempts++;
             const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
@@ -195,55 +191,34 @@ export class MCPClient {
                 }
               });
             }, delay);
-          } else {
-            if (shouldLogMCPToConsole()) {
-              console.error(
-                chalk.red(
-                  `  ❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for ${this.serverName}. Giving up.`
-                )
-              );
-            }
+          } else if (shouldLogMCPToConsole()) {
+            console.error(
+              chalk.red(
+                `  ❌ Max reconnection attempts (${this.maxReconnectAttempts}) reached for ${this.serverName}. Giving up.`
+              )
+            );
           }
         };
 
-        this.process.on('exit', this.processExitHandler);
-
-        // Setup stderr logging
-        this.process.stderr?.on('data', (data) => {
-          const message = data.toString();
-          if (message.trim()) {
-            // Filter out debug messages unless in verbose mode
-            if (
-              shouldLogMCPToConsole() &&
-              (!message.toLowerCase().includes('debug') || process.env.MCP_VERBOSE)
-            ) {
-              console.error(chalk.yellow(`  ⚠️  ${this.serverName}:`), message.trim());
-            }
+        transport.onerror = (error: Error) => {
+          if (error.name === 'AbortError' && this.manualDisconnect) {
+            return;
           }
-        });
+          this.connected = false;
+          reject(error);
+        };
 
-        // Optional: Setup stdout logging (some servers output to stdout)
-        this.process.stdout?.on('data', (data) => {
-          if (shouldLogMCPToConsole()) {
-            const message = data.toString();
-            console.log(chalk.gray(`  📤 ${this.serverName}:`), message.trim());
+        transport.stderr?.on('data', (data) => {
+          const message = data.toString().trim();
+          if (!message) {
+            return;
           }
-        });
-
-        const transportEnv: Record<string, string> = {};
-        for (const [key, value] of Object.entries(process.env)) {
-          if (value !== undefined) {
-            transportEnv[key] = value;
+          if (
+            shouldLogMCPToConsole() &&
+            (!message.toLowerCase().includes('debug') || process.env.MCP_VERBOSE)
+          ) {
+            console.error(chalk.yellow(`  ⚠️  ${this.serverName}:`), message);
           }
-        }
-        if (this.config.env) {
-          Object.assign(transportEnv, this.config.env);
-        }
-
-        this.transport = new StdioClientTransport({
-          command,
-          args,
-          env: transportEnv,
         });
 
         await this.client.connect(this.transport);
@@ -276,13 +251,7 @@ export class MCPClient {
    */
   private async reconnect(): Promise<void> {
     try {
-      // Clean up existing process and transport
-      if (this.process) {
-        this.process.removeAllListeners();
-        this.process.kill();
-        this.process = undefined;
-      }
-
+      this.manualDisconnect = false;
       if (this.transport) {
         if (typeof (this.transport as any)?.close === 'function') {
           await (this.transport as any).close();
@@ -585,46 +554,11 @@ export class MCPClient {
    * Disconnect from the server
    */
   async disconnect(): Promise<void> {
-    if (this.connected || this.process) {
+    if (this.connected || this.transport) {
       try {
+        this.manualDisconnect = true;
         // Prevent reconnection attempts during manual disconnection
         this.reconnectAttempts = this.maxReconnectAttempts;
-
-        // Remove event listeners to prevent memory leaks
-        if (this.process) {
-          if (this.processExitHandler) {
-            this.process.removeListener('exit', this.processExitHandler);
-          }
-          if (this.processErrorHandler) {
-            this.process.removeListener('error', this.processErrorHandler);
-          }
-          this.process.removeAllListeners('data');
-          this.process.stderr?.removeAllListeners();
-          this.process.stdout?.removeAllListeners();
-
-          // Kill process gracefully with SIGTERM, then SIGKILL if needed
-          if (this.process.pid && !this.process.killed) {
-            this.process.kill('SIGTERM');
-
-            // Give process 2 seconds to shut down gracefully
-            await new Promise<void>((resolve) => {
-              const timeout = setTimeout(() => {
-                if (this.process && this.process.pid && !this.process.killed) {
-                  console.log(
-                    chalk.yellow(`  ⚠️  Force killing ${this.serverName} with SIGKILL`)
-                  );
-                  this.process.kill('SIGKILL');
-                }
-                resolve();
-              }, 2000);
-
-              this.process?.once('exit', () => {
-                clearTimeout(timeout);
-                resolve();
-              });
-            });
-          }
-        }
 
         // Close client and transport
         if (this.client) {
@@ -638,17 +572,17 @@ export class MCPClient {
         }
 
         this.connected = false;
-        this.process = undefined;
         this.transport = undefined;
-        this.processExitHandler = undefined;
-        this.processErrorHandler = undefined;
-
-        console.log(chalk.gray(`  🔌 Disconnected from ${this.serverName}`));
+        if (shouldLogMCPToConsole()) {
+          console.log(chalk.gray(`  🔌 Disconnected from ${this.serverName}`));
+        }
       } catch (error) {
-        console.error(
-          chalk.red(`  ❌ Error disconnecting from ${this.serverName}:`),
-          error instanceof Error ? error.message : String(error)
-        );
+        if (shouldLogMCPToConsole()) {
+          console.error(
+            chalk.red(`  ❌ Error disconnecting from ${this.serverName}:`),
+            error instanceof Error ? error.message : String(error)
+          );
+        }
       }
     }
   }

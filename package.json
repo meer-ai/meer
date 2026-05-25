@@ -18,7 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build",
-    "test": "tsx scripts/verify-agent-tools.ts && tsx scripts/verify-slash-commands.ts",
+    "test": "tsx scripts/verify-agent-tools.ts && tsx scripts/verify-slash-commands.ts && tsx scripts/verify-agent-queue.ts && tsx scripts/verify-session-branches.ts && tsx scripts/verify-session-compaction.ts",
     "release": "./scripts/release.sh"
   },
   "keywords": [

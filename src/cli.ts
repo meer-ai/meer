@@ -45,6 +45,33 @@ interface InteractiveAgent {
   ): Promise<void>;
   processMessage(userMessage: string): Promise<string>;
   abort?(): void;
+  isProcessing?(): boolean;
+  queueMessage?(userMessage: string, mode?: "steer" | "followUp"): boolean;
+}
+
+function emitQueueChanges(
+  eventBus: AgentEventBus,
+  queue: {
+    steering: string[];
+    followUp: string[];
+    changes?: Array<{
+      action: "queued" | "delivered";
+      mode: "steer" | "followUp";
+      message: string;
+    }>;
+  }
+): void {
+  for (const change of queue.changes ?? []) {
+    eventBus.emitQueue({
+      id: `queue-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      action: change.action,
+      mode: change.mode,
+      message: change.message,
+      pendingSteering: queue.steering.length,
+      pendingFollowUp: queue.followUp.length,
+      timestamp: Date.now(),
+    });
+  }
 }
 
 export function createCLI(): Command {
@@ -192,8 +219,21 @@ export function createCLI(): Command {
 
         const pendingInputs: string[] = [];
         let pendingResolver: ((value: string) => void) | null = null;
+        let agent: InteractiveAgent | null = null;
 
         const enqueueInput = (value: string) => {
+          const trimmed = value.trim();
+          if (
+            trimmed &&
+            !trimmed.startsWith("/") &&
+            agent?.isProcessing?.() &&
+            agent.queueMessage?.(
+              trimmed,
+              chatUI?.getQueueMode?.() ?? "steer"
+            )
+          ) {
+            return;
+          }
           if (pendingResolver) {
             const resolve = pendingResolver;
             pendingResolver = null;
@@ -225,6 +265,7 @@ export function createCLI(): Command {
           cwd: currentCwd,
           maxIterations: config.maxIterations,
           autoCollectContext: config.autoCollectContext,
+          compaction: config.compaction,
           providerType,
           model: config.model,
           sessionTracker,
@@ -260,6 +301,18 @@ export function createCLI(): Command {
           },
           onToolEnd: () => chatUI?.clearTools(),
           onStatusChange: (status: string) => chatUI?.setStatus(status),
+          onQueueUpdate: (queue: {
+            steering: string[];
+            followUp: string[];
+            changes?: Array<{
+              action: "queued" | "delivered";
+              mode: "steer" | "followUp";
+              message: string;
+            }>;
+          }) => {
+            chatUI?.setQueueState(queue);
+            emitQueueChanges(eventBus, queue);
+          },
           onError: () => {},
           promptChoice: async (
             promptMessage: string,
@@ -274,7 +327,7 @@ export function createCLI(): Command {
           },
         };
 
-        const agent: InteractiveAgent = useClassicAgent
+        agent = useClassicAgent
           ? new (await import("./agent/workflow-v3.js")).AgentWorkflowV3(agentConfig)
           : new (await import("./agent/meer-agent.js")).MeerAgent(agentConfig);
 
@@ -282,6 +335,8 @@ export function createCLI(): Command {
           contextPrompt: previousSessionContext ?? undefined,
           priorMessages: restoredModelMessages ?? undefined,
         });
+
+        chatUI?.setInterruptHandler(() => agent.abort?.());
 
         if (sessionBanner && !chatUI) {
           console.log(chalk.gray(`${sessionBanner}\n`));
@@ -421,12 +476,21 @@ export function createCLI(): Command {
           } catch (error) {
             const message =
               error instanceof Error ? error.message : String(error);
+            const isAbort = error instanceof Error && error.name === "AbortError";
             if (chatUI) {
               chatUI.discardAssistantMessage();
               chatUI.setStatus("");
-              chatUI.appendSystemMessage(`❌ ${message}`);
+              if (isAbort) {
+                chatUI.appendSystemMessage("Interrupted.");
+              } else {
+                chatUI.appendSystemMessage(`❌ ${message}`);
+              }
             } else {
-              console.log(chalk.red("\n❌ Error:"), message);
+              if (isAbort) {
+                console.log(chalk.yellow("\nInterrupted."));
+              } else {
+                console.log(chalk.red("\n❌ Error:"), message);
+              }
             }
           } finally {
             timeline.close();

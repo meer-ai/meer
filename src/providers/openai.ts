@@ -10,6 +10,7 @@ import type {
   ToolDefinition,
 } from "./base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
+import { createProviderToolNameRegistry } from "./toolNames.js";
 
 export interface OpenAIConfig {
   apiKey: string;
@@ -159,7 +160,10 @@ export class OpenAIProvider implements Provider {
     tools: ToolDefinition[],
     signal?: AbortSignal
   ): AsyncIterable<ProviderEvent> {
-    const converted = this.convertAgentMessages(messages);
+    const toolRegistry = createProviderToolNameRegistry(tools);
+    const converted = this.convertAgentMessages(
+      toolRegistry.convertAgentMessages(messages)
+    );
 
     const body: Record<string, unknown> = {
       model: this.config.model,
@@ -168,8 +172,8 @@ export class OpenAIProvider implements Provider {
       ...this.tokenParam(),
       stream: true,
     };
-    if (tools.length > 0) {
-      body.tools = tools.map((t) => ({
+    if (toolRegistry.providerTools.length > 0) {
+      body.tools = toolRegistry.providerTools.map((t) => ({
         type: "function",
         function: {
           name: t.name,
@@ -251,7 +255,7 @@ export class OpenAIProvider implements Provider {
                 yield {
                   type: "tool-call-delta",
                   toolCallId: tc.id as string,
-                  toolName: fn.name as string,
+                  toolName: toolRegistry.toOriginalName(fn.name as string),
                   inputTextDelta: "",
                 };
               }
@@ -262,7 +266,7 @@ export class OpenAIProvider implements Provider {
                 yield {
                   type: "tool-call-delta",
                   toolCallId: existing.id,
-                  toolName: existing.name,
+                  toolName: toolRegistry.toOriginalName(existing.name),
                   inputTextDelta: fn.arguments as string,
                 };
               }
@@ -333,7 +337,11 @@ export class OpenAIProvider implements Provider {
         }
         yield {
           type: "tool-call",
-          toolCall: { id: tc.id, name: tc.name, input },
+          toolCall: {
+            id: tc.id,
+            name: toolRegistry.toOriginalName(tc.name),
+            input,
+          },
         };
       }
     }

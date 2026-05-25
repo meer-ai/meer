@@ -110,6 +110,12 @@ const ConfigSchema = z.object({
   }).optional(),
   context: z.object({
     autoCollect: z.boolean().optional(),
+    compaction: z.object({
+      enabled: z.boolean().optional(),
+      maxVisibleMessages: z.number().optional(),
+      maxVisibleChars: z.number().optional(),
+      keepRecentMessages: z.number().optional(),
+    }).optional(),
     embedding: z.object({
       enabled: z.boolean().optional(),
       dimensions: z.number().optional(),
@@ -144,6 +150,12 @@ export interface LoadedConfig {
     enabled: boolean;
     dimensions: number;
     maxFileSize: number;
+  };
+  compaction?: {
+    enabled: boolean;
+    maxVisibleMessages: number;
+    maxVisibleChars: number;
+    keepRecentMessages: number;
   };
   autoCollectContext?: boolean;
   ui: UISettings;
@@ -218,6 +230,12 @@ export function loadConfig(): LoadedConfig {
       },
       context: {
         autoCollect: false,
+        compaction: {
+          enabled: true,
+          maxVisibleMessages: 32,
+          maxVisibleChars: 16_000,
+          keepRecentMessages: 12,
+        },
         embedding: {
           enabled: false,
           dimensions: 256,
@@ -406,6 +424,12 @@ export function loadConfig(): LoadedConfig {
       maxCostPerSession: config.limits?.maxCostPerSession,
     },
     autoCollectContext: config.context?.autoCollect ?? false,
+    compaction: {
+      enabled: config.context?.compaction?.enabled ?? true,
+      maxVisibleMessages: config.context?.compaction?.maxVisibleMessages ?? 32,
+      maxVisibleChars: config.context?.compaction?.maxVisibleChars ?? 16_000,
+      keepRecentMessages: config.context?.compaction?.keepRecentMessages ?? 12,
+    },
     contextEmbedding: {
       enabled: config.context?.embedding?.enabled ?? false,
       dimensions: config.context?.embedding?.dimensions ?? 256,

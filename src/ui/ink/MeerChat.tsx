@@ -55,6 +55,9 @@ export interface MeerChatProps {
     defaultValue: string;
   };
   onChoiceSelect?: (value: string) => void;
+  queuedMessages?: string[];
+  queueMode?: "steer" | "followUp";
+  onQueueModeChange?: (mode: "steer" | "followUp") => void;
 }
 
 // ============================================================================
@@ -446,6 +449,7 @@ const InputArea: React.FC<{
   isThinking: boolean;
   queuedMessages: number;
   queuedPreview: string[];
+  queueMode: "steer" | "followUp";
   mode?: "edit" | "plan";
   slashSuggestions: SlashCommandListEntry[];
   selectedSuggestion: number;
@@ -464,6 +468,7 @@ const InputArea: React.FC<{
     isThinking,
     queuedMessages,
     queuedPreview,
+    queueMode,
     mode = "edit",
     slashSuggestions,
     selectedSuggestion,
@@ -520,6 +525,13 @@ const InputArea: React.FC<{
             <Text color="magenta">queued {queuedMessages}</Text>
           </Box>
         )}
+        {isThinking && (
+          <Box marginLeft={1}>
+            <Text color="cyan">
+              {queueMode === "followUp" ? "follow-up" : "steer"}
+            </Text>
+          </Box>
+        )}
       </Box>
 
       {choicePrompt && onChoiceSelect && (
@@ -572,7 +584,7 @@ const InputArea: React.FC<{
 
       <Box marginTop={1}>
         <Text color="dim">
-          Enter send · Esc interrupt · Ctrl+P mode · Ctrl+C exit
+          Enter send · Esc interrupt · Ctrl+P mode · Ctrl+Q queue · Ctrl+C exit
         </Text>
       </Box>
     </Box>
@@ -582,7 +594,9 @@ const InputArea: React.FC<{
     prev.isThinking === next.isThinking &&
     prev.slashSuggestions === next.slashSuggestions &&
     prev.selectedSuggestion === next.selectedSuggestion &&
-    prev.queuedMessages === next.queuedMessages
+    prev.queuedMessages === next.queuedMessages &&
+    prev.queueMode === next.queueMode &&
+    prev.queuedPreview.join("\n") === next.queuedPreview.join("\n")
 );
 
 // ============================================================================
@@ -654,10 +668,14 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   slashSuggestions: providedSlashSuggestions,
   choicePrompt,
   onChoiceSelect,
+  queuedMessages: externalQueuedMessages,
+  queueMode: externalQueueMode = "steer",
+  onQueueModeChange,
 }) => {
   const [input, setInput] = useState("");
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
   const [internalMode, setInternalMode] = useState<"edit" | "plan">("edit");
+  const [internalQueueMode, setInternalQueueMode] = useState<"steer" | "followUp">("steer");
   const [slashSuggestions, setSlashSuggestions] = useState<SlashCommandListEntry[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
@@ -674,7 +692,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
   const isScreenReader = Boolean(screenReader);
   const mode = externalMode !== undefined ? externalMode : internalMode;
-  const queuedPreview = useMemo(() => messageQueue.slice(0, 3), [messageQueue]);
+  const queueMode =
+    onQueueModeChange !== undefined ? externalQueueMode : internalQueueMode;
+  const activeQueue = externalQueuedMessages ?? messageQueue;
+  const queuedPreview = useMemo(() => activeQueue.slice(0, 3), [activeQueue]);
   const hasDraftContent = Boolean(draftAssistant?.content.trim());
 
   const toggleMode = useCallback(() => {
@@ -733,14 +754,14 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
-      if (isThinking) {
+      if (isThinking && externalQueuedMessages === undefined) {
         setMessageQueue((prev) => [...prev, trimmed]);
       } else {
         setScrollAnchor("end");
         onMessage(trimmed);
       }
     },
-    [isThinking, onMessage]
+    [externalQueuedMessages, isThinking, onMessage]
   );
 
   const applySlashSuggestion = useCallback(
@@ -820,6 +841,16 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     (inputKey, key) => {
       if (key.ctrl && inputKey === "c") { onExit?.(); exit(); return; }
       if (key.ctrl && inputKey === "p") { toggleMode(); return; }
+      if (key.ctrl && inputKey === "q") {
+        const nextMode: "steer" | "followUp" =
+          queueMode === "steer" ? "followUp" : "steer";
+        if (onQueueModeChange) {
+          onQueueModeChange(nextMode);
+        } else {
+          setInternalQueueMode(nextMode);
+        }
+        return;
+      }
 
       if (key.escape) {
         if (hasSlashSuggestions) { clearSlashSuggestions(); return; }
@@ -867,12 +898,15 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   }, [applySlashSuggestion, handleInputChange, input, hasSlashSuggestions, sendMessage, selectedSuggestion, slashSuggestions]);
 
   useEffect(() => {
+    if (externalQueuedMessages !== undefined) {
+      return;
+    }
     if (!isThinking && messageQueue.length > 0) {
       const nextMessage = messageQueue[0];
       setMessageQueue((prev) => prev.slice(1));
       onMessage(nextMessage);
     }
-  }, [isThinking, messageQueue, onMessage]);
+  }, [externalQueuedMessages, isThinking, messageQueue, onMessage]);
 
   if (isScreenReader) {
     return (
@@ -897,8 +931,9 @@ export const MeerChat: React.FC<MeerChatProps> = ({
           onChange={handleInputChange}
           onSubmit={handleSubmit}
           isThinking={isThinking}
-          queuedMessages={messageQueue.length}
+          queuedMessages={activeQueue.length}
           queuedPreview={queuedPreview}
+          queueMode={queueMode}
           mode={mode}
           slashSuggestions={slashSuggestions}
           selectedSuggestion={selectedSuggestion}
@@ -991,8 +1026,9 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         onChange={handleInputChange}
         onSubmit={handleSubmit}
         isThinking={isThinking}
-        queuedMessages={messageQueue.length}
+        queuedMessages={activeQueue.length}
         queuedPreview={queuedPreview}
+        queueMode={queueMode}
         mode={mode}
         slashSuggestions={slashSuggestions}
         selectedSuggestion={selectedSuggestion}

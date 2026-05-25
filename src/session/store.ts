@@ -5,11 +5,12 @@ import { randomUUID } from "crypto";
 
 export interface SessionHeader {
   type: "session";
-  version: 1;
+  version: 3;
   id: string;
   createdAt: string;
   cwd: string;
   parentSessionId?: string;
+  branchRootSessionId?: string;
 }
 
 export interface SessionMessageEntry {
@@ -25,10 +26,27 @@ export interface SessionMessageEntry {
     isError?: boolean;
     toolCallId?: string;
     turnId?: string;
+    queueAction?: "queued" | "delivered";
+    queueMode?: "steer" | "followUp";
+    summaryKind?: "branch_summary" | "compaction";
+    sourceSessionId?: string;
+    branchRootSessionId?: string;
   };
 }
 
-export type SessionEntry = SessionHeader | SessionMessageEntry;
+export interface SessionCompactionEntry {
+  type: "compaction";
+  timestamp: number;
+  summary: string;
+  firstKeptTimestamp: number | null;
+  summarizedMessageCount: number;
+  tokensBefore: number;
+}
+
+export type SessionEntry =
+  | SessionHeader
+  | SessionMessageEntry
+  | SessionCompactionEntry;
 
 export interface SessionFileInfo {
   id: string;
@@ -37,6 +55,8 @@ export interface SessionFileInfo {
   createdAt: string;
   messageCount: number;
   parentSessionId?: string;
+  branchRootSessionId?: string;
+  branchDepth?: number;
 }
 
 function encodeCwd(cwd: string): string {
@@ -74,7 +94,11 @@ export class SessionStore {
     return join(this.sessionsPath, encodeCwd(cwd));
   }
 
-  private createSessionFile(cwd: string, parentSessionId?: string): SessionFileInfo {
+  private createSessionFile(
+    cwd: string,
+    parentSessionId?: string,
+    branchRootSessionId?: string
+  ): SessionFileInfo {
     const sessionId = randomUUID();
     const createdAt = new Date().toISOString();
     const projectDir = this.getProjectSessionsPath(cwd);
@@ -84,11 +108,12 @@ export class SessionStore {
     const path = join(projectDir, filename);
     const header: SessionHeader = {
       type: "session",
-      version: 1,
+      version: 3,
       id: sessionId,
       createdAt,
       cwd,
       parentSessionId,
+      branchRootSessionId,
     };
 
     appendFileSync(path, `${JSON.stringify(header)}\n`, "utf8");
@@ -104,6 +129,8 @@ export class SessionStore {
       createdAt,
       messageCount: 0,
       parentSessionId,
+      branchRootSessionId,
+      branchDepth: parentSessionId ? 1 : 0,
     };
   }
 
@@ -131,18 +158,28 @@ export class SessionStore {
       return null;
     }
 
-    const forked = this.createSessionFile(targetCwd, sourceHeader.id);
+    const branchRootSessionId =
+      sourceHeader.branchRootSessionId ?? sourceHeader.id;
+    const forked = this.createSessionFile(
+      targetCwd,
+      sourceHeader.id,
+      branchRootSessionId
+    );
     const messageEntries = sourceEntries.filter(
       (entry): entry is SessionMessageEntry => entry.type === "message"
     );
-
-    for (const entry of messageEntries) {
+    const summary = this.buildBranchSummary(sourceHeader.id, messageEntries);
+    if (summary) {
       this.appendMessage(
         {
-          timestamp: entry.timestamp,
-          role: entry.role,
-          content: entry.content,
-          metadata: entry.metadata,
+          timestamp: Date.now(),
+          role: "system",
+          content: summary,
+          metadata: {
+            summaryKind: "branch_summary",
+            sourceSessionId: sourceHeader.id,
+            branchRootSessionId,
+          },
         },
         targetCwd
       );
@@ -172,7 +209,72 @@ export class SessionStore {
       ...entry,
     };
 
-    appendFileSync(this.currentSessionPath as string, `${JSON.stringify(payload)}\n`, "utf8");
+    this.appendEntry(payload, cwd);
+  }
+
+  compactSession(
+    sessionPath: string,
+    options?: { keepRecentMessages?: number }
+  ): SessionCompactionEntry | null {
+    const info = this.getSessionInfoByPath(sessionPath);
+    if (!info) {
+      return null;
+    }
+
+    const keepRecentMessages = Math.max(1, options?.keepRecentMessages ?? 12);
+    const entries = this.loadSession(sessionPath);
+    const { visibleMessages, latestCompaction } =
+      this.getVisibleMessagesFromEntries(entries);
+
+    if (visibleMessages.length <= keepRecentMessages) {
+      return null;
+    }
+
+    const messagesToSummarize = visibleMessages.slice(0, -keepRecentMessages);
+    const keptMessages = visibleMessages.slice(-keepRecentMessages);
+    const firstKeptTimestamp = keptMessages[0]?.timestamp ?? null;
+    const previousSummary = latestCompaction?.summary?.trim();
+    const summary = this.buildCompactionSummary(
+      messagesToSummarize,
+      previousSummary || null
+    );
+    const tokensBefore = visibleMessages.reduce(
+      (sum, message) => sum + message.content.length,
+      0
+    );
+
+    const entry: SessionCompactionEntry = {
+      type: "compaction",
+      timestamp: Date.now(),
+      summary,
+      firstKeptTimestamp,
+      summarizedMessageCount:
+        (latestCompaction?.summarizedMessageCount ?? 0) +
+        messagesToSummarize.length,
+      tokensBefore,
+    };
+
+    this.appendRawEntry(sessionPath, entry);
+    return entry;
+  }
+
+  getSessionContextStats(sessionPath: string): {
+    visibleMessages: number;
+    totalChars: number;
+    summarizedMessages: number;
+  } | null {
+    const info = this.getSessionInfoByPath(sessionPath);
+    if (!info) {
+      return null;
+    }
+    const { visibleMessages, latestCompaction } = this.getVisibleMessagesFromEntries(
+      this.loadSession(sessionPath)
+    );
+    return {
+      visibleMessages: visibleMessages.length,
+      totalChars: visibleMessages.reduce((sum, message) => sum + message.content.length, 0),
+      summarizedMessages: latestCompaction?.summarizedMessageCount ?? 0,
+    };
   }
 
   loadSession(sessionPath: string): SessionEntry[] {
@@ -215,8 +317,20 @@ export class SessionStore {
           createdAt: header.createdAt,
           messageCount: rest.filter((entry) => entry.type === "message").length,
           parentSessionId: header.parentSessionId,
+          branchRootSessionId: header.branchRootSessionId,
         });
       }
+    }
+
+    const byId = new Map(sessions.map((session) => [session.id, session]));
+    for (const session of sessions) {
+      let depth = 0;
+      let cursor = session.parentSessionId ? byId.get(session.parentSessionId) : null;
+      while (cursor) {
+        depth += 1;
+        cursor = cursor.parentSessionId ? byId.get(cursor.parentSessionId) : null;
+      }
+      session.branchDepth = depth;
     }
 
     sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -242,8 +356,9 @@ export class SessionStore {
       return [];
     }
 
-    const entries = this.loadSession(latest.path)
-      .filter((entry): entry is SessionMessageEntry => entry.type === "message");
+    const entries = this.getVisibleMessagesFromEntries(
+      this.loadSession(latest.path)
+    ).visibleMessages;
 
     if (!options?.maxMessages || entries.length <= options.maxMessages) {
       return entries;
@@ -283,8 +398,20 @@ export class SessionStore {
     cwd: string,
     options?: { excludeCurrent?: boolean; maxMessages?: number }
   ): string | null {
-    const messages = this.loadLatestSessionMessages(cwd, options);
-    if (messages.length === 0) {
+    const latest = this.getLatestSession(cwd, {
+      excludePath: options?.excludeCurrent ? this.currentSessionPath ?? undefined : undefined,
+    });
+    if (!latest) {
+      return null;
+    }
+    const entries = this.loadSession(latest.path);
+    const { visibleMessages, latestCompaction } =
+      this.getVisibleMessagesFromEntries(entries);
+    const messages =
+      options?.maxMessages && visibleMessages.length > options.maxMessages
+        ? visibleMessages.slice(-options.maxMessages)
+        : visibleMessages;
+    if (messages.length === 0 && !latestCompaction) {
       return null;
     }
 
@@ -297,25 +424,33 @@ export class SessionStore {
           : message.role === "tool"
           ? `Tool${message.metadata?.toolName ? ` (${message.metadata.toolName})` : ""}`
           : "User";
-      return `${role}: ${message.content}`;
+      const prefix =
+        message.metadata?.summaryKind === "branch_summary"
+          ? "Branch summary"
+          : role;
+      return `${prefix}: ${message.content}`;
     });
 
     return [
       "Recent project conversation context from the last Meer session.",
       "Use it only when relevant and prioritize the current user request.",
+      ...(latestCompaction
+        ? [`Compaction summary: ${latestCompaction.summary}`]
+        : []),
       ...lines,
     ].join("\n");
   }
 
   buildContextFromSessionPath(sessionPath: string, maxMessages = 8): string | null {
-    const entries = this.loadSession(sessionPath)
-      .filter((entry): entry is SessionMessageEntry => entry.type === "message");
+    const { visibleMessages, latestCompaction } = this.getVisibleMessagesFromEntries(
+      this.loadSession(sessionPath)
+    );
 
-    if (entries.length === 0) {
+    if (visibleMessages.length === 0 && !latestCompaction) {
       return null;
     }
 
-    const lines = entries.slice(-maxMessages).map((message) => {
+    const lines = visibleMessages.slice(-maxMessages).map((message) => {
       const role =
         message.role === "assistant"
           ? "Assistant"
@@ -324,12 +459,19 @@ export class SessionStore {
           : message.role === "tool"
           ? `Tool${message.metadata?.toolName ? ` (${message.metadata.toolName})` : ""}`
           : "User";
-      return `${role}: ${message.content}`;
+      const prefix =
+        message.metadata?.summaryKind === "branch_summary"
+          ? "Branch summary"
+          : role;
+      return `${prefix}: ${message.content}`;
     });
 
     return [
       "Session transcript context loaded from a selected Meer session.",
       "Use it only when relevant and prioritize the current user request.",
+      ...(latestCompaction
+        ? [`Compaction summary: ${latestCompaction.summary}`]
+        : []),
       ...lines,
     ].join("\n");
   }
@@ -350,9 +492,9 @@ export class SessionStore {
       return [];
     }
 
-    return this.loadSession(this.currentSessionPath).filter(
-      (entry): entry is SessionMessageEntry => entry.type === "message"
-    );
+    return this.getVisibleMessagesFromEntries(
+      this.loadSession(this.currentSessionPath)
+    ).visibleMessages;
   }
 
   resolveViewSession(cwd = process.cwd()): SessionFileInfo | null {
@@ -373,6 +515,19 @@ export class SessionStore {
       return null;
     }
 
+    let branchDepth = 0;
+    let cursorId = header.parentSessionId;
+    while (cursorId) {
+      const parent = this.listSessions(header.cwd).find(
+        (session) => session.id === cursorId
+      );
+      if (!parent) {
+        break;
+      }
+      branchDepth += 1;
+      cursorId = parent.parentSessionId;
+    }
+
     return {
       id: header.id,
       path: sessionPath,
@@ -380,7 +535,50 @@ export class SessionStore {
       createdAt: header.createdAt,
       messageCount: entries.filter((entry) => entry.type === "message").length,
       parentSessionId: header.parentSessionId,
+      branchRootSessionId: header.branchRootSessionId,
+      branchDepth,
     };
+  }
+
+  private buildBranchSummary(
+    sourceSessionId: string,
+    entries: SessionMessageEntry[]
+  ): string | null {
+    const visibleEntries = entries.filter(
+      (entry) =>
+        !(entry.role === "system" && entry.metadata?.summaryKind === "branch_summary")
+    );
+    if (visibleEntries.length === 0) {
+      return null;
+    }
+
+    const keptEntries = visibleEntries.slice(-10);
+    const omitted = Math.max(0, visibleEntries.length - keptEntries.length);
+    const lines = keptEntries.map((entry) => {
+      const role =
+        entry.role === "assistant"
+          ? "Assistant"
+          : entry.role === "tool"
+          ? `Tool${entry.metadata?.toolName ? ` (${entry.metadata.toolName})` : ""}`
+          : entry.role === "system"
+          ? "System"
+          : "User";
+      const normalized = entry.content.replace(/\s+/g, " ").trim();
+      const preview =
+        normalized.length > 220 ? `${normalized.slice(0, 219).trim()}…` : normalized;
+      return `- ${role}: ${preview}`;
+    });
+
+    const intro = [
+      `Summary of parent branch session ${sourceSessionId.slice(0, 8)}.`,
+      "This fork started from that session. Use this summary as durable branch context if prior details matter.",
+    ];
+
+    if (omitted > 0) {
+      intro.push(`${omitted} earlier entries omitted from this compact branch summary.`);
+    }
+
+    return [...intro, ...lines].join("\n");
   }
 
   private deleteSessionFile(sessionPath: string): void {
@@ -389,5 +587,80 @@ export class SessionStore {
       this.currentSessionPath = null;
       this.currentSessionId = null;
     }
+  }
+
+  private appendEntry(
+    entry: SessionMessageEntry | SessionCompactionEntry,
+    cwd = this.currentCwd ?? process.cwd()
+  ): void {
+    if (!this.currentSessionPath || this.currentCwd !== cwd) {
+      this.startSession(cwd);
+    }
+    this.appendRawEntry(this.currentSessionPath as string, entry);
+  }
+
+  private appendRawEntry(
+    sessionPath: string,
+    entry: SessionMessageEntry | SessionCompactionEntry
+  ): void {
+    appendFileSync(sessionPath, `${JSON.stringify(entry)}\n`, "utf8");
+  }
+
+  private getVisibleMessagesFromEntries(entries: SessionEntry[]): {
+    visibleMessages: SessionMessageEntry[];
+    latestCompaction: SessionCompactionEntry | null;
+  } {
+    const latestCompaction = [...entries]
+      .reverse()
+      .find(
+        (entry): entry is SessionCompactionEntry => entry.type === "compaction"
+      ) ?? null;
+
+    const messages = entries.filter(
+      (entry): entry is SessionMessageEntry => entry.type === "message"
+    );
+
+    if (!latestCompaction) {
+      return { visibleMessages: messages, latestCompaction: null };
+    }
+
+    const visibleMessages =
+      latestCompaction.firstKeptTimestamp == null
+        ? []
+        : messages.filter(
+            (entry) => entry.timestamp >= latestCompaction.firstKeptTimestamp!
+          );
+
+    return { visibleMessages, latestCompaction };
+  }
+
+  private buildCompactionSummary(
+    messages: SessionMessageEntry[],
+    previousSummary: string | null
+  ): string {
+    const lines = messages.slice(-20).map((message) => {
+      const role =
+        message.role === "assistant"
+          ? "Assistant"
+          : message.role === "tool"
+          ? `Tool${message.metadata?.toolName ? ` (${message.metadata.toolName})` : ""}`
+          : message.role === "system"
+          ? "System"
+          : "User";
+      const normalized = message.content.replace(/\s+/g, " ").trim();
+      const preview =
+        normalized.length > 200 ? `${normalized.slice(0, 199).trim()}…` : normalized;
+      return `- ${role}: ${preview}`;
+    });
+
+    return [
+      "Compacted conversation summary.",
+      ...(previousSummary
+        ? ["Previous summary context:", previousSummary]
+        : []),
+      `${messages.length} older messages were summarized and removed from active context.`,
+      "Recent summarized highlights:",
+      ...lines,
+    ].join("\n");
   }
 }

@@ -221,6 +221,20 @@ function formatTimelineClock(ts: number): string {
 
 function formatTimelineEventLine(event: UITimelineEvent): string {
   const clock = chalk.gray(formatTimelineClock(event.timestamp));
+  if (event.type === "queue") {
+    const icon = event.action === "queued" ? "↳" : "↱";
+    const color = event.action === "queued" ? chalk.magenta : chalk.cyan;
+    const mode = event.mode === "followUp" ? "follow-up" : "steer";
+    const counts =
+      event.pendingSteering + event.pendingFollowUp > 0
+        ? chalk.gray(
+            ` — ${event.pendingSteering} steer, ${event.pendingFollowUp} follow-up pending`
+          )
+        : "";
+    return `${clock} ${color(icon)} ${chalk.white(
+      `${event.action === "queued" ? "Queued" : "Delivered"} ${mode}: ${event.message}`
+    )}${counts}`;
+  }
   if (event.type === "task") {
     let icon = "⏳";
     let color = chalk.cyan;
@@ -994,10 +1008,26 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
   },
 
   "/compact": async ({ tui }) => {
+    const result = memory.compactCurrentSession(process.cwd());
+    if (!result) {
+      if (tui) {
+        tui.appendSystemMessage("Nothing to compact yet.");
+      } else {
+        console.log(chalk.gray("Nothing to compact yet."));
+      }
+      return continueResult();
+    }
+    const kept = result.firstKeptTimestamp ? "recent messages kept" : "all prior context summarized";
     if (tui) {
-      tui.appendSystemMessage("Context compaction is not yet implemented — conversation history is unchanged.");
+      tui.appendSystemMessage(
+        `Compacted ${result.summarizedMessageCount} messages into a session summary; ${kept}.`
+      );
     } else {
-      console.log(chalk.gray("Context compaction is not yet implemented."));
+      console.log(
+        chalk.gray(
+          `Compacted ${result.summarizedMessageCount} messages into a session summary; ${kept}.`
+        )
+      );
     }
     return continueResult();
   },

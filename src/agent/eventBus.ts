@@ -37,11 +37,22 @@ export interface AgentToolEvent {
   error?: string;
 }
 
+export interface AgentQueueEvent {
+  id: string;
+  action: "queued" | "delivered";
+  mode: "steer" | "followUp";
+  message: string;
+  pendingSteering: number;
+  pendingFollowUp: number;
+  timestamp: number;
+}
+
 type AgentEventMap = {
   task: AgentTaskEvent;
   log: AgentLogEvent;
   plan: AgentPlanEvent;
   tool: AgentToolEvent;
+  queue: AgentQueueEvent;
 };
 
 type AgentEventName = keyof AgentEventMap;
@@ -66,6 +77,10 @@ export class AgentEventBus {
     this.emitter.emit("tool", event);
   }
 
+  emitQueue(event: AgentQueueEvent): void {
+    this.emitter.emit("queue", event);
+  }
+
   onTask(listener: AgentEventListener<"task">): () => void {
     this.emitter.on("task", listener);
     return () => this.emitter.off("task", listener);
@@ -84,6 +99,11 @@ export class AgentEventBus {
   onTool(listener: AgentEventListener<"tool">): () => void {
     this.emitter.on("tool", listener);
     return () => this.emitter.off("tool", listener);
+  }
+
+  onQueue(listener: AgentEventListener<"queue">): () => void {
+    this.emitter.on("queue", listener);
+    return () => this.emitter.off("queue", listener);
   }
 
   removeAllListeners(): void {

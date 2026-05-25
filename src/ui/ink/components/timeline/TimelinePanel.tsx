@@ -32,6 +32,33 @@ const formatTime = (timestamp: number): string => {
 const TimelineRow: React.FC<{ event: UITimelineEvent }> = React.memo(({ event }) => {
   const time = formatTime(event.timestamp);
 
+  if (event.type === "queue") {
+    const color = event.action === "queued" ? "magenta" : "cyan";
+    const icon = event.action === "queued" ? "↳" : "↱";
+    const verb = event.action === "queued" ? "Queued" : "Delivered";
+    const mode = event.mode === "followUp" ? "follow-up" : "steer";
+    const pending =
+      event.pendingSteering + event.pendingFollowUp > 0
+        ? ` · ${event.pendingSteering} steer, ${event.pendingFollowUp} follow-up pending`
+        : "";
+    return (
+      <Box gap={1}>
+        <Text color="gray">{time}</Text>
+        <Text color={color}>{icon}</Text>
+        <Box flexDirection="column">
+          <Text color={color}>
+            {verb} {mode}: {event.message}
+          </Text>
+          {pending && (
+            <Text color="gray" dimColor>
+              {pending.slice(3)}
+            </Text>
+          )}
+        </Box>
+      </Box>
+    );
+  }
+
   if (event.type === "task") {
     const meta = TASK_ICONS[event.status] ?? TASK_ICONS.started;
     const detail =
@@ -76,10 +103,16 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = React.memo(({
 
   const latestTaskEvents = new Map<string, UITimelineEvent>();
   const importantLogs: UITimelineEvent[] = [];
+  const queueEvents: UITimelineEvent[] = [];
 
   for (const event of events) {
     if (event.type === "task") {
       latestTaskEvents.set(event.id, event);
+      continue;
+    }
+
+    if (event.type === "queue") {
+      queueEvents.push(event);
       continue;
     }
 
@@ -88,7 +121,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = React.memo(({
     }
   }
 
-  const visible = [...latestTaskEvents.values(), ...importantLogs]
+  const visible = [...latestTaskEvents.values(), ...queueEvents, ...importantLogs]
     .sort((left, right) => left.timestamp - right.timestamp)
     .slice(-Math.max(1, maxEvents));
 

@@ -1,5 +1,9 @@
 import { basename } from "path";
-import { SessionStore, type SessionMessageEntry } from "../session/store.js";
+import {
+  SessionStore,
+  type SessionMessageEntry,
+  type SessionCompactionEntry,
+} from "../session/store.js";
 import type { ChatMessage } from "../providers/base.js";
 
 export interface ConversationEntry {
@@ -14,6 +18,11 @@ export interface ConversationEntry {
     isError?: boolean;
     toolCallId?: string;
     turnId?: string;
+    queueAction?: "queued" | "delivered";
+    queueMode?: "steer" | "followUp";
+    summaryKind?: "branch_summary" | "compaction";
+    sourceSessionId?: string;
+    branchRootSessionId?: string;
   };
 }
 
@@ -30,6 +39,8 @@ export interface SessionView {
   sessionLabel: string;
   entries: ConversationEntry[];
   parentSessionId?: string;
+  branchRootSessionId?: string;
+  branchDepth?: number;
 }
 
 export class Memory {
@@ -79,10 +90,7 @@ export class Memory {
       return [];
     }
 
-    return this.store
-      .loadSession(active.path)
-      .filter((entry): entry is SessionMessageEntry => entry.type === "message")
-      .map(({ type: _type, ...message }) => message);
+    return this.mapEntriesForView(this.store.loadSession(active.path));
   }
 
   loadCurrentSessionView(cwd = process.cwd()): SessionView | null {
@@ -97,6 +105,8 @@ export class Memory {
       sessionLabel: basename(active.path),
       entries: this.loadCurrentSession(cwd),
       parentSessionId: active.parentSessionId,
+      branchRootSessionId: active.branchRootSessionId,
+      branchDepth: active.branchDepth,
     };
   }
 
@@ -110,11 +120,10 @@ export class Memory {
       sessionId: session.id,
       sessionPath: session.path,
       sessionLabel: basename(session.path),
-      entries: this.store
-        .loadSession(session.path)
-        .filter((entry): entry is SessionMessageEntry => entry.type === "message")
-        .map(({ type: _type, ...message }) => message),
+      entries: this.mapEntriesForView(this.store.loadSession(session.path)),
       parentSessionId: session.parentSessionId,
+      branchRootSessionId: session.branchRootSessionId,
+      branchDepth: session.branchDepth,
     };
   }
 
@@ -138,6 +147,24 @@ export class Memory {
           {
             role: "system" as const,
             content: `${label}:\n${entry.content}`,
+          },
+        ];
+      }
+
+      if (entry.metadata?.summaryKind === "branch_summary") {
+        return [
+          {
+            role: "system" as const,
+            content: `Branch summary:\n${entry.content}`,
+          },
+        ];
+      }
+
+      if (entry.metadata?.summaryKind === "compaction") {
+        return [
+          {
+            role: "system" as const,
+            content: `Compaction summary:\n${entry.content}`,
           },
         ];
       }
@@ -198,6 +225,32 @@ export class Memory {
     return this.store.listSessions(cwd);
   }
 
+  compactCurrentSession(
+    cwd = process.cwd(),
+    options?: { keepRecentMessages?: number }
+  ) {
+    const current = this.store.resolveViewSession(cwd);
+    if (!current) {
+      return null;
+    }
+    return this.store.compactSession(current.path, options);
+  }
+
+  compactSession(
+    sessionPath: string,
+    options?: { keepRecentMessages?: number }
+  ) {
+    return this.store.compactSession(sessionPath, options);
+  }
+
+  getCurrentSessionContextStats(cwd = process.cwd()) {
+    const current = this.store.resolveViewSession(cwd);
+    if (!current) {
+      return null;
+    }
+    return this.store.getSessionContextStats(current.path);
+  }
+
   resolveSession(query: string, cwd = process.cwd()) {
     return this.store.resolveSession(query, cwd);
   }
@@ -208,6 +261,36 @@ export class Memory {
 
   getCurrentSessionPath(): string | null {
     return this.store.getCurrentSessionPath();
+  }
+
+  private mapEntriesForView(
+    entries: Array<
+      | ({ type: "message" } & SessionMessageEntry)
+      | ({ type: "compaction" } & SessionCompactionEntry)
+      | any
+    >
+  ): ConversationEntry[] {
+    return entries.flatMap((entry) => {
+      if (entry.type === "message") {
+        const { type: _type, ...message } = entry;
+        return [message];
+      }
+
+      if (entry.type === "compaction") {
+        return [
+          {
+            timestamp: entry.timestamp,
+            role: "system" as const,
+            content: entry.summary,
+            metadata: {
+              summaryKind: "compaction" as const,
+            },
+          },
+        ];
+      }
+
+      return [];
+    });
   }
 }
 
