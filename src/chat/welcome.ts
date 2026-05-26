@@ -82,9 +82,8 @@ export async function showWelcomeScreen(): Promise<void> {
     ]);
 
     if (runSetup) {
-      const { createSetupCommand } = await import("../commands/setup.js");
-      const setupCmd = createSetupCommand();
-      await setupCmd.parseAsync(["setup"], { from: "user" });
+      const { runSetupWizard } = await import("../commands/setup.js");
+      await runSetupWizard();
       console.log("");
     } else {
       console.log(

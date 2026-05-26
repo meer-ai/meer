@@ -193,7 +193,7 @@ async function fetchZaiModels(apiKey: string, variant: ZaiVariant): Promise<stri
   }
 }
 
-async function runSetupWizard(): Promise<void> {
+export async function runSetupWizard(): Promise<void> {
   console.clear();
 
   // Welcome banner

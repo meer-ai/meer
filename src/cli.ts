@@ -41,6 +41,29 @@ const VERSION = JSON.parse(
   readFileSync(join(__dirname, "..", "package.json"), "utf-8")
 ).version;
 
+async function ensureConfiguredForChat(): Promise<boolean> {
+  const { configExists } = await import("./config.js");
+  if (configExists()) {
+    return true;
+  }
+
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error(chalk.yellow("Meer is not configured yet."));
+    console.error(chalk.gray("Run `meer setup` in an interactive terminal first."));
+    return false;
+  }
+
+  const { runSetupWizard } = await import("./commands/setup.js");
+  await runSetupWizard();
+
+  if (!configExists()) {
+    console.log(chalk.gray("Setup did not create a configuration. Exiting."));
+    return false;
+  }
+
+  return true;
+}
+
 function emitQueueChanges(
   eventBus: AgentEventBus,
   queue: {
@@ -112,6 +135,10 @@ export function createCLI(): Command {
       restarting = false;
 
       try {
+        if (!(await ensureConfiguredForChat())) {
+          break;
+        }
+
         const config = loadConfig();
         const cliOptions = program.opts() as {
           resume?: string | boolean;
