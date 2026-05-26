@@ -5,6 +5,8 @@ import type {
   ChatOptions,
   ProviderMetadata,
 } from "./base.js";
+import { AuthClient } from "../auth/client.js";
+import { AuthStorage } from "../auth/storage.js";
 
 interface MeerProviderConfig {
   apiKey?: string;
@@ -67,6 +69,8 @@ export class MeerProvider implements Provider {
     temperature: number;
   };
   private currentModel: string;
+  private readonly authStorage = new AuthStorage();
+  private readonly authClient: AuthClient;
 
   constructor(config: MeerProviderConfig = {}) {
     const model = config.model || "auto";
@@ -81,6 +85,7 @@ export class MeerProvider implements Provider {
       temperature: config.temperature ?? 0.7,
     };
     this.currentModel = model;
+    this.authClient = new AuthClient(this.config.apiUrl);
   }
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
@@ -177,10 +182,10 @@ export class MeerProvider implements Provider {
     path: string,
     init: RequestInit = {}
   ): Promise<T> {
-    const apiKey = this.resolveApiKey();
+    const token = await this.resolveAuthToken();
     const headers: Record<string, string> = {
       ...((init.headers as Record<string, string>) || {}),
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${token}`,
     };
 
     const response = await fetch(`${this.config.apiUrl}${path}`, {
@@ -190,7 +195,7 @@ export class MeerProvider implements Provider {
 
     if (response.status === 401) {
       throw new Error(
-        "Meer provider rejected the API key. Set MEER_API_KEY or configure it via `meer setup`."
+        "Meer provider rejected your credentials. Run `meer login` again or configure an API key with `meer setup`."
       );
     }
 
@@ -210,7 +215,7 @@ export class MeerProvider implements Provider {
     return (await response.json()) as T;
   }
 
-  private resolveApiKey(): string {
+  private async resolveAuthToken(): Promise<string> {
     if (this.config.apiKey && this.config.apiKey.trim().length > 0) {
       return this.config.apiKey.trim();
     }
@@ -221,8 +226,43 @@ export class MeerProvider implements Provider {
       return this.config.apiKey;
     }
 
+    const auth = this.authStorage.load();
+    if (auth?.access_token) {
+      const expiresAt = auth.expires_at ? new Date(auth.expires_at) : null;
+      const refreshBeforeExpiryMs = 60_000;
+      const isExpired =
+        expiresAt instanceof Date &&
+        Number.isFinite(expiresAt.getTime()) &&
+        expiresAt.getTime() <= Date.now() + refreshBeforeExpiryMs;
+
+      if (!isExpired) {
+        return auth.access_token;
+      }
+    }
+
+    if (auth?.refresh_token) {
+      try {
+        const refreshed = await this.authClient.refreshToken(auth.refresh_token);
+        this.authStorage.save({
+          access_token: refreshed.access_token,
+          refresh_token: refreshed.refresh_token,
+          user: refreshed.user,
+          expires_at: new Date(
+            Date.now() + refreshed.expires_in * 1000
+          ).toISOString(),
+        });
+        return refreshed.access_token;
+      } catch (error) {
+        throw new Error(
+          `Meer login has expired and refresh failed. Run \`meer login\` again. ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
+
     throw new Error(
-      "Meer provider requires an API key. Set MEER_API_KEY or run `meer setup` to add it."
+      "Meer managed provider is not authenticated. Run `meer login`, set MEER_API_KEY, or run `meer setup` to add an API key."
     );
   }
 }

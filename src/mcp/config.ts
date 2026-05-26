@@ -5,7 +5,7 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir, platform } from 'os';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import yaml from 'yaml';
 import type { MCPConfig, MCPServerConfig } from './types.js';
 import chalk from 'chalk';
@@ -36,7 +36,7 @@ const DEFAULT_MCP_CONFIG: MCPConfig = {
     git: {
       command: 'uvx',
       args: ['mcp-server-git', '--repository', process.cwd()],
-      enabled: true, // Enable by default for Git operations
+      enabled: false,
       description: 'Git repository operations (status, diff, commit, log)',
       timeout: 30000,
     },
@@ -67,7 +67,7 @@ const DEFAULT_MCP_CONFIG: MCPConfig = {
     fetch: {
       command: 'uvx',
       args: ['mcp-server-fetch'],
-      enabled: true, // Enable by default for web content fetching
+      enabled: false,
       description: 'Web content fetching and conversion to markdown',
       timeout: 30000,
     },
@@ -144,7 +144,7 @@ const DEFAULT_MCP_CONFIG: MCPConfig = {
     time: {
       command: 'uvx',
       args: ['mcp-server-time'],
-      enabled: true, // Lightweight utility, enable by default
+      enabled: false,
       description: 'Time and timezone conversion capabilities',
       timeout: 10000,
     },
@@ -158,7 +158,7 @@ const DEFAULT_MCP_CONFIG: MCPConfig = {
     },
   },
   mcp: {
-    autoStart: true, // Auto-connect to enabled servers on startup
+    autoStart: false,
     timeout: 30000,
     maxRetries: 3,
     cacheTools: true,
@@ -174,7 +174,6 @@ export function loadMCPConfig(configPath?: string): MCPConfig {
 
   // If config doesn't exist, create default
   if (!existsSync(path)) {
-    console.log(chalk.gray('No MCP config found, creating default...'));
     saveMCPConfig(DEFAULT_MCP_CONFIG, path);
     return DEFAULT_MCP_CONFIG;
   }
@@ -234,12 +233,36 @@ export function getEnabledServers(config: MCPConfig): Record<string, MCPServerCo
   const enabled: Record<string, MCPServerConfig> = {};
 
   for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
-    if (serverConfig.enabled) {
+    if (serverConfig.enabled && isServerRunnable(serverConfig)) {
       enabled[name] = serverConfig;
     }
   }
 
   return enabled;
+}
+
+/**
+ * Check whether a stdio MCP server command can be launched.
+ * Optional MCP servers should never make normal chat startup fail.
+ */
+export function isServerRunnable(serverConfig: MCPServerConfig): boolean {
+  if (!serverConfig.enabled || serverConfig.url) {
+    return true;
+  }
+
+  if (!serverConfig.command) {
+    return false;
+  }
+
+  try {
+    execFileSync(serverConfig.command, ['--version'], {
+      stdio: 'ignore',
+      timeout: 3000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -345,7 +368,7 @@ export function getDefaultConfig(): MCPConfig {
  */
 export function checkUvxInstalled(): boolean {
   try {
-    execSync('uvx --version', { stdio: 'ignore' });
+    execFileSync('uvx', ['--version'], { stdio: 'ignore', timeout: 3000 });
     return true;
   } catch {
     return false;

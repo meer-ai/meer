@@ -104,7 +104,7 @@ function createToolsCommand(): Command {
         const spinner = ora(chalk.blue('Connecting to MCP servers...')).start();
 
         const manager = MCPManager.getInstance();
-        await manager.initialize();
+        await manager.initialize({ force: true });
 
         const tools = manager.listAllTools();
         spinner.stop();
@@ -158,7 +158,7 @@ function createResourcesCommand(): Command {
         const spinner = ora(chalk.blue('Connecting to MCP servers...')).start();
 
         const manager = MCPManager.getInstance();
-        await manager.initialize();
+        await manager.initialize({ force: true });
 
         const resources = manager.listAllResources();
         spinner.stop();
@@ -334,7 +334,7 @@ function createStatusCommand(): Command {
         const spinner = ora(chalk.blue('Checking MCP server status...')).start();
 
         const manager = MCPManager.getInstance();
-        await manager.initialize();
+        await manager.initialize({ force: true });
 
         const servers = manager.getConnectedServers();
         spinner.stop();

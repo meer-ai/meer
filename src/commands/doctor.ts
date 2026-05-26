@@ -278,7 +278,7 @@ async function checkProviderKeys(): Promise<HealthCheckResult[]> {
 
 async function checkMCPServers(): Promise<HealthCheckResult[]> {
   const results: HealthCheckResult[] = [];
-  const mcpConfigPath = join(homedir(), '.meer', 'mcp.json');
+  const mcpConfigPath = join(homedir(), '.meer', 'mcp-config.yaml');
 
   if (!existsSync(mcpConfigPath)) {
     results.push({
@@ -292,7 +292,7 @@ async function checkMCPServers(): Promise<HealthCheckResult[]> {
 
   try {
     const mcpManager = MCPManager.getInstance();
-    await mcpManager.initialize();
+    await mcpManager.initialize({ force: true });
 
     const connectedServers = mcpManager.getConnectedServers();
     const tools = mcpManager.listAllTools();
@@ -302,7 +302,7 @@ async function checkMCPServers(): Promise<HealthCheckResult[]> {
         name: 'MCP Servers',
         status: 'warn',
         message: 'No MCP servers connected',
-        fix: 'Configure MCP servers in ~/.meer/mcp.json or check server availability',
+        fix: 'Configure MCP servers in ~/.meer/mcp-config.yaml or check server availability',
       });
     } else {
       results.push({
@@ -316,7 +316,7 @@ async function checkMCPServers(): Promise<HealthCheckResult[]> {
       name: 'MCP Servers',
       status: 'warn',
       message: `MCP initialization error: ${error instanceof Error ? error.message : String(error)}`,
-      fix: 'Check MCP configuration in ~/.meer/mcp.json',
+      fix: 'Check MCP configuration in ~/.meer/mcp-config.yaml',
     });
   }
 

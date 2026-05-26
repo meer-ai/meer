@@ -467,9 +467,10 @@ export async function runSetupWizard(): Promise<void> {
       config.meer.apiKey = '';
 
       console.log(chalk.green('\n✅ Meer provider configured for login flow!'));
-      console.log(chalk.yellow('\n⚡ Next step: Run the following command to authenticate:'));
-      console.log(chalk.cyan('   meer login\n'));
-      console.log(chalk.gray('   This will guide you through the device code authentication flow.\n'));
+      console.log(chalk.yellow('\n⚡ Starting browser/device login now...\n'));
+
+      const { createLoginCommand } = await import('./login.js');
+      await createLoginCommand().parseAsync(['login'], { from: 'user' });
     }
 
   } else if (provider === 'openai') {

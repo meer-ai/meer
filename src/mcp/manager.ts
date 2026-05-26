@@ -46,9 +46,15 @@ export class MCPManager {
   /**
    * Initialize and connect to all enabled MCP servers
    */
-  async initialize(): Promise<void> {
+  async initialize(options: { force?: boolean } = {}): Promise<void> {
     if (this.initialized) {
       logVerbose(chalk.gray('MCP Manager already initialized'));
+      return;
+    }
+
+    if (this.config.mcp?.autoStart === false && !options.force) {
+      logVerbose(chalk.gray('MCP auto-start disabled'));
+      this.initialized = true;
       return;
     }
 
