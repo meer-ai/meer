@@ -15,6 +15,7 @@ import { createWhoamiCommand } from "./commands/whoami.js";
 import { createIndexCommand } from "./commands/indexCmd.js";
 import { createDoctorCommand } from "./commands/doctor.js";
 import { createAgentsCommand } from "./commands/agents.js";
+import { createRunCommand } from "./commands/run.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { InkChatAdapter } from "./ui/ink/index.js";
@@ -117,6 +118,7 @@ export function createCLI(): Command {
   program.addCommand(createLogoutCommand());
   program.addCommand(createWhoamiCommand());
   program.addCommand(createAskCommand());
+  program.addCommand(createRunCommand());
   program.addCommand(createCommitMsgCommand());
   program.addCommand(createReviewCommand());
   program.addCommand(createMemoryCommand());
