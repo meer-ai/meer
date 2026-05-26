@@ -22,6 +22,7 @@ import type {
 import { retryWithBackoff, RetryPredicates } from '../utils/retry.js';
 import { parseStructuredTurn, textStreamToStructuredEvents } from './structured.js';
 import chalk from 'chalk';
+import { contextualError } from '../utils/errors.js';
 
 export interface ProviderWrapperConfig {
   /** Maximum number of retry attempts (default: 3) */
@@ -58,37 +59,45 @@ export class ProviderWrapper implements Provider {
    * Chat with automatic retry
    */
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-    return retryWithBackoff(
-      () => this.chatWithTimeout(messages, options),
-      {
-        maxRetries: this.config.maxRetries,
-        baseDelay: this.config.baseDelay,
-        maxDelay: this.config.maxDelay,
-        shouldRetry: this.shouldRetryError.bind(this),
-        name: `${this.config.name} chat`,
-      }
-    );
+    try {
+      return await retryWithBackoff(
+        () => this.chatWithTimeout(messages, options),
+        {
+          maxRetries: this.config.maxRetries,
+          baseDelay: this.config.baseDelay,
+          maxDelay: this.config.maxDelay,
+          shouldRetry: this.shouldRetryError.bind(this),
+          name: `${this.config.name} chat`,
+        }
+      );
+    } catch (error) {
+      throw this.contextualizeProviderError(error, "chat");
+    }
   }
 
   /**
    * Stream with automatic retry (only retries connection establishment)
    */
   async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string> {
-    // Retry the stream establishment
-    const streamGenerator = await retryWithBackoff(
-      async () => this.provider.stream(messages, options),
-      {
-        maxRetries: this.config.maxRetries,
-        baseDelay: this.config.baseDelay,
-        maxDelay: this.config.maxDelay,
-        shouldRetry: this.shouldRetryError.bind(this),
-        name: `${this.config.name} stream`,
-      }
-    ) as AsyncIterable<string>;
+    try {
+      // Retry the stream establishment
+      const streamGenerator = await retryWithBackoff(
+        async () => this.provider.stream(messages, options),
+        {
+          maxRetries: this.config.maxRetries,
+          baseDelay: this.config.baseDelay,
+          maxDelay: this.config.maxDelay,
+          shouldRetry: this.shouldRetryError.bind(this),
+          name: `${this.config.name} stream`,
+        }
+      ) as AsyncIterable<string>;
 
-    // Yield chunks from the stream
-    for await (const chunk of streamGenerator) {
-      yield chunk;
+      // Yield chunks from the stream
+      for await (const chunk of streamGenerator) {
+        yield chunk;
+      }
+    } catch (error) {
+      throw this.contextualizeProviderError(error, "stream");
     }
   }
 
@@ -97,16 +106,20 @@ export class ProviderWrapper implements Provider {
     options?: ChatOptions
   ): Promise<ProviderStructuredTurn> {
     if (this.provider.chatStructured) {
-      return retryWithBackoff(
-        () => this.provider.chatStructured!(messages, options),
-        {
-          maxRetries: this.config.maxRetries,
-          baseDelay: this.config.baseDelay,
-          maxDelay: this.config.maxDelay,
-          shouldRetry: this.shouldRetryError.bind(this),
-          name: `${this.config.name} structured chat`,
-        }
-      );
+      try {
+        return await retryWithBackoff(
+          () => this.provider.chatStructured!(messages, options),
+          {
+            maxRetries: this.config.maxRetries,
+            baseDelay: this.config.baseDelay,
+            maxDelay: this.config.maxDelay,
+            shouldRetry: this.shouldRetryError.bind(this),
+            name: `${this.config.name} structured chat`,
+          }
+        );
+      } catch (error) {
+        throw this.contextualizeProviderError(error, "structured chat");
+      }
     }
 
     const text = await this.chat(messages, options);
@@ -118,19 +131,23 @@ export class ProviderWrapper implements Provider {
     options?: ChatOptions
   ): AsyncIterable<ProviderEvent> {
     if (this.provider.streamEvents) {
-      const streamGenerator = await retryWithBackoff(
-        async () => this.provider.streamEvents!(messages, options),
-        {
-          maxRetries: this.config.maxRetries,
-          baseDelay: this.config.baseDelay,
-          maxDelay: this.config.maxDelay,
-          shouldRetry: this.shouldRetryError.bind(this),
-          name: `${this.config.name} event stream`,
-        }
-      ) as AsyncIterable<ProviderEvent>;
+      try {
+        const streamGenerator = await retryWithBackoff(
+          async () => this.provider.streamEvents!(messages, options),
+          {
+            maxRetries: this.config.maxRetries,
+            baseDelay: this.config.baseDelay,
+            maxDelay: this.config.maxDelay,
+            shouldRetry: this.shouldRetryError.bind(this),
+            name: `${this.config.name} event stream`,
+          }
+        ) as AsyncIterable<ProviderEvent>;
 
-      for await (const event of streamGenerator) {
-        yield event;
+        for await (const event of streamGenerator) {
+          yield event;
+        }
+      } catch (error) {
+        throw this.contextualizeProviderError(error, "event stream");
       }
       return;
     }
@@ -143,41 +160,45 @@ export class ProviderWrapper implements Provider {
     tools: ToolDefinition[],
     signal?: AbortSignal
   ): AsyncIterable<ProviderEvent> {
-    if (this.provider.streamWithTools) {
-      yield* this.provider.streamWithTools(messages, tools, signal);
-      return;
-    }
-
-    // XML fallback: inject tool descriptions into system message, convert to ChatMessage[]
-    const chatMessages = this.agentMessagesToChat(messages, tools);
-
-    let rawText = "";
-    let turn: ProviderStructuredTurn | undefined;
-
-    for await (const event of this.provider.streamEvents
-      ? this.provider.streamEvents(chatMessages, { signal } as ChatOptions)
-      : textStreamToStructuredEvents(
-          this.provider.stream(chatMessages, { signal } as ChatOptions)
-        )) {
-      if (event.type === "text-delta") {
-        rawText += event.text;
-      } else if (event.type === "tool-call") {
-        yield event;
-      } else if (event.type === "done") {
-        turn = event.turn;
-      } else if (event.type === "assistant-message") {
-        yield { type: "text-delta", text: event.text };
-        rawText = event.text;
+    try {
+      if (this.provider.streamWithTools) {
+        yield* this.provider.streamWithTools(messages, tools, signal);
+        return;
       }
-    }
 
-    if (turn?.toolCalls?.length) {
-      for (const toolCall of turn.toolCalls) {
-        yield { type: "tool-call", toolCall };
+      // XML fallback: inject tool descriptions into system message, convert to ChatMessage[]
+      const chatMessages = this.agentMessagesToChat(messages, tools);
+
+      let rawText = "";
+      let turn: ProviderStructuredTurn | undefined;
+
+      for await (const event of this.provider.streamEvents
+        ? this.provider.streamEvents(chatMessages, { signal } as ChatOptions)
+        : textStreamToStructuredEvents(
+            this.provider.stream(chatMessages, { signal } as ChatOptions)
+          )) {
+        if (event.type === "text-delta") {
+          rawText += event.text;
+        } else if (event.type === "tool-call") {
+          yield event;
+        } else if (event.type === "done") {
+          turn = event.turn;
+        } else if (event.type === "assistant-message") {
+          yield { type: "text-delta", text: event.text };
+          rawText = event.text;
+        }
       }
-    }
 
-    yield { type: "done", rawText, turn };
+      if (turn?.toolCalls?.length) {
+        for (const toolCall of turn.toolCalls) {
+          yield { type: "tool-call", toolCall };
+        }
+      }
+
+      yield { type: "done", rawText, turn };
+    } catch (error) {
+      throw this.contextualizeProviderError(error, "tool stream");
+    }
   }
 
   private agentMessagesToChat(
@@ -310,20 +331,37 @@ export class ProviderWrapper implements Provider {
    * Chat with timeout
    */
   private async chatWithTimeout(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
-    return Promise.race([
+    return this.withTimeout(
       this.provider.chat(messages, options),
-      this.createTimeout(this.config.timeout),
-    ]);
+      this.config.timeout
+    );
   }
 
-  /**
-   * Create a timeout promise
-   */
-  private createTimeout(ms: number): Promise<never> {
-    return new Promise((_, reject) => {
-      setTimeout(() => {
-        reject(new Error(`Request timed out after ${ms}ms`));
-      }, ms);
+  private async withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`Request timed out after ${ms}ms`));
+          }, ms);
+        }),
+      ]);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  private contextualizeProviderError(error: unknown, operation: string): Error {
+    const currentModel = this.getCurrentModel();
+    return contextualError(error, {
+      source: "provider",
+      name: this.config.name,
+      operation,
+      target: currentModel ? `model ${currentModel}` : undefined,
     });
   }
 

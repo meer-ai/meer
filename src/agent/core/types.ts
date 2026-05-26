@@ -25,6 +25,7 @@ export type AgentMessage =
       role: "assistant";
       content: string;
       toolCalls?: ToolCallBlock[];
+      reasoningContent?: string;
       timestamp?: number;
     }
   | {
@@ -33,12 +34,14 @@ export type AgentMessage =
       toolName: string;
       content: string;
       isError?: boolean;
+      details?: Record<string, unknown>;
       timestamp?: number;
     };
 
 export interface ToolResult {
   content: string;
   isError?: boolean;
+  details?: Record<string, unknown>;
   /** When true, the loop stops after this tool batch. */
   terminate?: boolean;
 }

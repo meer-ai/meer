@@ -16,8 +16,8 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     description: "Generate a commit message from staged changes",
   },
   {
-    command: "/history",
-    description: "Show recent prompts you've entered",
+    command: "/resume",
+    description: "Select a saved session and resume it",
   },
   {
     command: "/index",
@@ -63,6 +63,10 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     command: "/setup",
     description: "Open the setup wizard to configure providers",
     protected: true,
+  },
+  {
+    command: "/skills",
+    description: "List loaded project and global agent skills",
   },
   {
     command: "/screen-reader",

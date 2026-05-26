@@ -17,6 +17,7 @@ export interface ToolCall {
   result?: string;
   error?: string;
   args?: Record<string, any>;
+  details?: Record<string, unknown>;
 }
 
 export interface ToolExecutionPanelProps {

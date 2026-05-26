@@ -60,6 +60,10 @@ export class OpenAIProvider implements Provider {
     return { temperature: t };
   }
 
+  private requiresReasoningReplay(): boolean {
+    return this.config.model.toLowerCase().includes("deepseek");
+  }
+
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     const response = await this.makeRequest("/chat/completions", {
       model: this.config.model,
@@ -207,6 +211,7 @@ export class OpenAIProvider implements Provider {
     type ToolEntry = { id: string; name: string; argumentsBuffer: string };
     const pendingTools = new Map<number, ToolEntry>();
     let rawText = "";
+    let rawReasoningContent = "";
     let hitLengthLimit = false;
 
     const reader = response.body?.getReader();
@@ -240,6 +245,13 @@ export class OpenAIProvider implements Provider {
           yield { type: "text-delta", text: delta.content };
         }
 
+        if (
+          typeof delta.reasoning_content === "string" &&
+          delta.reasoning_content
+        ) {
+          rawReasoningContent += delta.reasoning_content;
+        }
+
         if (Array.isArray(delta.tool_calls)) {
           for (const tc of delta.tool_calls as Array<Record<string, unknown>>) {
             const idx = (tc.index as number) ?? 0;
@@ -261,13 +273,19 @@ export class OpenAIProvider implements Provider {
               }
             } else {
               const existing = pendingTools.get(idx);
-              if (existing && fn?.arguments) {
-                existing.argumentsBuffer += fn.arguments as string;
+              if (existing) {
+                if (fn?.name && !existing.name) {
+                  existing.name = fn.name as string;
+                }
+                if (fn?.arguments) {
+                  existing.argumentsBuffer += fn.arguments as string;
+                }
                 yield {
                   type: "tool-call-delta",
                   toolCallId: existing.id,
                   toolName: toolRegistry.toOriginalName(existing.name),
-                  inputTextDelta: fn.arguments as string,
+                  inputTextDelta:
+                    typeof fn?.arguments === "string" ? (fn.arguments as string) : "",
                 };
               }
             }
@@ -287,7 +305,11 @@ export class OpenAIProvider implements Provider {
           }
           yield {
             type: "tool-call",
-            toolCall: { id: tc.id, name: tc.name, input },
+            toolCall: {
+              id: tc.id,
+              name: toolRegistry.toOriginalName(tc.name),
+              input,
+            },
           };
         }
         pendingTools.clear();
@@ -352,22 +374,47 @@ export class OpenAIProvider implements Provider {
       yield { type: "text-delta", text: note };
     }
 
-    yield { type: "done", rawText };
+    yield {
+      type: "done",
+      rawText,
+      reasoningContent: rawReasoningContent || undefined,
+    };
   }
 
   private convertAgentMessages(messages: AgentMessage[]): unknown[] {
     const converted: unknown[] = [];
+    const pendingToolCallIds = new Set<string>();
 
     for (const msg of messages) {
       if (msg.role === "system") {
+        pendingToolCallIds.clear();
         converted.push({ role: "system", content: msg.content });
       } else if (msg.role === "user") {
+        pendingToolCallIds.clear();
         converted.push({ role: "user", content: msg.content });
       } else if (msg.role === "assistant") {
+        pendingToolCallIds.clear();
+        if (
+          this.requiresReasoningReplay() &&
+          !msg.reasoningContent &&
+          !msg.toolCalls?.length
+        ) {
+          converted.push({
+            role: "system",
+            content: `Previous assistant response:\n${msg.content}`,
+          });
+          continue;
+        }
         if (msg.toolCalls?.length) {
+          for (const tc of msg.toolCalls) {
+            pendingToolCallIds.add(tc.id);
+          }
           converted.push({
             role: "assistant",
             content: msg.content || null,
+            ...(msg.reasoningContent
+              ? { reasoning_content: msg.reasoningContent }
+              : {}),
             tool_calls: msg.toolCalls.map((tc) => ({
               id: tc.id,
               type: "function",
@@ -375,9 +422,23 @@ export class OpenAIProvider implements Provider {
             })),
           });
         } else {
-          converted.push({ role: "assistant", content: msg.content });
+          converted.push({
+            role: "assistant",
+            content: msg.content,
+            ...(msg.reasoningContent
+              ? { reasoning_content: msg.reasoningContent }
+              : {}),
+          });
         }
       } else if (msg.role === "tool_result") {
+        if (!msg.toolCallId || !pendingToolCallIds.has(msg.toolCallId)) {
+          converted.push({
+            role: "system",
+            content: `Previous tool result (${msg.toolName}${msg.isError ? ", error" : ""}):\n${msg.content}`,
+          });
+          continue;
+        }
+        pendingToolCallIds.delete(msg.toolCallId);
         converted.push({
           role: "tool",
           content: msg.content,

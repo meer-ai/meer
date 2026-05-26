@@ -4,7 +4,7 @@ import type { FileEdit, ToolResult } from "../../tools/index.js";
 import * as tools from "../../tools/index.js";
 import type { Provider } from "../../providers/base.js";
 import type { MCPTool } from "../../mcp/types.js";
-import type { AgentTool } from "../runtime/types.js";
+import type { AgentTool, AgentToolCallResult } from "../runtime/types.js";
 export interface MeerAgentToolContext {
   cwd: string;
   provider?: Provider;
@@ -23,6 +23,29 @@ export interface MeerAgentToolContext {
    * Ask the user before running shell commands.
    */
   confirmCommand?: (command: string) => Promise<boolean>;
+  /**
+   * Ask the user a structured set of questions through the active UI.
+   */
+  promptForm?: (
+    title: string,
+    questions: Array<{
+      id: string;
+      label: string;
+      type: "select" | "multiselect";
+      required?: boolean;
+      options: Array<{ label: string; value: string; description?: string }>;
+    }>,
+    submitLabel?: string
+  ) => Promise<Record<string, string | string[]>>;
+  startBackgroundCommand?: (
+    command: string,
+    cwd: string
+  ) => Promise<{
+    id: string;
+    status: "running" | "exited" | "failed";
+    command: string;
+    cwd: string;
+  }>;
 }
 
 export interface MeerAgentToolOptions {
@@ -31,8 +54,10 @@ export interface MeerAgentToolOptions {
 
 type ToolExecutor<TInput> = (
   input: TInput,
-  context: MeerAgentToolContext
-) => Promise<string>;
+  context: MeerAgentToolContext,
+  onUpdate?: (partial: string) => void,
+  signal?: AbortSignal
+) => Promise<string | AgentToolCallResult>;
 
 interface ToolDefinition<TSchema extends z.ZodTypeAny> {
   name: string;
@@ -190,6 +215,16 @@ function unwrap(result: ToolResult): string {
   return result.result ?? "";
 }
 
+function unwrapStructured(result: ToolResult): AgentToolCallResult {
+  if (result.error) {
+    throw new Error(result.error);
+  }
+  return {
+    content: result.result ?? "",
+    details: result.details,
+  };
+}
+
 async function ensureEditApproval(
   context: MeerAgentToolContext,
   edit: FileEdit
@@ -226,11 +261,66 @@ async function ensureToolActionApproval(
   return context.confirmCommand(action);
 }
 
+async function requestStructuredUserInput(
+  context: MeerAgentToolContext,
+  input: {
+    title?: string;
+    submitLabel?: string;
+    questions: Array<{
+      id: string;
+      label: string;
+      type: "select" | "multiselect";
+      required?: boolean;
+      options: Array<{ label: string; value: string; description?: string }>;
+    }>;
+  }
+): Promise<string> {
+  if (!context.promptForm) {
+    throw new Error("Structured user input is unavailable in this UI.");
+  }
+
+  const answers = await context.promptForm(
+    input.title?.trim() || "Help me decide",
+    input.questions,
+    input.submitLabel
+  );
+
+  return JSON.stringify({ answers }, null, 2);
+}
+
+async function startBackgroundCommand(
+  context: MeerAgentToolContext,
+  input: {
+    command: string;
+    cwd?: string;
+  }
+): Promise<string> {
+  if (!context.startBackgroundCommand) {
+    throw new Error("Background terminal support is unavailable in this UI.");
+  }
+  const command = input.command.trim();
+  if (!command) {
+    throw new Error("command is required");
+  }
+  const session = await context.startBackgroundCommand(
+    command,
+    input.cwd?.trim() || context.cwd
+  );
+  return [
+    `Started background terminal ${session.id}.`,
+    `Command: ${session.command}`,
+    `Directory: ${session.cwd}`,
+    "Use /ps to inspect running background terminals and /stop <id> to stop one.",
+  ].join("\n");
+}
+
 async function callMeerTool(
   name: string,
   input: Record<string, unknown>,
-  context: MeerAgentToolContext
-): Promise<string> {
+  context: MeerAgentToolContext,
+  onUpdate?: (partial: string) => void,
+  signal?: AbortSignal
+): Promise<string | AgentToolCallResult> {
   switch (name) {
     case "analyze_project": {
       return unwrap(tools.analyzeProject(context.cwd));
@@ -257,7 +347,7 @@ async function callMeerTool(
       if (!(await ensureEditApproval(context, edit))) {
         return `⏭️ Edit skipped for ${edit.path}`;
       }
-      return unwrap(tools.applyEdit(edit, context.cwd));
+      return unwrapStructured(tools.applyEdit(edit, context.cwd));
     }
     case "run_command": {
       const rawCommand = input.command;
@@ -272,8 +362,17 @@ async function callMeerTool(
         input.timeoutMs !== undefined ? Number(input.timeoutMs) : undefined;
       const result = await tools.runCommand(command, context.cwd, {
         timeoutMs,
+        onUpdate,
+        signal,
       });
-      return unwrap(result);
+      return {
+        content: result.result || result.error || "",
+        isError: Boolean(result.error),
+        details: {
+          ...(result.details ?? {}),
+          timeoutMs,
+        },
+      };
     }
     case "find_files": {
       const pattern = String(input.pattern ?? "*");
@@ -512,7 +611,7 @@ async function callMeerTool(
       if (!(await ensureEditApproval(context, edit))) {
         return `⏭️ Line edit skipped for ${edit.path}`;
       }
-      return unwrap(tools.applyEdit(edit, context.cwd));
+      return unwrapStructured(tools.applyEdit(edit, context.cwd));
     }
     case "git_status": {
       return unwrap(tools.gitStatus(context.cwd));
@@ -599,7 +698,7 @@ async function callMeerTool(
       if (!(await ensureEditApproval(context, edit))) {
         return `⏭️ Write skipped for ${edit.path}`;
       }
-      return unwrap(tools.applyEdit(edit, context.cwd));
+      return unwrapStructured(tools.applyEdit(edit, context.cwd));
     }
     case "delete_file": {
       const path = String(input.path);
@@ -1456,6 +1555,48 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("clear_plan", input as Record<string, unknown>, context),
   },
   {
+    name: "request_user_input",
+    description:
+      "Ask the user a structured set of questions with dropdown or multi-select answers when a human decision is required.",
+    schema: z.object({
+      title: z.string().optional(),
+      submitLabel: z.string().optional(),
+      questions: z
+        .array(
+          z.object({
+            id: z.string().min(1, "id is required"),
+            label: z.string().min(1, "label is required"),
+            type: z.enum(["select", "multiselect"]),
+            required: z.boolean().optional(),
+            options: z
+              .array(
+                z.object({
+                  label: z.string().min(1, "label is required"),
+                  value: z.string().min(1, "value is required"),
+                  description: z.string().optional(),
+                })
+              )
+              .min(1, "at least one option is required"),
+          })
+        )
+        .min(1, "at least one question is required")
+        .max(5, "keep structured user questionnaires concise"),
+    }),
+    execute: (input, context) =>
+      requestStructuredUserInput(context, input),
+  },
+  {
+    name: "start_background_command",
+    description:
+      "Start a long-running or interactive shell command in a managed background terminal session.",
+    schema: z.object({
+      command: z.string().min(1, "command is required"),
+      cwd: z.string().optional(),
+    }),
+    execute: (input, context) =>
+      startBackgroundCommand(context, input),
+  },
+  {
     name: "explain_code",
     description: "Extract a code section with context for explanation.",
     schema: z.object({
@@ -1849,9 +1990,18 @@ export function createMeerAgentTools(
         name,
         description,
         inputSchema: toToolInputSchema(name, schema),
-        call: async (input: unknown) => {
+        call: async (
+          input: unknown,
+          onUpdate?: (partial: string) => void,
+          signal?: AbortSignal
+        ) => {
           const parsed = validate(input);
-          return execute(parsed as Record<string, unknown>, context);
+          return execute(
+            parsed as Record<string, unknown>,
+            context,
+            onUpdate,
+            signal
+          );
         },
       };
     }

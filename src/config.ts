@@ -127,7 +127,10 @@ const ConfigSchema = z.object({
     screenReaderMode: z.enum(["auto", "on", "off"]).optional(),
     virtualizedHistory: z.enum(["auto", "always", "never"]).optional(),
     scrollMode: z.enum(["auto", "manual"]).optional(),
-  }).optional()
+  }).optional(),
+  approvals: z.object({
+    alwaysAsk: z.boolean().optional(),
+  }).optional(),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -136,7 +139,7 @@ export interface LoadedConfig {
   provider: Provider;
   providerType: string;
   model: string;
-  maxIterations: number;
+  maxIterations?: number;
   retry?: {
     attempts: number;
     delayMs: number;
@@ -159,6 +162,9 @@ export interface LoadedConfig {
   };
   autoCollectContext?: boolean;
   ui: UISettings;
+  approvals?: {
+    alwaysAsk: boolean;
+  };
 }
 
 export function configExists(): boolean {
@@ -247,6 +253,9 @@ export function loadConfig(): LoadedConfig {
         screenReaderMode: "auto",
         virtualizedHistory: "auto",
         scrollMode: "auto",
+      },
+      approvals: {
+        alwaysAsk: false,
       },
     };
 
@@ -413,7 +422,7 @@ export function loadConfig(): LoadedConfig {
     provider: wrappedProvider,
     providerType: providerKey,
     model: defaultModel,
-    maxIterations: config.maxIterations ?? 25,
+    maxIterations: config.maxIterations,
     retry: {
       attempts: 3,
       delayMs: 1000,
@@ -435,6 +444,9 @@ export function loadConfig(): LoadedConfig {
       dimensions: config.context?.embedding?.dimensions ?? 256,
       maxFileSize: config.context?.embedding?.maxFileSize ?? 200_000,
     },
-  ui: resolveUISettings(config.ui),
+    ui: resolveUISettings(config.ui),
+    approvals: {
+      alwaysAsk: config.approvals?.alwaysAsk ?? false,
+    },
   };
 }

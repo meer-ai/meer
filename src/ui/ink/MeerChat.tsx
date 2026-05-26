@@ -5,19 +5,31 @@ import React, {
   useMemo,
 } from "react";
 import { Box, Text, useInput, useApp } from "ink";
-import TextInput from "ink-text-input";
-import SelectInput from "ink-select-input";
 import {
   getAllCommands,
   type SlashCommandListEntry,
 } from "../../slash/registry.js";
 import { getSlashCommandBadges } from "../../slash/utils.js";
 import type { Plan } from "../../plan/types.js";
-import type { ToolCall } from "./components/tools/index.js";
+import { type ToolCall } from "./components/tools/index.js";
+import { PlanPanel } from "./components/plan/index.js";
+import { BrandMark } from "./components/core/index.js";
+import { WrappedComposerInput } from "./components/input/WrappedComposerInput.js";
 import type { WorkflowStage } from "./components/workflow/index.js";
 import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
 import type { Message } from "./contexts/ChatContext.js";
 import { debounce } from "./utils/debounce.js";
+import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
+import type { UITimelineEvent } from "./timelineTypes.js";
+import { getToolRenderer } from "./tool-renderers/registry.js";
+import {
+  classifyTool,
+  formatDurationMs,
+  getCommand,
+  getFilePath,
+  isMutationTool,
+  stripToolHeader,
+} from "./tool-renderers/utils.js";
 
 // ============================================================================
 // Types
@@ -46,7 +58,7 @@ export interface MeerChatProps {
   sessionUptime?: number;
   virtualizeHistory?: boolean;
   screenReader?: boolean;
-  timelineEvents?: any[];
+  timelineEvents?: UITimelineEvent[];
   plan?: Plan | null;
   slashSuggestions?: SlashCommandListEntry[];
   choicePrompt?: {
@@ -55,9 +67,23 @@ export interface MeerChatProps {
     defaultValue: string;
   };
   onChoiceSelect?: (value: string) => void;
+  formPrompt?: {
+    title: string;
+    questions: Array<{
+      id: string;
+      label: string;
+      type: "select" | "multiselect";
+      required?: boolean;
+      options: Array<{ label: string; value: string; description?: string }>;
+    }>;
+    submitLabel: string;
+  };
+  onFormSubmit?: (answers: Record<string, string | string[]>) => void;
   queuedMessages?: string[];
   queueMode?: "steer" | "followUp";
   onQueueModeChange?: (mode: "steer" | "followUp") => void;
+  backgroundSessions?: BackgroundTerminalSession[];
+  onStopBackgroundSession?: (id: string) => void;
 }
 
 // ============================================================================
@@ -66,191 +92,327 @@ export interface MeerChatProps {
 
 const SLASH_DEBOUNCE_MS = 150;
 const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const FILE_MAX_LINES = 30;
-const SHELL_MAX_LINES = 20;
-const GENERIC_MAX_CHARS = 400;
+type WorkRow = {
+  id: string;
+  icon: string;
+  label: string;
+  detail?: string;
+  tone?: "default" | "success" | "error" | "dim" | "active";
+};
 
-// ============================================================================
-// Tool classification
-// ============================================================================
+const SLASH_SUGGESTION_WINDOW = 8;
 
-function classifyTool(name: string): "file" | "shell" | "generic" {
-  const lower = name.toLowerCase();
-  if (/run_command|bash|exec|package_run_script/.test(lower)) return "shell";
-  if (
-    /read_file|read_folder|read_many|list_files|find_files|write_file|propose_edit|edit/.test(
-      lower
-    )
-  )
-    return "file";
-  return "generic";
+function shouldRenderTranscriptMessage(message: Message): boolean {
+  if (message.role !== "tool") return true;
+  const toolName = message.toolName || "";
+  const kind = classifyTool(toolName);
+
+  // Keep reviewable edits and failures in the transcript. Everything else is
+  // represented by the live work panel to avoid log-style duplication.
+  if (kind === "mutation") return true;
+  return Boolean(message.isError);
 }
 
-function stripToolHeader(content: string): string {
-  return content.replace(/^Tool:\s*\S+\s*\n(?:Result[^\n]*:\s*)?\n?/i, "").trim();
-}
-
-function getFilePath(args?: Record<string, unknown>): string {
-  if (!args) return "";
-  const v = args.path ?? args.filePath ?? args.file ?? args.directory ?? args.filepath ?? "";
-  return typeof v === "string" ? v : "";
-}
-
-function getCommand(args?: Record<string, unknown>): string {
-  if (!args) return "";
-  const v = args.command ?? args.cmd ?? args.script ?? args.args ?? "";
-  return typeof v === "string" ? v : Array.isArray(v) ? v.join(" ") : "";
-}
-
-// ============================================================================
-// Tool Block Components
-// ============================================================================
-
-const FileBlock: React.FC<{
-  toolName: string;
-  content: string;
-  args?: Record<string, unknown>;
-  isError?: boolean;
-}> = React.memo(({ toolName, content, args, isError }) => {
-  const lower = toolName.toLowerCase();
-  const verb = lower.includes("write")
-    ? "write"
-    : lower.includes("list")
-    ? "list"
-    : lower.includes("edit")
-    ? "edit"
-    : "read";
-  const filePath = getFilePath(args);
-  const body = stripToolHeader(content);
-  const lines = body.split("\n");
-  const shown = lines.slice(0, FILE_MAX_LINES).join("\n");
-  const extra = lines.length - FILE_MAX_LINES;
-
-  return (
-    <Box
-      flexDirection="column"
-      marginBottom={1}
-      borderLeft={true}
-      borderStyle="single"
-      borderColor={isError ? "red" : "green"}
-      paddingLeft={1}
-    >
-      <Text color={isError ? "red" : "green"}>
-        {verb}
-        {filePath ? " " + filePath : ""}
-      </Text>
-      {shown.trim() ? (
-        <Text color="gray" dimColor>
-          {shown}
-        </Text>
-      ) : null}
-      {extra > 0 ? (
-        <Text color="gray" dimColor>
-          ... ({extra} more lines)
-        </Text>
-      ) : null}
-    </Box>
+function getCompactHiddenToolCount(messages: Message[]): number {
+  return messages.reduce(
+    (count, message) => count + (shouldRenderTranscriptMessage(message) ? 0 : 1),
+    0
   );
-});
+}
 
-const ShellBlock: React.FC<{
-  toolName: string;
-  content: string;
-  args?: Record<string, unknown>;
-  isError?: boolean;
-}> = React.memo(({ content, args, isError }) => {
+function getToolTarget(tool: ToolCall): string {
+  const args = tool.args ?? {};
+  const path = getFilePath(args);
+  if (path) {
+    return truncateLine(path, 64);
+  }
+
   const command = getCommand(args);
-  const body = stripToolHeader(content);
-  const cols = process.stdout.columns || 80;
-  const sep = "─".repeat(Math.min(cols - 4, 60));
-  const lines = body.split("\n").filter((l) => l.trim());
-  const shown = lines.slice(0, SHELL_MAX_LINES).join("\n");
-  const extra = lines.length - SHELL_MAX_LINES;
+  if (command) {
+    return `$ ${truncateLine(command, 64)}`;
+  }
 
-  return (
-    <Box flexDirection="column" marginBottom={1} marginTop={1}>
-      <Text color="cyan" dimColor>
-        {sep}
-      </Text>
-      {command ? (
-        <Text color="cyan" bold>
-          $ {command}
-        </Text>
-      ) : null}
-      {shown.trim() ? (
-        <Text color="gray" dimColor>
-          {shown}
-        </Text>
-      ) : null}
-      {extra > 0 ? (
-        <Text color="gray" dimColor>
-          ... ({extra} more lines)
-        </Text>
-      ) : null}
-      {isError ? <Text color="red">(exited with error)</Text> : null}
-    </Box>
-  );
-});
+  if (tool.name === "package_install") {
+    const packages = args.packages;
+    const joined = Array.isArray(packages)
+      ? packages.join(", ")
+      : typeof packages === "string"
+        ? packages
+        : "";
+    if (joined) {
+      return truncateLine(joined, 64);
+    }
+  }
 
-const GenericBlock: React.FC<{
-  toolName: string;
-  content: string;
-  isError?: boolean;
-}> = React.memo(({ toolName, content, isError }) => {
-  const body = stripToolHeader(content);
-  const truncated =
-    body.length > GENERIC_MAX_CHARS
-      ? body.slice(0, GENERIC_MAX_CHARS) +
-        `\n… (${body.length - GENERIC_MAX_CHARS} more chars)`
-      : body;
-  const label = toolName.replace(/_/g, " ");
+  if (tool.name === "scaffold_project") {
+    const type = typeof args.projectType === "string" ? args.projectType : "";
+    const name = typeof args.projectName === "string" ? args.projectName : "";
+    const label = [type, name].filter(Boolean).join(" ");
+    if (label) {
+      return truncateLine(label, 64);
+    }
+  }
 
-  return (
-    <Box flexDirection="column" marginBottom={1}>
-      <Box gap={1}>
-        <Text color="magenta" dimColor>
-          ▸
-        </Text>
-        <Text color="magenta">{label}</Text>
-      </Box>
-      {truncated.trim() ? (
-        <Box paddingLeft={2}>
-          <Text color={isError ? "red" : "gray"} dimColor={!isError}>
-            {truncated}
-          </Text>
-        </Box>
-      ) : null}
-    </Box>
-  );
-});
+  if (tool.name === "update_plan_task") {
+    const taskId = typeof args.taskId === "string" ? args.taskId : "";
+    const status = typeof args.status === "string" ? args.status : "";
+    const label = [taskId, status].filter(Boolean).join(" → ");
+    if (label) {
+      return truncateLine(label, 64);
+    }
+  }
+
+  return "";
+}
+
+function getToolProgressSummary(tool: ToolCall): string {
+  const details = tool.details ?? {};
+  if (typeof details.outputTail === "string" && details.outputTail.trim()) {
+    return truncateLine(details.outputTail.replace(/\s+/g, " ").trim(), 92);
+  }
+  if (typeof details.error === "string" && details.error.trim()) {
+    return truncateLine(details.error.replace(/\s+/g, " ").trim(), 92);
+  }
+  const source = tool.error || tool.result || "";
+  const normalized = stripToolHeader(source).replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+  return truncateLine(normalized, 92);
+}
+
+function getToolDetail(tool: ToolCall): string {
+  const kind = classifyTool(tool.name);
+  const details = tool.details ?? {};
+  if (kind === "shell") {
+    const tail =
+      typeof details.outputTail === "string" && details.outputTail.trim()
+        ? details.outputTail
+        : typeof details.stderrTail === "string" && details.stderrTail.trim()
+          ? details.stderrTail
+          : "";
+    if (tail) {
+      const lines = tail
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim().length > 0);
+      const meta: string[] = [];
+      if (typeof details.exitCode === "number") {
+        meta.push(`exit ${details.exitCode}`);
+      }
+      if (typeof details.durationMs === "number") {
+        meta.push(formatDurationMs(details.durationMs));
+      }
+      if (typeof details.fullOutputPath === "string") {
+        meta.push(`full ${details.fullOutputPath}`);
+      }
+      return [
+        meta.length > 0 ? meta.join(" · ") : "",
+        ...lines.slice(-4).map((line) => truncateLine(line, 132)),
+      ].filter(Boolean).join("\n");
+    }
+  }
+  const progress = stripToolHeader(tool.error || tool.result || "").trim();
+
+  if (kind === "shell" && progress) {
+    const lines = progress
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => line.trim().length > 0);
+    return lines.slice(-4).map((line) => truncateLine(line, 132)).join("\n");
+  }
+
+  if (tool.status === "running") {
+    return getToolProgressSummary(tool) || getToolTarget(tool);
+  }
+
+  return getToolTarget(tool) || getToolProgressSummary(tool);
+}
+
+function formatToolDuration(tool: ToolCall): string {
+  if (!tool.startTime) return "";
+  const end = tool.endTime ?? Date.now();
+  const ms = Math.max(0, end - tool.startTime);
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
+}
 
 // ============================================================================
 // Working Indicator
 // ============================================================================
 
-const WorkingIndicator: React.FC<{ isThinking: boolean; status?: string }> =
-  ({ isThinking, status }) => {
-    const [frame, setFrame] = useState(0);
+const TurnActivityIndicator: React.FC<{
+  active: boolean;
+  status?: string;
+  isStreaming: boolean;
+  activeTask?: string;
+}> = React.memo(({ active, status, isStreaming, activeTask }) => {
+  const [frame, setFrame] = useState(0);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
 
-    useEffect(() => {
-      if (!isThinking) return;
+  useEffect(() => {
+    if (!active) {
+      setStartedAt(null);
       setFrame(0);
-      const timer = setInterval(() => {
-        setFrame((f) => (f + 1) % BRAILLE_FRAMES.length);
-      }, 80);
-      return () => clearInterval(timer);
-    }, [isThinking]);
+      return;
+    }
+    setStartedAt((previous) => previous ?? Date.now());
+    const timer = setInterval(() => {
+      setFrame((previous) => (previous + 1) % BRAILLE_FRAMES.length);
+      setNow(Date.now());
+    }, 120);
+    return () => clearInterval(timer);
+  }, [active]);
 
-    if (!isThinking) return null;
-    return (
-      <Box paddingX={1} marginTop={1}>
-        <Text color="yellow">{BRAILLE_FRAMES[frame]} </Text>
-        <Text color="gray" dimColor>
-          {status?.trim() || "Working..."}
-        </Text>
-      </Box>
-    );
-  };
+  if (!active) {
+    return null;
+  }
+
+  const elapsed =
+    startedAt === null ? "" : `${Math.max(0, Math.floor((now - startedAt) / 1000))}s`;
+  const normalizedStatus = status?.trim() ?? "";
+  const label =
+    normalizedStatus && activeTask && /thinking/i.test(normalizedStatus)
+      ? `${normalizedStatus} - ${activeTask}`
+      : normalizedStatus ||
+        (isStreaming
+          ? "Streaming response"
+          : activeTask
+            ? `Working on ${activeTask}`
+            : "Working - waiting for next step");
+
+  return (
+    <Box paddingX={1} marginTop={0}>
+      <Text color="#67E8F9">{BRAILLE_FRAMES[frame]} </Text>
+      <Text color="#67E8F9">{label}</Text>
+      {elapsed ? <Text color="dim"> {elapsed}</Text> : null}
+    </Box>
+  );
+});
+
+function buildWorkRows({
+  timelineEvents = [],
+  tools = [],
+  backgroundSessions = [],
+}: {
+  timelineEvents?: UITimelineEvent[];
+  tools?: ToolCall[];
+  status?: string;
+  backgroundSessions?: BackgroundTerminalSession[];
+}): WorkRow[] {
+  const rows: WorkRow[] = [];
+
+  const now = Date.now();
+  const visibleTools = tools.filter((tool) => {
+    const lower = tool.name.toLowerCase();
+    if (
+      lower === "set_plan" ||
+      lower === "show_plan" ||
+      lower === "update_plan_task"
+    ) {
+      return false;
+    }
+    if (tool.status === "running" || tool.status === "pending" || tool.status === "error") return true;
+    if (tool.status === "success" && tool.endTime) {
+      return isMutationTool(tool.name) && now - tool.endTime < 5000;
+    }
+    return false;
+  });
+
+  for (const tool of [...visibleTools].slice(-4)) {
+    const tone =
+      tool.status === "error"
+        ? "error"
+        : tool.status === "success"
+        ? "success"
+        : tool.status === "running"
+        ? "active"
+        : "dim";
+    const icon =
+      tool.status === "error"
+        ? "✕"
+        : tool.status === "success"
+        ? "✓"
+        : tool.status === "running"
+        ? "•"
+        : "◦";
+    rows.push({
+      id: tool.id,
+      icon,
+      label: `${tool.name.replace(/_/g, " ")}${formatToolDuration(tool) ? ` ${formatToolDuration(tool)}` : ""}`,
+      detail: getToolDetail(tool) || undefined,
+      tone,
+    });
+  }
+
+  for (const event of [...timelineEvents].slice(-3)) {
+    if (event.type === "task") {
+      if (rows.some((row) => row.label === event.label)) {
+        continue;
+      }
+      rows.push({
+        id: `timeline-task-${event.id}`,
+        icon:
+          event.status === "failed"
+            ? "✕"
+            : event.status === "succeeded"
+            ? "✓"
+            : "•",
+        label: event.label,
+        detail: event.detail,
+        tone:
+          event.status === "failed"
+            ? "error"
+            : event.status === "succeeded"
+            ? "success"
+            : "dim",
+      });
+      continue;
+    }
+    if (event.type === "log") {
+      if (rows.length > 0 && event.level !== "error") {
+        continue;
+      }
+      rows.push({
+        id: `timeline-log-${event.id}`,
+        icon: "•",
+        label: event.message,
+        tone: event.level === "error" ? "error" : "dim",
+      });
+    }
+  }
+
+  for (const session of backgroundSessions.slice(1, 3)) {
+    rows.push({
+      id: `bg-${session.id}`,
+      icon: session.status === "running" ? "•" : session.status === "failed" ? "✕" : "✓",
+      label: truncateLine(session.command, 80),
+      detail: truncateLine(session.cwd, 80),
+      tone:
+        session.status === "failed"
+          ? "error"
+          : session.status === "running"
+          ? "active"
+          : "dim",
+    });
+  }
+
+  return dedupeWorkRows(rows).slice(-5);
+}
+
+function dedupeWorkRows(rows: WorkRow[]): WorkRow[] {
+  const seen = new Set<string>();
+  const deduped: WorkRow[] = [];
+  for (const row of rows) {
+    const key = `${row.label}|${row.detail ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(row);
+  }
+  return deduped;
+}
 
 // ============================================================================
 // Code Block
@@ -273,6 +435,71 @@ const CodeBlock: React.FC<{ code: string; language?: string }> = React.memo(
   ),
   (prev, next) => prev.code === next.code && prev.language === next.language
 );
+
+const RichTextBlock: React.FC<{
+  text: string;
+  tone?: "default" | "dim";
+}> = React.memo(({ text, tone = "default" }) => {
+  const lines = text.split("\n");
+
+  return (
+    <Box flexDirection="column">
+      {lines.map((line, index) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return <Box key={index} height={0} />;
+        }
+
+        if (/^###\s+/.test(trimmed) || /^##\s+/.test(trimmed) || /^#\s+/.test(trimmed)) {
+          const level = trimmed.startsWith("###") ? 3 : trimmed.startsWith("##") ? 2 : 1;
+          return (
+            <Text
+              key={index}
+              color={tone === "dim" ? "dim" : "white"}
+              bold={tone !== "dim"}
+              dimColor={tone === "dim"}
+            >
+              {`${"#".repeat(level)} ${trimmed.replace(/^#+\s+/, "")}`}
+            </Text>
+          );
+        }
+
+        if (/^[-*]\s+/.test(trimmed)) {
+          return (
+            <Box key={index} gap={1}>
+              <Text color={tone === "dim" ? "dim" : "cyan"} dimColor={tone === "dim"}>
+                •
+              </Text>
+              <Text color={tone === "dim" ? "dim" : "white"} dimColor={tone === "dim"}>
+                {trimmed.replace(/^[-*]\s+/, "")}
+              </Text>
+            </Box>
+          );
+        }
+
+        if (/^\d+\.\s+/.test(trimmed)) {
+          const match = trimmed.match(/^(\d+\.)\s+(.*)$/);
+          return (
+            <Box key={index} gap={1}>
+              <Text color={tone === "dim" ? "dim" : "cyan"} dimColor={tone === "dim"}>
+                {match?.[1] ?? ""}
+              </Text>
+              <Text color={tone === "dim" ? "dim" : "white"} dimColor={tone === "dim"}>
+                {match?.[2] ?? trimmed}
+              </Text>
+            </Box>
+          );
+        }
+
+        return (
+          <Text key={index} color={tone === "dim" ? "dim" : "white"} dimColor={tone === "dim"}>
+            {trimmed}
+          </Text>
+        );
+      })}
+    </Box>
+  );
+});
 
 // ============================================================================
 // Message View
@@ -309,31 +536,13 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
       // Tool result blocks
       if (message.role === "tool") {
         const toolName = message.toolName || "unknown";
-        const kind = classifyTool(toolName);
-        if (kind === "file") {
-          return (
-            <FileBlock
-              toolName={toolName}
-              content={message.content}
-              args={message.toolArgs}
-              isError={message.isError}
-            />
-          );
-        }
-        if (kind === "shell") {
-          return (
-            <ShellBlock
-              toolName={toolName}
-              content={message.content}
-              args={message.toolArgs}
-              isError={message.isError}
-            />
-          );
-        }
+        const ToolRendererComponent = getToolRenderer(toolName);
         return (
-          <GenericBlock
+          <ToolRendererComponent
             toolName={toolName}
             content={message.content}
+            args={message.toolArgs}
+            details={message.toolDetails}
             isError={message.isError}
           />
         );
@@ -344,7 +553,7 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
         const text = message.content.trim();
         if (!text) return null;
         return (
-          <Box flexDirection="column" marginBottom={1} paddingLeft={1}>
+          <Box flexDirection="column" marginBottom={0}>
             <Text italic dimColor>
               {text}
             </Text>
@@ -352,18 +561,46 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
         );
       }
 
-      // Streaming draft — show as italic muted inline (no header), matches pi agent style
+      // Streaming draft: render as the real assistant message, not a transient
+      // status line. This keeps live output readable and prevents it from
+      // looking like trimmed "thinking" text while tools are running.
       if (isDraft && message.role === "assistant") {
-        const text = message.content.trim();
+        const parts = parseContent(message.content);
         return (
-          <Box flexDirection="column" marginBottom={1} paddingLeft={1}>
-            {text ? (
-              <Text italic dimColor>
-                {text}
+          <Box flexDirection="column" marginBottom={1}>
+            <Box gap={1}>
+              <Text color="green" bold>
+                Meer
               </Text>
-            ) : (
-              <Text dimColor>...</Text>
-            )}
+              <Text color="dim" dimColor>
+                streaming
+              </Text>
+              {message.timestamp ? (
+                <Text color="dim" dimColor>
+                  {formatTimestamp(message.timestamp)}
+                </Text>
+              ) : null}
+            </Box>
+            <Box flexDirection="column" paddingLeft={1}>
+              {message.content.trim().length === 0 ? (
+                <Text color="dim">...</Text>
+              ) : (
+                parts.map((part, idx) =>
+                  part.type === "code" ? (
+                    <Box key={idx} marginTop={0} marginBottom={0}>
+                      <CodeBlock
+                        code={part.content}
+                        language={"language" in part ? part.language : undefined}
+                      />
+                    </Box>
+                  ) : part.content.trim().length > 0 ? (
+                    <Box key={idx}>
+                      <RichTextBlock text={part.content.trim()} />
+                    </Box>
+                  ) : null
+                )
+              )}
+            </Box>
           </Box>
         );
       }
@@ -372,7 +609,7 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
         switch (message.role) {
           case "user": return "cyan";
           case "assistant": return "green";
-          case "system": return "yellow";
+          case "system": return "dim";
           default: return "white";
         }
       };
@@ -390,9 +627,9 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
       const normalizedContent = message.content.trim();
 
       return (
-        <Box flexDirection="column" marginBottom={1}>
+        <Box flexDirection="column" marginBottom={message.role === "system" ? 0 : 1}>
           <Box gap={1}>
-            <Text color={getColor()} bold>
+            <Text color={getColor()} bold={message.role !== "system"}>
               {getName()}
             </Text>
             {message.timestamp && (
@@ -401,13 +638,13 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
               </Text>
             )}
           </Box>
-          <Box flexDirection="column" paddingLeft={2}>
+          <Box flexDirection="column" paddingLeft={message.role === "system" ? 0 : 1}>
             {normalizedContent.length === 0 && (
               <Text color="dim">...</Text>
             )}
             {parts.map((part, idx) =>
               part.type === "code" ? (
-                <Box key={idx} marginTop={1} marginBottom={1}>
+                <Box key={idx} marginTop={0} marginBottom={0}>
                   <CodeBlock
                     code={part.content}
                     language={"language" in part ? part.language : undefined}
@@ -415,7 +652,10 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
                 </Box>
               ) : part.content.trim().length > 0 ? (
                 <Box key={idx}>
-                  <Text>{part.content.trim()}</Text>
+                  <RichTextBlock
+                    text={part.content.trim()}
+                    tone={message.role === "system" ? "dim" : "default"}
+                  />
                 </Box>
               ) : null
             )}
@@ -426,6 +666,7 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
     (prev, next) =>
       prev.message.id === next.message.id &&
       prev.message.content === next.message.content &&
+      prev.message.toolDetails === next.message.toolDetails &&
       prev.isDraft === next.isDraft
   );
 
@@ -436,6 +677,88 @@ const formatTimestamp = (timestamp?: number): string => {
   const m = date.getMinutes().toString().padStart(2, "0");
   return `${h}:${m}`;
 };
+
+type SelectorItem = {
+  key: string;
+  label: string;
+  description?: string;
+  badges?: string[];
+};
+
+const ScrollableSelector: React.FC<{
+  title: string;
+  items: SelectorItem[];
+  selectedIndex: number;
+  help: string;
+  windowSize?: number;
+}> = React.memo(({ title, items, selectedIndex, help, windowSize = SLASH_SUGGESTION_WINDOW }) => {
+  if (items.length === 0) return null;
+
+  const halfWindow = Math.floor(windowSize / 2);
+  let start = Math.max(0, selectedIndex - halfWindow);
+  let end = start + windowSize;
+
+  if (end > items.length) {
+    end = items.length;
+    start = Math.max(0, end - windowSize);
+  }
+
+  const visible = items.slice(start, end);
+  const hiddenAbove = start;
+  const hiddenBelow = items.length - end;
+
+  return (
+    <Box flexDirection="column" marginTop={1} paddingLeft={1}>
+      <Box justifyContent="space-between">
+        <Text color="yellow" dimColor>
+          {title}
+        </Text>
+        <Text color="dim">
+          {selectedIndex + 1}/{items.length}
+        </Text>
+      </Box>
+      {hiddenAbove > 0 ? (
+        <Text color="dim" italic>
+          ... {hiddenAbove} earlier
+        </Text>
+      ) : null}
+      {visible.map((item, offset) => {
+        const actualIndex = start + offset;
+        const isSelected = actualIndex === selectedIndex;
+        return (
+          <Box key={item.key} flexDirection="column">
+            <Box flexDirection="row" gap={1}>
+              <Text color={isSelected ? "cyan" : "yellow"} bold={isSelected}>
+                {isSelected ? "›" : "•"}
+              </Text>
+              <Text color={isSelected ? "cyan" : "white"} bold={isSelected}>
+                {item.label}
+              </Text>
+              {item.badges && item.badges.length > 0 ? (
+                <Text color="magenta" dimColor>
+                  {" "}[{item.badges.join(", ")}]
+                </Text>
+              ) : null}
+            </Box>
+            {item.description ? (
+              <Box paddingLeft={2}>
+                <Text color="gray" dimColor>
+                  {truncateLine(item.description, 72)}
+                </Text>
+              </Box>
+            ) : null}
+          </Box>
+        );
+      })}
+      {hiddenBelow > 0 ? (
+        <Text color="dim" italic>
+          ... {hiddenBelow} more
+        </Text>
+      ) : null}
+      <Text color="dim">{help}</Text>
+    </Box>
+  );
+});
 
 // ============================================================================
 // Input Area
@@ -459,6 +782,21 @@ const InputArea: React.FC<{
     defaultValue: string;
   };
   onChoiceSelect?: (value: string) => void;
+  formPrompt?: {
+    title: string;
+    questions: Array<{
+      id: string;
+      label: string;
+      type: "select" | "multiselect";
+      required?: boolean;
+      options: Array<{ label: string; value: string; description?: string }>;
+    }>;
+    submitLabel: string;
+  };
+  onFormSubmit?: (answers: Record<string, string | string[]>) => void;
+  backgroundPanelOpen?: boolean;
+  transcriptMode?: boolean;
+  tasksExpanded?: boolean;
 }> = React.memo(
   ({
     value,
@@ -474,64 +812,88 @@ const InputArea: React.FC<{
     selectedSuggestion,
     choicePrompt,
     onChoiceSelect,
+    formPrompt,
+    onFormSubmit,
+    backgroundPanelOpen,
+    transcriptMode,
+    tasksExpanded,
   }) => (
-    <Box flexDirection="column" marginTop={1} paddingX={1}>
+    <Box flexDirection="column" marginTop={2} paddingX={1}>
       {queuedPreview.length > 0 && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text color="magenta">Queued</Text>
-          {queuedPreview.slice(0, 3).map((msg, i) => (
-            <Box key={`${i}-${msg}`} paddingLeft={2}>
-              <Text color="dim">{truncateLine(msg, 90)}</Text>
-            </Box>
-          ))}
-          {queuedMessages > queuedPreview.length && (
-            <Box paddingLeft={2}>
+        <Box flexDirection="row" justifyContent="space-between" marginBottom={0}>
+          <Box gap={1} flexShrink={1}>
+            {queuedPreview.length > 0 ? (
               <Text color="dim">
-                +{queuedMessages - queuedPreview.length} more queued
+                queued: {truncateLine(queuedPreview[0], 64)}
+                {queuedMessages > 1 ? ` +${queuedMessages - 1}` : ""}
+              </Text>
+            ) : null}
+          </Box>
+        </Box>
+      )}
+      {slashSuggestions.length > 0 && (
+        <ScrollableSelector
+          title="Commands"
+          selectedIndex={selectedSuggestion}
+          help="Tab insert · ↑↓ navigate · Enter run"
+          items={slashSuggestions.map((item) => ({
+            key: item.command,
+            label: item.command,
+            description: item.description,
+            badges: getSlashCommandBadges(item),
+          }))}
+        />
+      )}
+      <Box
+        flexDirection="column"
+        backgroundColor="gray"
+        paddingX={1}
+        paddingY={1}
+      >
+        <Box flexDirection="row" alignItems="flex-start" minHeight={1}>
+          <Text color={isThinking ? "yellow" : "white"}>
+            ›
+          </Text>
+          <Text color="dim"> </Text>
+          <Box flexGrow={1} flexDirection="column">
+            {formPrompt || choicePrompt || backgroundPanelOpen ? (
+              <Text color="dim">
+                {formPrompt
+                  ? "Complete the form below"
+                  : choicePrompt
+                  ? "Select an option below"
+                  : "Background sessions panel open"}
+              </Text>
+            ) : (
+              <WrappedComposerInput
+                value={value}
+                onChange={onChange}
+                onSubmit={onSubmit}
+                placeholder={
+                  mode === "plan"
+                    ? "Ask for analysis and planning"
+                    : placeholder || "Explain this codebase"
+                }
+                maxVisibleLines={5}
+                rightReserve={value.startsWith("/") || queuedMessages > 0 ? 18 : 0}
+              />
+            )}
+          </Box>
+          {!formPrompt && !backgroundPanelOpen && value.startsWith("/") && !choicePrompt && (
+            <Box marginLeft={1}>
+              <Text color="black">
+                command
+              </Text>
+            </Box>
+          )}
+          {!formPrompt && !backgroundPanelOpen && queuedMessages > 0 && (
+            <Box marginLeft={1}>
+              <Text color="black">
+                {queuedMessages} queued
               </Text>
             </Box>
           )}
         </Box>
-      )}
-      <Box
-        flexDirection="row"
-        paddingX={1}
-        paddingY={0}
-        borderStyle="single"
-        borderColor="gray"
-      >
-        <Text color={isThinking ? "yellow" : "white"} bold>
-          ›
-        </Text>
-        <Text color="dim"> </Text>
-        <Box flexGrow={1}>
-          <TextInput
-            value={value}
-            onChange={onChange}
-            onSubmit={onSubmit}
-            placeholder={
-              mode === "plan" ? "Ask for analysis and planning" : placeholder || "Explain this codebase"
-            }
-            showCursor={true}
-          />
-        </Box>
-        {value.startsWith("/") && (
-          <Box marginLeft={1}>
-            <Text color="yellow">command</Text>
-          </Box>
-        )}
-        {queuedMessages > 0 && (
-          <Box marginLeft={1}>
-            <Text color="magenta">queued {queuedMessages}</Text>
-          </Box>
-        )}
-        {isThinking && (
-          <Box marginLeft={1}>
-            <Text color="cyan">
-              {queueMode === "followUp" ? "follow-up" : "steer"}
-            </Text>
-          </Box>
-        )}
       </Box>
 
       {choicePrompt && onChoiceSelect && (
@@ -543,50 +905,18 @@ const InputArea: React.FC<{
         />
       )}
 
-      {slashSuggestions.length > 0 && (
-        <Box flexDirection="column" marginTop={1} paddingLeft={2}>
-          <Text color="yellow">Commands</Text>
-          {slashSuggestions.slice(0, 5).map((item, index) => {
-            const badges = getSlashCommandBadges(item);
-            const isSelected = index === selectedSuggestion;
-            return (
-              <Box key={item.command} flexDirection="column">
-                <Box flexDirection="row" gap={1}>
-                  <Text color={isSelected ? "cyan" : "yellow"} bold={isSelected}>
-                    {isSelected ? "▶" : "●"}
-                  </Text>
-                  <Text color={isSelected ? "cyan" : "white"} bold={isSelected}>
-                    {item.command}
-                  </Text>
-                  {badges.length > 0 && (
-                    <Text color="magenta" dimColor>
-                      {" "}[{badges.join(", ")}]
-                    </Text>
-                  )}
-                </Box>
-                <Box paddingLeft={2}>
-                  <Text color="gray" dimColor>
-                    {item.description.substring(0, 60)}
-                    {item.description.length > 60 ? "..." : ""}
-                  </Text>
-                </Box>
-              </Box>
-            );
-          })}
-          {slashSuggestions.length > 5 && (
-            <Text color="dim" italic>
-              ... and {slashSuggestions.length - 5} more commands
-            </Text>
-          )}
-          <Text color="dim">Tab insert · ↑↓ navigate · Enter run</Text>
-        </Box>
+      {formPrompt && onFormSubmit && (
+        <InlineFormPrompt
+          title={formPrompt.title}
+          questions={formPrompt.questions}
+          submitLabel={formPrompt.submitLabel}
+          onSubmit={onFormSubmit}
+        />
       )}
 
-      <Box marginTop={1}>
-        <Text color="dim">
-          Enter send · Esc interrupt · Ctrl+P mode · Ctrl+Q queue · Ctrl+C exit
-        </Text>
-      </Box>
+      <Text color="dim">
+        Enter send · Esc stop · / commands · ^O {transcriptMode ? "compact" : "transcript"} · ^T {tasksExpanded ? "tasks-" : "tasks+"} · ^B sessions
+      </Text>
     </Box>
   ),
   (prev, next) =>
@@ -596,7 +926,13 @@ const InputArea: React.FC<{
     prev.selectedSuggestion === next.selectedSuggestion &&
     prev.queuedMessages === next.queuedMessages &&
     prev.queueMode === next.queueMode &&
-    prev.queuedPreview.join("\n") === next.queuedPreview.join("\n")
+    prev.queuedPreview.join("\n") === next.queuedPreview.join("\n") &&
+    prev.mode === next.mode &&
+    prev.backgroundPanelOpen === next.backgroundPanelOpen &&
+    prev.transcriptMode === next.transcriptMode &&
+    prev.tasksExpanded === next.tasksExpanded &&
+    prev.choicePrompt === next.choicePrompt &&
+    prev.formPrompt === next.formPrompt
 );
 
 // ============================================================================
@@ -613,27 +949,161 @@ const FooterBar: React.FC<{
   messageCount?: number;
   sessionUptime?: number;
 }> = React.memo(({ provider, model, cwd, mode, tokens, cost, messageCount, sessionUptime }) => {
-  const location = cwd || process.cwd();
   const modeLabel = mode === "plan" ? "plan" : "edit";
   const tokenLabel = tokens?.used ? `${formatCompactNumber(tokens.used)} tok` : null;
   const costLabel = cost && cost.current > 0 ? `$${cost.current.toFixed(3)}` : null;
   const uptimeLabel = typeof sessionUptime === "number" ? formatDurationSeconds(sessionUptime) : null;
+  const cwdLabel = basenamePath(cwd);
 
   return (
-    <Box flexDirection="column" paddingX={1} marginTop={1}>
-      <Text color="dim">{truncateLine(location, 140)}</Text>
+    <Box justifyContent="space-between" paddingX={1} marginTop={0}>
+      <Box gap={1} flexShrink={1}>
+        <Text color="cyan">Meer</Text>
+        <Text color="dim">{provider || "unknown"}/{model || "unknown"}</Text>
+        <Text color={mode === "plan" ? "blue" : "green"}>{modeLabel}</Text>
+        {cwdLabel ? <Text color="dim">{cwdLabel}</Text> : null}
+      </Box>
+      <Box gap={1} flexShrink={0}>
+        {tokenLabel && <Text color="dim">{tokenLabel}</Text>}
+        {costLabel && <Text color="dim">{costLabel}</Text>}
+        {typeof messageCount === "number" && <Text color="dim">{messageCount} msgs</Text>}
+        {uptimeLabel && <Text color="dim">{uptimeLabel}</Text>}
+      </Box>
+    </Box>
+  );
+});
+
+const WorkLogSection: React.FC<{
+  timelineEvents?: UITimelineEvent[];
+  tools?: ToolCall[];
+  isThinking: boolean;
+  status?: string;
+  backgroundSessions?: BackgroundTerminalSession[];
+}> = React.memo(({
+  timelineEvents = [],
+  tools = [],
+  backgroundSessions = [],
+}) => {
+  const hasTools = tools.length > 0;
+  const hasBackground = backgroundSessions.length > 0;
+  const shouldShow = hasTools || hasBackground || timelineEvents.length > 0;
+
+  if (!shouldShow) {
+    return null;
+  }
+
+  const rows = buildWorkRows({ timelineEvents, tools, backgroundSessions });
+  const activeBackground = backgroundSessions[0];
+
+  return (
+    <Box flexDirection="column" marginTop={0} paddingX={1}>
+      {activeBackground ? (
+        <Box flexDirection="column" marginTop={0} marginBottom={0}>
+          <Text color="dim">
+            {backgroundSessions.filter((session) => session.status === "running").length} background terminal running
+          </Text>
+          <Text color="cyan">$ {truncateLine(activeBackground.command, 120)}</Text>
+          <Text color="dim">
+            {truncateLine(
+              activeBackground.output
+                .split("\n")
+                .filter((line) => line.trim())
+                .slice(-1)[0] || "Waiting for background terminal",
+              140
+            )}
+          </Text>
+        </Box>
+      ) : null}
+      {rows
+        .filter((row) => row.id !== "working")
+        .slice(0, 5)
+        .map((row) => (
+        <Box key={row.id} flexDirection="column" paddingLeft={1}>
+          <Box gap={1}>
+            <Text color={row.tone === "error" ? "red" : row.tone === "success" ? "green" : row.tone === "active" ? "yellow" : "dim"}>
+              {row.icon}
+            </Text>
+            <Text color={row.tone === "error" ? "red" : row.tone === "success" ? "white" : "dim"}>
+              {row.label}
+            </Text>
+          </Box>
+          {row.detail ? (
+            <Box paddingLeft={2}>
+              <Text color="dim">{row.detail}</Text>
+            </Box>
+          ) : null}
+        </Box>
+      ))}
+    </Box>
+  );
+});
+
+const BackgroundTerminalPanel: React.FC<{
+  sessions: BackgroundTerminalSession[];
+  selectedIndex: number;
+  onStop?: (id: string) => void;
+}> = React.memo(({ sessions, selectedIndex, onStop }) => {
+  if (sessions.length === 0) {
+    return (
+      <Box
+        flexDirection="column"
+        marginTop={1}
+        marginX={1}
+        paddingX={1}
+        borderStyle="round"
+        borderColor="gray"
+      >
+        <Text color="white">Background sessions</Text>
+        <Text color="dim">No background sessions.</Text>
+      </Box>
+    );
+  }
+
+  const active = sessions[Math.max(0, Math.min(selectedIndex, sessions.length - 1))];
+  const tailLines = active.output
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .slice(-10);
+
+  return (
+    <Box
+      flexDirection="column"
+      marginTop={1}
+      marginX={1}
+      paddingX={1}
+      paddingY={0}
+      borderStyle="round"
+      borderColor="cyan"
+    >
       <Box justifyContent="space-between">
-        <Box gap={2} flexShrink={1}>
-          <Text color="cyan">Meer</Text>
-          <Text color="dim">{provider || "unknown"}/{model || "unknown"}</Text>
-          <Text color={mode === "plan" ? "blue" : "green"}>{modeLabel}</Text>
-        </Box>
-        <Box gap={2} flexShrink={0}>
-          {tokenLabel && <Text color="dim">{tokenLabel}</Text>}
-          {costLabel && <Text color="dim">{costLabel}</Text>}
-          {typeof messageCount === "number" && <Text color="dim">{messageCount} msgs</Text>}
-          {uptimeLabel && <Text color="dim">{uptimeLabel}</Text>}
-        </Box>
+        <Text color="cyan" bold>Background sessions</Text>
+        <Text color="dim">↑↓ select · x stop · Esc close</Text>
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {sessions.slice(0, 6).map((session, index) => (
+          <Text
+            key={session.id}
+            color={index === selectedIndex ? "green" : "white"}
+          >
+            {index === selectedIndex ? "› " : "  "}
+            {session.id} [{session.status}] {truncateLine(session.command, 80)}
+          </Text>
+        ))}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        <Text color="dim">{truncateLine(active.cwd, 140)}</Text>
+        {tailLines.length > 0 ? (
+          tailLines.map((line, index) => (
+            <Text key={`${active.id}-line-${index}`} color="dim">
+              {truncateLine(line, 160)}
+            </Text>
+          ))
+        ) : (
+          <Text color="dim">No captured output yet.</Text>
+        )}
+        {onStop && active.status === "running" ? (
+          <Text color="yellow">Press x to stop {active.id}</Text>
+        ) : null}
       </Box>
     </Box>
   );
@@ -664,13 +1134,18 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   sessionUptime,
   virtualizeHistory = false,
   screenReader = false,
+  timelineEvents,
   plan,
   slashSuggestions: providedSlashSuggestions,
   choicePrompt,
   onChoiceSelect,
+  formPrompt,
+  onFormSubmit,
   queuedMessages: externalQueuedMessages,
   queueMode: externalQueueMode = "steer",
   onQueueModeChange,
+  backgroundSessions,
+  onStopBackgroundSession,
 }) => {
   const [input, setInput] = useState("");
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
@@ -680,6 +1155,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [scrollAnchor, setScrollAnchor] = useState<"end" | "manual">("end");
+  const [showBackgroundPanel, setShowBackgroundPanel] = useState(false);
+  const [selectedBackgroundIndex, setSelectedBackgroundIndex] = useState(0);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [showTasksExpanded, setShowTasksExpanded] = useState(false);
   const { exit } = useApp();
 
   const slashCommandEntries = useMemo(
@@ -785,6 +1264,12 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     Boolean(choicePrompt) &&
     Boolean(onChoiceSelect) &&
     (choicePrompt?.options.length ?? 0) > 0;
+  const hasFormPrompt =
+    Boolean(formPrompt) &&
+    Boolean(onFormSubmit) &&
+    (formPrompt?.questions.length ?? 0) > 0;
+  const hasBackgroundPanel =
+    showBackgroundPanel && Boolean(backgroundSessions && backgroundSessions.length >= 0);
 
   const terminalHeight =
     process.stdout.isTTY && process.stdout.rows ? process.stdout.rows : 24;
@@ -823,6 +1308,13 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     }
   }, [virtualizeHistory]);
 
+  useEffect(() => {
+    const count = backgroundSessions?.length ?? 0;
+    setSelectedBackgroundIndex((prev) =>
+      count === 0 ? 0 : Math.max(0, Math.min(prev, count - 1))
+    );
+  }, [backgroundSessions]);
+
   const adjustScroll = useCallback(
     (delta: number) => {
       if (!virtualizeHistory) return;
@@ -841,6 +1333,19 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     (inputKey, key) => {
       if (key.ctrl && inputKey === "c") { onExit?.(); exit(); return; }
       if (key.ctrl && inputKey === "p") { toggleMode(); return; }
+      if (key.ctrl && inputKey === "o") {
+        setShowTranscript((prev) => !prev);
+        setScrollAnchor("end");
+        return;
+      }
+      if (key.ctrl && inputKey === "t") {
+        setShowTasksExpanded((prev) => !prev);
+        return;
+      }
+      if (key.ctrl && inputKey === "b") {
+        setShowBackgroundPanel((prev) => !prev);
+        return;
+      }
       if (key.ctrl && inputKey === "q") {
         const nextMode: "steer" | "followUp" =
           queueMode === "steer" ? "followUp" : "steer";
@@ -853,8 +1358,31 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       }
 
       if (key.escape) {
+        if (hasBackgroundPanel) {
+          setShowBackgroundPanel(false);
+          return;
+        }
         if (hasSlashSuggestions) { clearSlashSuggestions(); return; }
         if (isThinking && onInterrupt) { onInterrupt(); return; }
+      }
+
+      if (hasBackgroundPanel) {
+        const sessionCount = backgroundSessions?.length ?? 0;
+        if (key.upArrow) {
+          setSelectedBackgroundIndex((prev) => Math.max(0, prev - 1));
+          return;
+        }
+        if (key.downArrow) {
+          setSelectedBackgroundIndex((prev) =>
+            Math.min(Math.max(0, sessionCount - 1), prev + 1)
+          );
+          return;
+        }
+        if ((inputKey === "x" || inputKey === "X") && backgroundSessions?.[selectedBackgroundIndex]) {
+          onStopBackgroundSession?.(backgroundSessions[selectedBackgroundIndex].id);
+          return;
+        }
+        return;
       }
 
       if (hasSlashSuggestions) {
@@ -876,7 +1404,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       if (key.home) { setScrollAnchor("manual"); setScrollOffset(0); return; }
       if (key.end) { jumpToLatest(); }
     },
-    { isActive: !hasChoicePrompt }
+    { isActive: !hasChoicePrompt && !hasFormPrompt }
   );
 
   const handleSubmit = useCallback(() => {
@@ -939,29 +1467,54 @@ export const MeerChat: React.FC<MeerChatProps> = ({
           selectedSuggestion={selectedSuggestion}
           choicePrompt={choicePrompt}
           onChoiceSelect={onChoiceSelect}
+          formPrompt={formPrompt}
+          onFormSubmit={onFormSubmit}
+          backgroundPanelOpen={hasBackgroundPanel}
+          transcriptMode={showTranscript}
+          tasksExpanded={showTasksExpanded}
         />
       </ScreenReaderLayout>
     );
   }
 
+  const compactHiddenToolCount = getCompactHiddenToolCount(visibleMessages);
+  const transcriptMessages = showTranscript
+    ? visibleMessages
+    : visibleMessages.filter(shouldRenderTranscriptMessage);
   const displayMessages =
     draftAssistant && hasDraftContent
-      ? [...visibleMessages, draftAssistant]
-      : visibleMessages;
+      ? [...transcriptMessages, draftAssistant]
+      : transcriptMessages;
 
   const displayWindowSize = Math.max(1, Math.min(displayMessages.length, terminalHeight * 3));
+  const displayScrollOffset = Math.min(
+    scrollOffset,
+    Math.max(0, displayMessages.length - displayWindowSize)
+  );
+  const activePlanTask =
+    plan?.tasks.find((task) => task.status === "in_progress") ??
+    plan?.tasks.find((task) => task.status === "pending");
+  const shouldPinConversationToBottom =
+    scrollAnchor === "end" &&
+    !hasBackgroundPanel &&
+    !hasChoicePrompt &&
+    !hasFormPrompt;
 
   return (
     <Box flexDirection="column" height="100%" width="100%">
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
         {messages.length === 0 ? (
-          <Box flexDirection="column" alignItems="center" justifyContent="center" paddingY={2}>
-            <Text color="gray" dimColor>
-              Welcome to Meer AI. Type a message to get started.
-            </Text>
-            <Text color="gray" dimColor>
-              Type / for slash commands (e.g., /help, /model, /setup)
-            </Text>
+          <Box flexDirection="column" justifyContent="center" flexGrow={1}>
+            <BrandMark
+              provider={provider}
+              model={model}
+              cwd={cwd}
+            />
+            <Box flexDirection="column" alignItems="center">
+              <Text color="gray" dimColor>
+                Type / for commands · Enter to dive in
+              </Text>
+            </Box>
           </Box>
         ) : (
           <Box flexDirection="column">
@@ -972,12 +1525,39 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                 </Text>
               </Box>
             )}
-            <Box flexDirection="row">
-              <Box flexGrow={1}>
+            {!showTranscript && compactHiddenToolCount > 0 ? (
+              <Box marginBottom={1} marginLeft={2}>
+                <Text color="gray" dimColor>
+                  Compact view hid {compactHiddenToolCount} completed tool result{compactHiddenToolCount === 1 ? "" : "s"} · ^O transcript
+                </Text>
+              </Box>
+            ) : null}
+            {showTranscript ? (
+              <Box marginBottom={1} marginLeft={2}>
+                <Text color="yellow">
+                  Transcript mode
+                </Text>
+                <Text color="gray" dimColor>
+                  {" "}showing raw tool results · ^O compact
+                </Text>
+              </Box>
+            ) : null}
+            <Box
+              flexDirection="row"
+              flexGrow={1}
+              minHeight={0}
+              alignItems={shouldPinConversationToBottom ? "flex-end" : "flex-start"}
+            >
+              <Box
+                flexDirection="column"
+                flexGrow={1}
+                minHeight={0}
+                justifyContent={shouldPinConversationToBottom ? "flex-end" : "flex-start"}
+              >
                 <VirtualizedList
                   items={displayMessages}
                   scroll={{
-                    offset: scrollOffset,
+                    offset: displayScrollOffset,
                     windowSize: displayWindowSize,
                     totalCount: displayMessages.length,
                   }}
@@ -1001,7 +1581,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
               {virtualizeHistory && displayMessages.length > 0 && (
                 <Box marginLeft={1}>
                   <ScrollIndicator
-                    offset={scrollOffset}
+                    offset={displayScrollOffset}
                     windowSize={displayWindowSize}
                     totalCount={displayMessages.length}
                   />
@@ -1019,7 +1599,34 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         )}
       </Box>
 
-      <WorkingIndicator isThinking={isThinking} status={status} />
+      {plan ? (
+        <PlanPanel
+          plan={plan}
+          maxVisibleTasks={showTasksExpanded ? Number.POSITIVE_INFINITY : 6}
+        />
+      ) : null}
+
+      <TurnActivityIndicator
+        active={isThinking || Boolean(draftAssistant)}
+        status={status}
+        isStreaming={hasDraftContent}
+        activeTask={activePlanTask?.description}
+      />
+
+      <WorkLogSection
+        timelineEvents={timelineEvents}
+        tools={tools}
+        isThinking={isThinking}
+        status={status}
+        backgroundSessions={backgroundSessions}
+      />
+      {hasBackgroundPanel && (
+        <BackgroundTerminalPanel
+          sessions={backgroundSessions ?? []}
+          selectedIndex={selectedBackgroundIndex}
+          onStop={onStopBackgroundSession}
+        />
+      )}
 
       <InputArea
         value={input}
@@ -1034,6 +1641,11 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         selectedSuggestion={selectedSuggestion}
         choicePrompt={choicePrompt}
         onChoiceSelect={onChoiceSelect}
+        formPrompt={formPrompt}
+        onFormSubmit={onFormSubmit}
+        backgroundPanelOpen={hasBackgroundPanel}
+        transcriptMode={showTranscript}
+        tasksExpanded={showTasksExpanded}
       />
 
       <FooterBar
@@ -1060,26 +1672,232 @@ const InlineChoicePrompt: React.FC<{
   defaultValue: string;
   onSelect: (value: string) => void;
 }> = ({ message, options, defaultValue, onSelect }) => {
-  const items = useMemo(
-    () => options.map((o) => ({ label: o.label, value: o.value })),
-    [options]
-  );
   const initialIndex = useMemo(() => {
     const idx = options.findIndex((o) => o.value === defaultValue);
     return idx >= 0 ? idx : 0;
   }, [defaultValue, options]);
+  const [selectedIndex, setSelectedIndex] = useState(initialIndex);
+
+  useEffect(() => {
+    setSelectedIndex(initialIndex);
+  }, [initialIndex]);
+
+  useInput((_input, key) => {
+    if (key.upArrow) {
+      setSelectedIndex((prev) => (prev - 1 + options.length) % options.length);
+      return;
+    }
+    if (key.downArrow) {
+      setSelectedIndex((prev) => (prev + 1) % options.length);
+      return;
+    }
+    if (key.return) {
+      const selected = options[selectedIndex];
+      if (selected) {
+        onSelect(selected.value);
+      }
+    }
+  });
 
   return (
-    <Box flexDirection="column" marginTop={1} paddingLeft={2}>
-      <Text color="yellow">{message}</Text>
-      <Text color="dim">↑↓ navigate · Enter select</Text>
-      <Box marginTop={1}>
-        <SelectInput
-          items={items}
-          initialIndex={initialIndex}
-          onSelect={(item) => onSelect(String(item.value))}
-        />
+    <ScrollableSelector
+      title={message}
+      selectedIndex={selectedIndex}
+      help="↑↓ navigate · Enter select"
+      items={options.map((option) => ({
+        key: option.value,
+        label: option.label,
+      }))}
+    />
+  );
+};
+
+const InlineFormPrompt: React.FC<{
+  title: string;
+  questions: Array<{
+    id: string;
+    label: string;
+    type: "select" | "multiselect";
+    required?: boolean;
+    options: Array<{ label: string; value: string; description?: string }>;
+  }>;
+  submitLabel: string;
+  onSubmit: (answers: Record<string, string | string[]>) => void;
+}> = ({ title, questions, submitLabel, onSubmit }) => {
+  const [focusIndex, setFocusIndex] = useState(0);
+  const [cursorByQuestion, setCursorByQuestion] = useState<Record<string, number>>(
+    () =>
+      Object.fromEntries(questions.map((question) => [question.id, 0]))
+  );
+  const [answers, setAnswers] = useState<Record<string, string | string[]>>(() =>
+    Object.fromEntries(
+      questions.map((question) => [
+        question.id,
+        question.type === "multiselect" ? [] : question.options[0]?.value ?? "",
+      ])
+    )
+  );
+
+  const totalStops = questions.length + 1;
+  const isSubmitFocused = focusIndex === questions.length;
+  const activeQuestion = questions[Math.min(focusIndex, questions.length - 1)];
+  const activeCursor = activeQuestion ? cursorByQuestion[activeQuestion.id] ?? 0 : 0;
+
+  const canSubmit = questions.every((question) => {
+    if (!question.required) return true;
+    const value = answers[question.id];
+    return Array.isArray(value) ? value.length > 0 : Boolean(value);
+  });
+
+  useInput((input, key) => {
+    if (key.tab || key.downArrow) {
+      if (isSubmitFocused) return;
+      setFocusIndex((prev) => Math.min(prev + 1, totalStops - 1));
+      return;
+    }
+
+    if (key.upArrow) {
+      setFocusIndex((prev) => Math.max(prev - 1, 0));
+      return;
+    }
+
+    if (isSubmitFocused) {
+      if (key.return && canSubmit) {
+        onSubmit(answers);
+      }
+      return;
+    }
+
+    if (!activeQuestion) {
+      return;
+    }
+
+    const optionCount = activeQuestion.options.length;
+    if (key.leftArrow) {
+      setCursorByQuestion((prev) => ({
+        ...prev,
+        [activeQuestion.id]: Math.max(0, activeCursor - 1),
+      }));
+      return;
+    }
+
+    if (key.rightArrow) {
+      setCursorByQuestion((prev) => ({
+        ...prev,
+        [activeQuestion.id]: Math.min(optionCount - 1, activeCursor + 1),
+      }));
+      return;
+    }
+
+    if (input === " ") {
+      if (activeQuestion.type === "multiselect") {
+        const value = activeQuestion.options[activeCursor]?.value;
+        if (!value) return;
+        setAnswers((prev) => {
+          const current = Array.isArray(prev[activeQuestion.id])
+            ? [...(prev[activeQuestion.id] as string[])]
+            : [];
+          const next = current.includes(value)
+            ? current.filter((entry) => entry !== value)
+            : [...current, value];
+          return {
+            ...prev,
+            [activeQuestion.id]: next,
+          };
+        });
+      }
+      return;
+    }
+
+    if (key.return) {
+      const value = activeQuestion.options[activeCursor]?.value;
+      if (!value) return;
+      if (activeQuestion.type === "select") {
+        setAnswers((prev) => ({
+          ...prev,
+          [activeQuestion.id]: value,
+        }));
+      }
+      setFocusIndex((prev) => Math.min(prev + 1, totalStops - 1));
+    }
+  });
+
+  return (
+    <Box
+      flexDirection="column"
+      marginTop={1}
+      paddingX={1}
+      paddingY={1}
+      borderStyle="round"
+      borderColor="cyan"
+    >
+      <Text color="cyan" bold>
+        {title}
+      </Text>
+      <Text color="dim">
+        Tab/↑↓ move · ←→ change option · Space toggle checkbox · Enter confirm
+      </Text>
+      <Box flexDirection="column" marginTop={1}>
+        {questions.map((question, questionIndex) => {
+          const isFocused = focusIndex === questionIndex;
+          const selectedValues = Array.isArray(answers[question.id])
+            ? (answers[question.id] as string[])
+            : [];
+          const selectedValue =
+            typeof answers[question.id] === "string" ? (answers[question.id] as string) : "";
+
+          return (
+            <Box key={question.id} flexDirection="column" marginBottom={1}>
+              <Text color={isFocused ? "yellow" : "white"}>
+                {isFocused ? "› " : "  "}
+                {question.label}
+                {question.required ? " *" : ""}
+              </Text>
+              <Box flexDirection="column" paddingLeft={3}>
+                {question.options.map((option, optionIndex) => {
+                  const isCursor =
+                    isFocused &&
+                    (cursorByQuestion[question.id] ?? 0) === optionIndex;
+                  const selected =
+                    question.type === "multiselect"
+                      ? selectedValues.includes(option.value)
+                      : selectedValue === option.value;
+                  const marker =
+                    question.type === "multiselect"
+                      ? selected
+                        ? "[x]"
+                        : "[ ]"
+                      : selected
+                        ? "(•)"
+                        : "( )";
+
+                  return (
+                    <Text
+                      key={`${question.id}-${option.value}`}
+                      color={isCursor ? "green" : selected ? "white" : "dim"}
+                    >
+                      {isCursor ? "→ " : "  "}
+                      {marker} {option.label}
+                      {option.description ? ` — ${option.description}` : ""}
+                    </Text>
+                  );
+                })}
+              </Box>
+            </Box>
+          );
+        })}
       </Box>
+      <Box marginTop={1}>
+        <Text color={isSubmitFocused ? (canSubmit ? "green" : "yellow") : "dim"}>
+          {isSubmitFocused ? "› " : "  "}
+          [{submitLabel}]
+        </Text>
+      </Box>
+      {!canSubmit && (
+        <Text color="yellow" dimColor>
+          Complete all required questions before submitting.
+        </Text>
+      )}
     </Box>
   );
 };
@@ -1132,7 +1950,16 @@ const ScreenReaderLayout: React.FC<{
         <Box flexDirection="column">
           <Text>Plan: {plan.title}</Text>
           {plan.tasks.slice(0, 5).map((task, i) => (
-            <Text key={task.id}>{i + 1}. {task.description} - {task.status}</Text>
+            <Text key={task.id}>
+              {task.status === "completed"
+                ? "[x]"
+                : task.status === "in_progress"
+                ? "[~]"
+                : task.status === "skipped"
+                ? "[-]"
+                : "[ ]"}{" "}
+              {task.id || String(i + 1)} {task.description}
+            </Text>
           ))}
           {plan.tasks.length > 5 && <Text color="dim">+{plan.tasks.length - 5} more</Text>}
         </Box>
@@ -1167,6 +1994,13 @@ const ScreenReaderLayout: React.FC<{
 function truncateLine(value: string, maxLength: number): string {
   const s = value.replace(/\s+/g, " ").trim();
   return s.length <= maxLength ? s : `${s.slice(0, maxLength - 1)}…`;
+}
+
+function basenamePath(value?: string): string {
+  if (!value) return "";
+  const normalized = value.replace(/\/+$/, "");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || normalized;
 }
 
 function formatCompactNumber(value: number): string {

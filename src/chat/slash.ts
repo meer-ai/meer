@@ -27,6 +27,7 @@ import { ChatBoxUI } from "../ui/chatbox.js";
 import { showSlashHelp } from "../ui/slashHelp.js";
 import { runCommand } from "../tools/index.js";
 import { memory } from "../memory/index.js";
+import { generateCompactionSummaryWithProvider } from "../agent/session-compaction.js";
 import {
   resolveCustomCommand,
   getSlashCommandErrors,
@@ -35,12 +36,15 @@ import type { SlashCommandDefinition } from "../slash/schema.js";
 import { renderSlashTemplate } from "../slash/template.js";
 import type { InkChatAdapter, UITimelineEvent } from "../ui/ink/index.js";
 import type { AgentEventRecorder } from "../agent/eventRecorder.js";
+import { backgroundTerminals } from "../runtime/backgroundTerminals.js";
+import { loadSkillsForCwd } from "../skills/index.js";
+import type { SkillDiagnostic } from "../skills/index.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type SlashCommandResult =
   | { status: "continue" }
-  | { status: "restart" }
+  | { status: "restart"; resumeSession?: string }
   | { status: "exit" }
   | { status: "send"; message: string };
 
@@ -66,6 +70,10 @@ const SLASH_EXIT: SlashCommandResult = { status: "exit" };
 
 const continueResult = (): SlashCommandResult => SLASH_CONTINUE;
 const restartResult = (): SlashCommandResult => SLASH_RESTART;
+const restartWithResumeResult = (resumeSession: string): SlashCommandResult => ({
+  status: "restart",
+  resumeSession,
+});
 const exitResult = (): SlashCommandResult => SLASH_EXIT;
 
 // ─── Input parsing ────────────────────────────────────────────────────────────
@@ -278,6 +286,47 @@ function prepareTimelineOutputPath(requested?: string): string {
   return join(logsDir, `timeline-${ts}.json`);
 }
 
+function formatSkillDiagnostic(diagnostic: SkillDiagnostic): string {
+  return `${diagnostic.source}:${diagnostic.code} ${diagnostic.path} - ${diagnostic.message}`;
+}
+
+async function handleSkillsCommand(tui?: InkChatAdapter | null): Promise<void> {
+  const result = await loadSkillsForCwd(process.cwd());
+  const lines: string[] = [];
+  lines.push(`Skills: ${result.skills.length}`);
+
+  if (result.sources.length > 0) {
+    lines.push(`Sources: ${result.sources.join(", ")}`);
+  } else {
+    lines.push("Sources: none found (.meer/skills, ~/.meer/skills)");
+  }
+
+  if (result.skills.length > 0) {
+    lines.push("");
+    for (const skill of result.skills) {
+      const hidden = skill.disableModelInvocation ? " hidden" : "";
+      lines.push(`- ${skill.name} [${skill.source}${hidden}]`);
+      lines.push(`  ${skill.description}`);
+      lines.push(`  ${skill.filePath}`);
+    }
+  }
+
+  if (result.diagnostics.length > 0) {
+    lines.push("");
+    lines.push(`Warnings: ${result.diagnostics.length}`);
+    for (const diagnostic of result.diagnostics.slice(0, 8)) {
+      lines.push(`- ${formatSkillDiagnostic(diagnostic)}`);
+    }
+    if (result.diagnostics.length > 8) {
+      lines.push(`- ... ${result.diagnostics.length - 8} more`);
+    }
+  }
+
+  const output = lines.join("\n");
+  if (tui) tui.appendSystemMessage(output);
+  else console.log(output);
+}
+
 // ─── Inline command implementations ──────────────────────────────────────────
 
 async function handleAccountCommand(): Promise<void> {
@@ -358,6 +407,59 @@ async function handleAccountCommand(): Promise<void> {
       chalk.cyan("meer logout")
   );
   console.log("");
+}
+
+async function promptResumeSession(
+  tui?: InkChatAdapter | null
+): Promise<string | null> {
+  const sessions = memory.listSessions(process.cwd()).slice(0, 20);
+  if (sessions.length === 0) {
+    const msg = "No saved sessions for this project.";
+    if (tui) tui.appendSystemMessage(msg);
+    else console.log(chalk.gray(msg));
+    return null;
+  }
+
+  const choices = sessions.map((session) => {
+    const parent = session.parentSessionId
+      ? ` ← fork of ${session.parentSessionId.slice(0, 8)}`
+      : "";
+    return {
+      label:
+        `${session.id.slice(0, 8)} ` +
+        `(${session.messageCount} msgs • ${new Date(session.createdAt).toLocaleString()})` +
+        parent,
+      value: session.path,
+    };
+  });
+
+  if (tui) {
+    choices.push({ label: "Cancel", value: "__cancel__" });
+    const selected = await tui.promptChoice(
+      "Resume which session?",
+      choices,
+      choices[0]?.value ?? "__cancel__"
+    );
+    return selected === "__cancel__" ? null : selected;
+  }
+
+  const promptModule = inquirer.createPromptModule();
+  const { selectedSession } = await promptModule([
+    {
+      type: "list",
+      name: "selectedSession",
+      message: "Resume which session?",
+      choices: [
+        ...choices.map((choice) => ({
+          name: choice.label,
+          value: choice.value,
+        })),
+        new inquirer.Separator(),
+        { name: chalk.gray("Cancel"), value: null },
+      ],
+    },
+  ]);
+  return selectedSession;
 }
 
 async function handleInitCommand(): Promise<void> {
@@ -815,23 +917,37 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     return continueResult();
   },
 
-  "/history": async () => {
-    const entries = ChatBoxUI.getHistoryEntries(10);
-    console.log(chalk.bold.blue("\n🕓 Recent Prompts:"));
-    if (entries.length === 0) {
-      console.log(chalk.gray("  (history is empty for this profile)"));
-    } else {
-      entries.forEach((entry, index) => {
-        console.log(
-          chalk.cyan(`${index + 1}. `) +
-            chalk.gray(
-              entry.length > 120 ? `${entry.slice(0, 117)}...` : entry
-            )
-        );
-      });
+  "/resume": async ({ args, tui }) => {
+    const requested = args[0];
+    if (requested) {
+      const source = memory.resolveSession(requested, process.cwd());
+      if (!source) {
+        const msg = `Could not find session '${requested}'.`;
+        if (tui) tui.appendSystemMessage(`❌ ${msg}`);
+        else console.log(chalk.red(msg));
+        return continueResult();
+      }
+      const msg = `Resuming session ${source.id.slice(0, 8)}...`;
+      if (tui) tui.appendSystemMessage(msg);
+      else console.log(chalk.gray(msg));
+      return restartWithResumeResult(source.path);
     }
-    console.log("");
-    return continueResult();
+
+    const selected = await promptResumeSession(tui);
+    if (!selected) {
+      const msg = "Resume cancelled.";
+      if (tui) tui.appendSystemMessage(msg);
+      else console.log(chalk.gray(msg));
+      return continueResult();
+    }
+
+    const source = memory.resolveSession(selected, process.cwd());
+    const msg = source
+      ? `Resuming session ${source.id.slice(0, 8)}...`
+      : "Resuming selected session...";
+    if (tui) tui.appendSystemMessage(msg);
+    else console.log(chalk.gray(msg));
+    return restartWithResumeResult(selected);
   },
 
   "/stats": async ({ sessionTracker }) => {
@@ -863,7 +979,7 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     });
     console.log(
       chalk.gray(
-        "\nUse `meer --resume <id>` to continue one, or `meer --fork <id>` to branch from it.\n"
+        "\nUse `/resume` to continue one, or `meer --fork <id>` to branch from it.\n"
       )
     );
     return continueResult();
@@ -904,6 +1020,30 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     return restartResult();
   },
 
+  "/ps": async ({ tui }) => {
+    const sessions = backgroundTerminals.list();
+    if (sessions.length === 0) {
+      const message = "No background terminals.";
+      if (tui) tui.appendSystemMessage(message);
+      else console.log(chalk.gray(message));
+      return continueResult();
+    }
+
+    const lines = [
+      "Background terminals:",
+      ...sessions.slice(0, 10).map((session) => {
+        const ageSeconds = Math.max(
+          0,
+          Math.floor((Date.now() - session.startedAt) / 1000)
+        );
+        return `- ${session.id} [${session.status}] ${session.command} (${ageSeconds}s)`;
+      }),
+    ];
+    if (tui) tui.appendSystemMessage(lines.join("\n"));
+    else console.log(lines.join("\n"));
+    return continueResult();
+  },
+
   "/review": async ({ args, tui }) => {
     await runStandaloneCommand(createReviewCommand, args, tui);
     return continueResult();
@@ -912,6 +1052,11 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
   "/setup": async () => {
     await handleSetupCommand();
     return restartResult();
+  },
+
+  "/skills": async ({ tui }) => {
+    await handleSkillsCommand(tui);
+    return continueResult();
   },
 
   "/screen-reader": async (context) => {
@@ -930,6 +1075,23 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
         ? "Screen reader layout disabled."
         : "Screen reader layout reset to config defaults."
     );
+    return continueResult();
+  },
+
+  "/stop": async ({ args, tui }) => {
+    const target = args[0];
+    if (!target) {
+      const usage = "Usage: /stop <background-terminal-id>";
+      if (tui) tui.appendSystemMessage(usage);
+      else console.log(chalk.gray(usage));
+      return continueResult();
+    }
+    const stopped = backgroundTerminals.stop(target);
+    const message = stopped
+      ? `Stopping background terminal ${target}.`
+      : `Background terminal ${target} not found or already exited.`;
+    if (tui) tui.appendSystemMessage(message);
+    else console.log(stopped ? chalk.green(message) : chalk.yellow(message));
     return continueResult();
   },
 
@@ -1007,8 +1169,11 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     return continueResult();
   },
 
-  "/compact": async ({ tui }) => {
-    const result = memory.compactCurrentSession(process.cwd());
+  "/compact": async ({ tui, config }) => {
+    const result = await memory.compactCurrentSession(process.cwd(), {
+      summaryGenerator: (input) =>
+        generateCompactionSummaryWithProvider(config.provider, input),
+    });
     if (!result) {
       if (tui) {
         tui.appendSystemMessage("Nothing to compact yet.");

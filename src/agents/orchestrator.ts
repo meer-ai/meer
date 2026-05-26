@@ -1,5 +1,5 @@
 import chalk from "chalk";
-import { AgentWorkflowV3, type AgentConfig } from "../agent/workflow-v3.js";
+import { MeerAgent, type MeerAgentConfig } from "../agent/meer-agent.js";
 import { logVerbose } from "../logger.js";
 import { SubAgent } from "./subagent.js";
 import { AgentRegistry } from "./registry.js";
@@ -24,16 +24,16 @@ import type {
  * - Aggregates results from sub-agents
  */
 export class AgentOrchestrator {
-  private mainAgent: AgentWorkflowV3;
+  private mainAgent: MeerAgent;
   private registry: AgentRegistry;
   private activeSubAgents: Map<string, SubAgent> = new Map();
-  private config: AgentConfig;
+  private config: MeerAgentConfig;
   private cwd: string;
 
-  constructor(config: AgentConfig) {
+  constructor(config: MeerAgentConfig) {
     this.config = config;
     this.cwd = config.cwd;
-    this.mainAgent = new AgentWorkflowV3(config);
+    this.mainAgent = new MeerAgent(config);
     this.registry = new AgentRegistry(this.cwd);
 
     logVerbose(chalk.blue('[AgentOrchestrator] Initialized'));
@@ -57,7 +57,8 @@ export class AgentOrchestrator {
    * Process a message (delegates to main agent or sub-agents as needed)
    */
   async processMessage(userMessage: string): Promise<string> {
-    return this.mainAgent.processMessage(userMessage);
+    const result = await this.mainAgent.processMessage(userMessage);
+    return result.response;
   }
 
   /**
@@ -229,9 +230,9 @@ export class AgentOrchestrator {
   // Private helper methods
 
   private createSubAgent(definition: SubAgentDefinition): SubAgent {
-    const subAgentConfig: AgentConfig = {
+    const subAgentConfig: MeerAgentConfig = {
       ...this.config,
-      maxIterations: definition.maxIterations || this.config.maxIterations || 10,
+      maxIterations: definition.maxIterations ?? this.config.maxIterations,
     };
 
     const subAgent = new SubAgent(definition, subAgentConfig);

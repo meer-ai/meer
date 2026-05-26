@@ -1,13 +1,16 @@
 import type { MCPTool } from "../../mcp/types.js";
+import type { Skill } from "../../skills/index.js";
+import { formatSkillsForSystemPrompt } from "../../skills/index.js";
 
 export interface NativeSystemPromptOptions {
   cwd: string;
   mcpTools?: MCPTool[];
   providerType?: string;
+  skills?: Skill[];
 }
 
 export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): string {
-  const { cwd, mcpTools = [], providerType = "unknown" } = options;
+  const { cwd, mcpTools = [], providerType = "unknown", skills = [] } = options;
 
   const mcpSection =
     mcpTools.length > 0
@@ -15,6 +18,7 @@ export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): str
       : "";
 
   const provider = providerType.toLowerCase();
+  const skillsSection = formatSkillsForSystemPrompt(skills);
   const providerNotes =
     provider === "anthropic"
       ? `\n## Provider Notes\n- Use concise assistant text before tool calls\n- Prefer acting through tools over long planning prose\n- After tool results, synthesize what changed and choose the next best concrete step\n`
@@ -55,14 +59,17 @@ export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): str
 - Never use placeholders — always provide complete, working content
 
 **For shell commands:**
-- Default timeout is 120 seconds; use \`timeoutMs\` for longer operations
+- Default timeout is 600 seconds; use \`timeoutMs\` for longer operations
 - Dev servers (\`npm run dev\`) run indefinitely — tell the user to start them manually
 - Always check command output for errors before proceeding
+- For scaffolding common apps/frameworks, prefer \`scaffold_project\` over raw shell bootstrapping commands
+- For long-running or interactive commands that should stay alive, use \`start_background_command\` instead of \`run_command\`
 
 **For multi-step tasks:**
 - Use \`set_plan\` to create a task list for complex work
 - Update tasks with \`update_plan_task\` as you complete them
 - Keep making progress — don't stop and explain after every tool call unless something unexpected happened
+- If the user must choose between concrete options, use \`request_user_input\` instead of dumping a numbered questionnaire into plain chat
 
 **For code understanding:**
 - Start with \`analyze_project\` or \`list_files\` to orient yourself
@@ -108,5 +115,5 @@ export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): str
 - Do NOT answer from memory — always read the actual code first
 - After enough evidence is gathered, stop scanning and synthesize findings instead of looping on more inventory tools
 
-**Completion**: When the task is done, summarize what you did. If there are follow-up steps the user should take, list them.${providerNotes}${mcpSection}`;
+**Completion**: When the task is done, summarize what you did. If there are follow-up steps the user should take, list them.${providerNotes}${skillsSection ? `\n\n${skillsSection}` : ""}${mcpSection}`;
 }

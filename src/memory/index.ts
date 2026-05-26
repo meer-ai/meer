@@ -1,6 +1,7 @@
 import { basename } from "path";
 import {
   SessionStore,
+  type CompactSessionOptions,
   type SessionMessageEntry,
   type SessionCompactionEntry,
 } from "../session/store.js";
@@ -225,9 +226,9 @@ export class Memory {
     return this.store.listSessions(cwd);
   }
 
-  compactCurrentSession(
+  async compactCurrentSession(
     cwd = process.cwd(),
-    options?: { keepRecentMessages?: number }
+    options?: CompactSessionOptions
   ) {
     const current = this.store.resolveViewSession(cwd);
     if (!current) {
@@ -236,9 +237,9 @@ export class Memory {
     return this.store.compactSession(current.path, options);
   }
 
-  compactSession(
+  async compactSession(
     sessionPath: string,
-    options?: { keepRecentMessages?: number }
+    options?: CompactSessionOptions
   ) {
     return this.store.compactSession(sessionPath, options);
   }

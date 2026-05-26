@@ -1,9 +1,7 @@
-import { randomUUID } from "crypto";
 import type { Provider, ToolDefinition } from "../../providers/base.js";
 import type {
   AgentMessage,
   AgentTool,
-  AgentEvent,
   AgentEventSink,
   ToolResult,
 } from "./types.js";
@@ -14,6 +12,7 @@ export interface LoopConfig {
   maxRepeatedToolBatches?: number;
   maxRepeatedToolResults?: number;
   getSteeringMessages?: () => Promise<AgentMessage[]>;
+  getFollowUpMessages?: () => Promise<AgentMessage[]>;
   beforeToolCall?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -84,19 +83,24 @@ export async function runLoop(
 ): Promise<AgentMessage[]> {
   await emit({ type: "agent_start" });
 
-  const systemMsg: AgentMessage = {
-    role: "system",
-    content: config.systemPrompt,
-    timestamp: Date.now(),
-  };
+  const messages: AgentMessage[] = [
+    {
+      role: "system",
+      content: config.systemPrompt,
+      timestamp: Date.now(),
+    },
+    ...initialMessages,
+  ];
 
-  const messages: AgentMessage[] = [systemMsg, ...initialMessages];
   const toolDefs = buildToolDefinitions(tools);
   const toolMap = new Map(tools.map((t) => [t.name, t]));
-
-  const maxTurns = config.maxTurns ?? 50;
+  const maxTurns =
+    typeof config.maxTurns === "number" && config.maxTurns > 0
+      ? config.maxTurns
+      : undefined;
   const maxRepeatedToolBatches = config.maxRepeatedToolBatches ?? 3;
   const maxRepeatedToolResults = config.maxRepeatedToolResults ?? 2;
+
   let turns = 0;
   let newMessages: AgentMessage[] = [];
   let lastToolBatchSignature: string | null = null;
@@ -106,263 +110,292 @@ export async function runLoop(
   let pendingMessages: AgentMessage[] =
     (await config.getSteeringMessages?.()) ?? [];
 
+  const resetRepeatGuards = () => {
+    lastToolBatchSignature = null;
+    repeatedToolBatchCount = 0;
+    lastToolResultSignature = null;
+    repeatedToolResultCount = 0;
+  };
+
   try {
-    while (turns < maxTurns) {
-      if (signal?.aborted) {
-        await emit({ type: "aborted" });
-        break;
-      }
+    const canStartAnotherTurn = () => maxTurns === undefined || turns < maxTurns;
 
-      if (pendingMessages.length > 0) {
-        messages.push(...pendingMessages);
-        newMessages.push(...pendingMessages);
-        pendingMessages = [];
-        lastToolBatchSignature = null;
-        repeatedToolBatchCount = 0;
-        lastToolResultSignature = null;
-        repeatedToolResultCount = 0;
-      }
+    while (canStartAnotherTurn()) {
+      let hasMoreToolCalls = true;
 
-      turns++;
-      await emit({ type: "turn_start" });
-
-      let assistantText = "";
-      const pendingToolCalls: Array<{
-        id: string;
-        name: string;
-        input: Record<string, unknown>;
-      }> = [];
-
-      try {
-        const streamWithTools =
-          provider.streamWithTools?.bind(provider) ??
-          (provider as any).streamWithTools;
-
-        if (!streamWithTools) {
-          throw new Error(
-            "Provider does not support streamWithTools. Use a provider with native tool calling (Anthropic, OpenAI) or the ProviderWrapper."
-          );
+      while ((hasMoreToolCalls || pendingMessages.length > 0) && canStartAnotherTurn()) {
+        if (signal?.aborted) {
+          await emit({ type: "aborted" });
+          return newMessages;
         }
 
-        for await (const event of streamWithTools(messages, toolDefs, signal)) {
-          if (signal?.aborted) break;
+        if (pendingMessages.length > 0) {
+          messages.push(...pendingMessages);
+          newMessages.push(...pendingMessages);
+          pendingMessages = [];
+          resetRepeatGuards();
+        }
 
-          if (event.type === "text-delta") {
-            assistantText += event.text;
-            await emit({ type: "text_delta", text: event.text });
-          } else if (event.type === "assistant-message") {
-            assistantText = event.text;
-          } else if (event.type === "tool-call") {
-            pendingToolCalls.push(event.toolCall);
-          } else if (event.type === "done") {
-            if (event.turn?.toolCalls?.length && pendingToolCalls.length === 0) {
-              pendingToolCalls.push(...event.turn.toolCalls);
-            }
-            // Prefer the turn's assistantMessage if available
-            if (event.turn?.assistantMessage && !assistantText) {
-              assistantText = event.turn.assistantMessage;
-            }
-            // rawText is the authoritative accumulated text from the provider;
-            // use it if the delta loop somehow missed content
-            if (event.rawText && event.rawText !== assistantText && !event.turn?.assistantMessage) {
-              const missed = event.rawText.slice(assistantText.length);
-              if (missed) {
-                assistantText = event.rawText;
-                await emit({ type: "text_delta", text: missed });
+        turns++;
+        await emit({ type: "turn_start" });
+
+        let assistantText = "";
+        let assistantReasoningContent: string | undefined;
+        const pendingToolCalls: Array<{
+          id: string;
+          name: string;
+          input: Record<string, unknown>;
+        }> = [];
+
+        try {
+          const streamWithTools =
+            provider.streamWithTools?.bind(provider) ??
+            (provider as any).streamWithTools;
+
+          if (!streamWithTools) {
+            throw new Error(
+              "Provider does not support streamWithTools. Use a provider with native tool calling (Anthropic, OpenAI) or the ProviderWrapper."
+            );
+          }
+
+          for await (const event of streamWithTools(messages, toolDefs, signal)) {
+            if (signal?.aborted) break;
+
+            if (event.type === "text-delta") {
+              assistantText += event.text;
+              await emit({ type: "text_delta", text: event.text });
+            } else if (event.type === "assistant-message") {
+              assistantText = event.text;
+            } else if (event.type === "tool-call") {
+              pendingToolCalls.push(event.toolCall);
+            } else if (event.type === "done") {
+              if (event.turn?.toolCalls?.length && pendingToolCalls.length === 0) {
+                pendingToolCalls.push(...event.turn.toolCalls);
+              }
+              if (event.turn?.assistantMessage && !assistantText) {
+                assistantText = event.turn.assistantMessage;
+              }
+              if (event.turn?.reasoningContent) {
+                assistantReasoningContent = event.turn.reasoningContent;
+              } else if (event.reasoningContent) {
+                assistantReasoningContent = event.reasoningContent;
+              }
+              if (
+                event.rawText &&
+                event.rawText !== assistantText &&
+                !event.turn?.assistantMessage
+              ) {
+                const missed = event.rawText.slice(assistantText.length);
+                if (missed) {
+                  assistantText = event.rawText;
+                  await emit({ type: "text_delta", text: missed });
+                }
               }
             }
           }
+        } catch (err) {
+          if (signal?.aborted) {
+            await emit({ type: "aborted" });
+            return newMessages;
+          }
+          const error = err instanceof Error ? err : new Error(String(err));
+          await emit({ type: "error", error });
+          await emit({ type: "turn_end" });
+          return newMessages;
         }
-      } catch (err) {
-        if (signal?.aborted) {
-          await emit({ type: "aborted" });
-          break;
-        }
-        const error = err instanceof Error ? err : new Error(String(err));
-        await emit({ type: "error", error });
-        await emit({ type: "turn_end" });
-        break;
-      }
 
-      // Record the assistant message
-      const assistantMsg: AgentMessage = {
-        role: "assistant",
-        content: assistantText,
-        toolCalls: pendingToolCalls.length
-          ? pendingToolCalls.map((tc) => ({
-              id: tc.id,
-              name: tc.name,
-              input: tc.input,
-            }))
-          : undefined,
-        timestamp: Date.now(),
-      };
-      messages.push(assistantMsg);
-      newMessages.push(assistantMsg);
-
-      await emit({ type: "turn_end" });
-
-      if (pendingToolCalls.length === 0) {
-        lastToolBatchSignature = null;
-        repeatedToolBatchCount = 0;
-        lastToolResultSignature = null;
-        repeatedToolResultCount = 0;
-        break;
-      }
-
-      const currentToolBatchSignature = toolBatchSignature(pendingToolCalls);
-      if (currentToolBatchSignature === lastToolBatchSignature) {
-        repeatedToolBatchCount += 1;
-      } else {
-        lastToolBatchSignature = currentToolBatchSignature;
-        repeatedToolBatchCount = 1;
-      }
-
-      if (repeatedToolBatchCount >= maxRepeatedToolBatches) {
-        const guardMessage =
-          "I’m repeating the same tool calls without making progress, so I’m stopping here. Review the latest tool results and send a narrower follow-up if you want me to continue.";
-        const guardAssistantMessage: AgentMessage = {
+        const assistantMsg: AgentMessage = {
           role: "assistant",
-          content: guardMessage,
+          content: assistantText,
+          reasoningContent: assistantReasoningContent,
+          toolCalls: pendingToolCalls.length
+            ? pendingToolCalls.map((tc) => ({
+                id: tc.id,
+                name: tc.name,
+                input: tc.input,
+              }))
+            : undefined,
           timestamp: Date.now(),
         };
-        messages.push(guardAssistantMessage);
-        newMessages.push(guardAssistantMessage);
-        break;
-      }
+        messages.push(assistantMsg);
+        newMessages.push(assistantMsg);
 
-      // Execute tool calls
-      const toolResults: AgentMessage[] = [];
-      let shouldTerminate = false;
+        if (pendingToolCalls.length === 0) {
+          hasMoreToolCalls = false;
+          resetRepeatGuards();
+          await emit({ type: "turn_end" });
+          pendingMessages = (await config.getSteeringMessages?.()) ?? [];
+          continue;
+        }
 
-      for (const tc of pendingToolCalls) {
-        if (signal?.aborted) break;
+        const currentToolBatchSignature = toolBatchSignature(pendingToolCalls);
+        if (currentToolBatchSignature === lastToolBatchSignature) {
+          repeatedToolBatchCount += 1;
+        } else {
+          lastToolBatchSignature = currentToolBatchSignature;
+          repeatedToolBatchCount = 1;
+        }
 
-        const tool = toolMap.get(tc.name);
+        if (repeatedToolBatchCount >= maxRepeatedToolBatches) {
+          const guardAssistantMessage: AgentMessage = {
+            role: "assistant",
+            content:
+              "I’m repeating the same tool calls without making progress, so I’m stopping here. Review the latest tool results and send a narrower follow-up if you want me to continue.",
+            timestamp: Date.now(),
+          };
+          messages.push(guardAssistantMessage);
+          newMessages.push(guardAssistantMessage);
+          await emit({ type: "turn_end" });
+          hasMoreToolCalls = false;
+          break;
+        }
 
-        // Approval check
-        if (tool?.requiresApproval) {
-          const needsApproval =
-            typeof tool.requiresApproval === "function"
-              ? await tool.requiresApproval(tc.input)
-              : tool.requiresApproval;
+        const toolResults: AgentMessage[] = [];
+        let shouldTerminate = false;
 
-          if (needsApproval && config.beforeToolCall) {
-            const decision = await config.beforeToolCall(tc.name, tc.input, signal);
-            if (decision?.block) {
-              const blockedResult: AgentMessage = {
-                role: "tool_result",
-                toolCallId: tc.id,
-                toolName: tc.name,
-                content: decision.reason ?? "Tool execution was blocked by user.",
-                isError: true,
-                timestamp: Date.now(),
-              };
-              toolResults.push(blockedResult);
-              await emit({
-                type: "tool_end",
-                toolCallId: tc.id,
-                toolName: tc.name,
-                result: { content: blockedResult.content, isError: true },
-                isError: true,
-              });
-              continue;
+        for (const tc of pendingToolCalls) {
+          if (signal?.aborted) {
+            break;
+          }
+
+          const tool = toolMap.get(tc.name);
+
+          if (tool?.requiresApproval) {
+            const needsApproval =
+              typeof tool.requiresApproval === "function"
+                ? await tool.requiresApproval(tc.input)
+                : tool.requiresApproval;
+
+            if (needsApproval && config.beforeToolCall) {
+              const decision = await config.beforeToolCall(tc.name, tc.input, signal);
+              if (decision?.block) {
+                const blockedResult: AgentMessage = {
+                  role: "tool_result",
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  content: decision.reason ?? "Tool execution was blocked by user.",
+                  isError: true,
+                  details: undefined,
+                  timestamp: Date.now(),
+                };
+                toolResults.push(blockedResult);
+                await emit({
+                  type: "tool_end",
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  result: { content: blockedResult.content, isError: true },
+                  isError: true,
+                });
+                continue;
+              }
             }
           }
-        }
 
-        await emit({
-          type: "tool_start",
-          toolCallId: tc.id,
-          toolName: tc.name,
-          args: tc.input,
-        });
+          await emit({
+            type: "tool_start",
+            toolCallId: tc.id,
+            toolName: tc.name,
+            args: tc.input,
+          });
 
-        let result: ToolResult;
-        if (!tool) {
-          result = {
-            content: `Tool "${tc.name}" not found.`,
-            isError: true,
-          };
-        } else {
-          try {
-            result = await executeToolCall(tool, tc.id, tc.input, emit, signal);
-          } catch (err) {
+          let result: ToolResult;
+          if (!tool) {
             result = {
-              content: err instanceof Error ? err.message : String(err),
+              content: `Tool "${tc.name}" not found.`,
               isError: true,
             };
+          } else {
+            try {
+              result = await executeToolCall(tool, tc.id, tc.input, emit, signal);
+            } catch (err) {
+              result = {
+                content: err instanceof Error ? err.message : String(err),
+                isError: true,
+              };
+            }
+          }
+
+          await emit({
+            type: "tool_end",
+            toolCallId: tc.id,
+            toolName: tc.name,
+            result,
+            isError: result.isError ?? false,
+          });
+
+          const resultMsg: AgentMessage = {
+            role: "tool_result",
+            toolCallId: tc.id,
+            toolName: tc.name,
+            content: result.content,
+            isError: result.isError,
+            details: result.details,
+            timestamp: Date.now(),
+          };
+          toolResults.push(resultMsg);
+          messages.push(resultMsg);
+          newMessages.push(resultMsg);
+
+          if (result.terminate) {
+            shouldTerminate = true;
+            break;
           }
         }
 
-        await emit({
-          type: "tool_end",
-          toolCallId: tc.id,
-          toolName: tc.name,
-          result,
-          isError: result.isError ?? false,
-        });
-
-        const resultMsg: AgentMessage = {
-          role: "tool_result",
-          toolCallId: tc.id,
-          toolName: tc.name,
-          content: result.content,
-          isError: result.isError,
-          timestamp: Date.now(),
-        };
-        toolResults.push(resultMsg);
-        newMessages.push(resultMsg);
-
-        if (result.terminate) {
-          shouldTerminate = true;
-          break;
-        }
-      }
-
-      messages.push(...toolResults);
-
-      const currentToolResultSignature = toolBatchSignature(
-        toolResults.map((result) => {
-          const toolResult = result as Extract<AgentMessage, { role: "tool_result" }>;
-          return {
-            name: toolResult.toolName,
-            input: {
+        const currentToolResultSignature = stableStringify(
+          toolResults.map((result) => {
+            const toolResult = result as Extract<AgentMessage, { role: "tool_result" }>;
+            return {
+              toolName: toolResult.toolName,
               content: toolResult.content,
               isError: toolResult.isError ?? false,
-            },
-          };
-        })
-      );
+            };
+          })
+        );
 
-      if (currentToolResultSignature === lastToolResultSignature) {
-        repeatedToolResultCount += 1;
-      } else {
-        lastToolResultSignature = currentToolResultSignature;
-        repeatedToolResultCount = 1;
-      }
-
-      if (repeatedToolResultCount >= maxRepeatedToolResults) {
-        const guardMessage =
-          "I’m getting the same tool results repeatedly without making progress, so I’m stopping here. Review the latest results and send a narrower follow-up if you want me to continue.";
-        const guardAssistantMessage: AgentMessage = {
-          role: "assistant",
-          content: guardMessage,
-          timestamp: Date.now(),
-        };
-        messages.push(guardAssistantMessage);
-        newMessages.push(guardAssistantMessage);
-        break;
-      }
-
-      if (shouldTerminate || signal?.aborted) {
-        if (signal?.aborted) {
-          await emit({ type: "aborted" });
+        if (currentToolResultSignature === lastToolResultSignature) {
+          repeatedToolResultCount += 1;
+        } else {
+          lastToolResultSignature = currentToolResultSignature;
+          repeatedToolResultCount = 1;
         }
-        break;
+
+        if (repeatedToolResultCount >= maxRepeatedToolResults) {
+          const guardAssistantMessage: AgentMessage = {
+            role: "assistant",
+            content:
+              "I’m getting the same tool results repeatedly without making progress, so I’m stopping here. Review the latest results and send a narrower follow-up if you want me to continue.",
+            timestamp: Date.now(),
+          };
+          messages.push(guardAssistantMessage);
+          newMessages.push(guardAssistantMessage);
+          await emit({ type: "turn_end" });
+          hasMoreToolCalls = false;
+          break;
+        }
+
+        await emit({ type: "turn_end" });
+
+        if (shouldTerminate || signal?.aborted) {
+          if (signal?.aborted) {
+            await emit({ type: "aborted" });
+          }
+          hasMoreToolCalls = false;
+          break;
+        }
+
+        hasMoreToolCalls = true;
+        pendingMessages = (await config.getSteeringMessages?.()) ?? [];
       }
 
-      pendingMessages = (await config.getSteeringMessages?.()) ?? [];
+      const followUpMessages = (await config.getFollowUpMessages?.()) ?? [];
+      if (followUpMessages.length > 0) {
+        pendingMessages = followUpMessages;
+        resetRepeatGuards();
+        continue;
+      }
+
+      break;
     }
   } finally {
     await emit({ type: "agent_end", messages: newMessages });

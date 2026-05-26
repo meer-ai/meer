@@ -26,22 +26,228 @@ import {
 } from "../../agent/eventBus.js";
 import { debounce } from "./utils/debounce.js";
 import { getAllCommands } from "../../slash/registry.js";
+import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
 
 interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolName?: string;
+  toolCallId?: string;
   toolArgs?: Record<string, unknown>;
+  toolDetails?: Record<string, unknown>;
   isError?: boolean;
   isCot?: boolean;
   timestamp?: number;
 }
 
+type CanonicalUIEvent =
+  | {
+      id: string;
+      seq: number;
+      type: "message";
+      role: Message["role"];
+      content: string;
+      timestamp: number;
+      toolName?: string;
+      toolCallId?: string;
+      toolArgs?: Record<string, unknown>;
+      toolDetails?: Record<string, unknown>;
+      isError?: boolean;
+      isCot?: boolean;
+    }
+  | {
+      id: string;
+      seq: number;
+      type: "assistant_delta";
+      messageId: string;
+      delta: string;
+      timestamp: number;
+    }
+  | {
+      id: string;
+      seq: number;
+      type: "tool";
+      toolCallId: string;
+      toolName: string;
+      status: ToolCall["status"];
+      timestamp: number;
+      args?: Record<string, unknown>;
+      details?: Record<string, unknown>;
+      preview?: string;
+      error?: string;
+    }
+  | {
+      id: string;
+      seq: number;
+      type: "status";
+      status: string;
+      timestamp: number;
+    }
+  | {
+      id: string;
+      seq: number;
+      type: "turn";
+      phase: "begin" | "end";
+      timestamp: number;
+    };
+
+type CanonicalUIEventInput = CanonicalUIEvent extends infer Event
+  ? Event extends CanonicalUIEvent
+    ? Omit<Event, "seq" | "timestamp"> & { timestamp?: number }
+    : never
+  : never;
+
 interface ChoicePromptState {
   message: string;
   options: Array<{ label: string; value: string }>;
   defaultValue: string;
+}
+
+interface FormPromptQuestion {
+  id: string;
+  label: string;
+  type: "select" | "multiselect";
+  required?: boolean;
+  options: Array<{ label: string; value: string; description?: string }>;
+}
+
+interface FormPromptState {
+  title: string;
+  questions: FormPromptQuestion[];
+  submitLabel: string;
+}
+
+function isActionTool(toolName: string): boolean {
+  const lower = toolName.toLowerCase();
+  return (
+    lower.includes("write") ||
+    lower.includes("edit") ||
+    lower.includes("move") ||
+    lower.includes("rename") ||
+    lower.includes("delete") ||
+    lower.includes("create_directory")
+  );
+}
+
+function shouldRenderToolTranscript(toolName: string, isError?: boolean): boolean {
+  const lower = toolName.toLowerCase();
+  if (isActionTool(lower)) {
+    return true;
+  }
+
+  // Keep non-mutating/internal tools in the work panel. These are useful as
+  // progress state, but noisy and confusing when mixed into the chat transcript.
+  if (
+    lower.includes("set_plan") ||
+    lower.includes("update_plan_task") ||
+    lower.includes("show_plan") ||
+    lower.includes("read") ||
+    lower.includes("list") ||
+    lower.includes("find") ||
+    lower.includes("search") ||
+    lower.includes("analyze")
+  ) {
+    return false;
+  }
+
+  // Shell/package failures should be visible as work state, but not as giant
+  // transcript blocks unless the assistant chooses to summarize them.
+  if (
+    lower.includes("run_command") ||
+    lower.includes("bash") ||
+    lower.includes("package_") ||
+    lower.includes("scaffold_project") ||
+    lower.includes("start_background_command")
+  ) {
+    return false;
+  }
+
+  return Boolean(isError);
+}
+
+function buildToolNarration(
+  toolName: string,
+  content: string,
+  args?: Record<string, unknown>,
+  isError?: boolean
+): string {
+  const lower = toolName.toLowerCase();
+  const body = content.replace(/^Tool:\s*\S+\s*\n(?:Result[^\n]*:\s*)?\n?/i, "").trim();
+
+  const stringArg = (key: string): string => {
+    const value = args?.[key];
+    return typeof value === "string" ? value : "";
+  };
+
+  const firstLine = body.split("\n").find((line) => line.trim())?.trim() ?? "";
+
+  if (lower.includes("set_plan")) {
+    return isError ? body : firstLine || "Plan created.";
+  }
+
+  if (lower.includes("update_plan_task")) {
+    const taskId = stringArg("taskId");
+    const status = stringArg("status");
+    if (isError) return body;
+    return taskId
+      ? `Task ${taskId}${status ? ` → ${status}` : ""}`
+      : firstLine || "Plan task updated.";
+  }
+
+  if (lower.includes("package_install")) {
+    const packages = args?.packages;
+    const list = Array.isArray(packages)
+      ? packages.join(", ")
+      : typeof packages === "string"
+        ? packages
+        : "";
+    if (isError) return body;
+    return list ? `Installed ${list}` : firstLine || "Installed dependencies.";
+  }
+
+  if (lower.includes("scaffold_project")) {
+    const projectType = stringArg("projectType");
+    const projectName = stringArg("projectName");
+    if (isError) return body;
+    return [projectType, projectName].filter(Boolean).join(" ") || firstLine || "Project scaffolded.";
+  }
+
+  if (lower.includes("start_background_command")) {
+    const command = stringArg("command");
+    return command || firstLine || body || "Started background command.";
+  }
+
+  if (lower.includes("package_run_script")) {
+    const script = stringArg("script");
+    return script ? `Ran script ${script}` : firstLine || "Script finished.";
+  }
+
+  if (
+    lower.includes("write") ||
+    lower.includes("edit") ||
+    lower.includes("move") ||
+    lower.includes("rename") ||
+    lower.includes("delete") ||
+    lower.includes("create_directory")
+  ) {
+    return body;
+  }
+
+  return body;
+}
+
+function isTransientSystemTranscript(content: string): boolean {
+  const normalized = content.trim();
+  return (
+    normalized.length === 0 ||
+    normalized.startsWith("/") ||
+    /^Resuming session\b/i.test(normalized) ||
+    /^Reloading\b/i.test(normalized) ||
+    /^Queued\b/i.test(normalized) ||
+    /^Delivered\b/i.test(normalized) ||
+    /^Ran\s+\//i.test(normalized)
+  );
 }
 
 export interface InkChatConfig {
@@ -57,6 +263,9 @@ type Mode = 'edit' | 'plan';
 export class InkChatAdapter {
   private config: InkChatConfig;
   private messages: Message[] = [];
+  private uiEvents: CanonicalUIEvent[] = [];
+  private readonly maxUiEvents = 500;
+  private uiEventSequence = 0;
   private draftAssistant: Message | null = null;
   private promptResolver: ((value: string) => void) | null = null;
   private promptRejecter: ((reason?: unknown) => void) | null = null;
@@ -64,7 +273,13 @@ export class InkChatAdapter {
   private choicePrompt: ChoicePromptState | null = null;
   private choiceResolver: ((value: string) => void) | null = null;
   private choiceRejecter: ((reason?: unknown) => void) | null = null;
+  private formPrompt: FormPromptState | null = null;
+  private formResolver:
+    | ((value: Record<string, string | string[]>) => void)
+    | null = null;
+  private formRejecter: ((reason?: unknown) => void) | null = null;
   private instance: any = null;
+  private turnActive = false;
   private isThinking = false;
   private statusMessage: string | null = null;
   private onSubmitCallback?: (text: string) => void;
@@ -74,6 +289,7 @@ export class InkChatAdapter {
 
   // Cache most-recent args per tool name for inline block rendering
   private recentToolArgs = new Map<string, Record<string, unknown>>();
+  private collapsedToolCount = 0;
 
   // Enhanced UI state
   private tools: ToolCall[] = [];
@@ -96,9 +312,12 @@ export class InkChatAdapter {
   private pendingUserMessages = new Set<string>();
   private queuedMessages: string[] = [];
   private queueMode: "steer" | "followUp" = "steer";
+  private backgroundSessions: BackgroundTerminalSession[] = [];
+  private stopBackgroundSessionHandler?: (id: string) => void;
 
-  // Debounced updateUI for streaming - reduces re-renders from 100+/sec to ~20/sec
-  private debouncedUpdateUI = debounce(() => this.updateUI(), { delay: 50, maxWait: 200 });
+  // Coalesce streaming updates to roughly one terminal frame. This mirrors the
+  // Claude/Pi approach: keep token streaming live without rendering per-token.
+  private debouncedUpdateUI = debounce(() => this.updateUI(), { delay: 8, maxWait: 32 });
 
   constructor(config: InkChatConfig) {
     this.config = config;
@@ -110,6 +329,23 @@ export class InkChatAdapter {
 
   private getSlashSuggestions() {
     return getAllCommands(this.config.cwd);
+  }
+
+  private recordUIEvent(event: CanonicalUIEventInput): void {
+    this.uiEvents.push({
+      ...event,
+      seq: ++this.uiEventSequence,
+      timestamp: event.timestamp ?? Date.now(),
+    } as CanonicalUIEvent);
+    if (this.uiEvents.length > this.maxUiEvents) {
+      this.uiEvents = this.uiEvents.slice(-this.maxUiEvents);
+    }
+  }
+
+  getUIEvents(limit?: number): CanonicalUIEvent[] {
+    return typeof limit === "number" && limit > 0
+      ? this.uiEvents.slice(-limit)
+      : [...this.uiEvents];
   }
 
   setInterruptHandler(handler: () => void): void {
@@ -191,6 +427,18 @@ export class InkChatAdapter {
       this.updateUI();
     };
 
+    const handleFormSubmit = (value: Record<string, string | string[]>) => {
+      if (!this.formResolver) {
+        return;
+      }
+      const resolve = this.formResolver;
+      this.formPrompt = null;
+      this.formResolver = null;
+      this.formRejecter = null;
+      resolve(value);
+      this.updateUI();
+    };
+
     const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
 
     const activeSettings = this.getActiveUiSettings();
@@ -221,6 +469,9 @@ export class InkChatAdapter {
         plan: this.plan ?? undefined,
         queuedMessages: this.queuedMessages,
         queueMode: this.queueMode,
+        backgroundSessions: this.backgroundSessions,
+        onStopBackgroundSession: (id: string) =>
+          this.stopBackgroundSessionHandler?.(id),
         onQueueModeChange: (mode: "steer" | "followUp") => {
           this.queueMode = mode;
           this.updateUI();
@@ -229,6 +480,8 @@ export class InkChatAdapter {
         slashSuggestions: this.getSlashSuggestions(),
         choicePrompt: this.choicePrompt ?? undefined,
         onChoiceSelect: handleChoiceSelect,
+        formPrompt: this.formPrompt ?? undefined,
+        onFormSubmit: handleFormSubmit,
       }),
     );
   }
@@ -276,6 +529,18 @@ export class InkChatAdapter {
       this.updateUI();
     };
 
+    const handleFormSubmit = (value: Record<string, string | string[]>) => {
+      if (!this.formResolver) {
+        return;
+      }
+      const resolve = this.formResolver;
+      this.formPrompt = null;
+      this.formResolver = null;
+      this.formRejecter = null;
+      resolve(value);
+      this.updateUI();
+    };
+
     const sessionUptime = (Date.now() - this.sessionStartTime) / 1000;
 
     // Force re-render by unmounting and remounting
@@ -307,6 +572,9 @@ export class InkChatAdapter {
         timelineEvents: this.timelineEvents,
         queuedMessages: this.queuedMessages,
         queueMode: this.queueMode,
+        backgroundSessions: this.backgroundSessions,
+        onStopBackgroundSession: (id: string) =>
+          this.stopBackgroundSessionHandler?.(id),
         onQueueModeChange: (mode: "steer" | "followUp") => {
           this.queueMode = mode;
           this.updateUI();
@@ -315,6 +583,8 @@ export class InkChatAdapter {
         slashSuggestions: this.getSlashSuggestions(),
         choicePrompt: this.choicePrompt ?? undefined,
         onChoiceSelect: handleChoiceSelect,
+        formPrompt: this.formPrompt ?? undefined,
+        onFormSubmit: handleFormSubmit,
       }),
     );
   }
@@ -364,11 +634,28 @@ export class InkChatAdapter {
       return;
     }
 
+    const lastMessage = this.messages[this.messages.length - 1];
+    if (
+      lastMessage?.role === "user" &&
+      lastMessage.content.trim() === normalized &&
+      Date.now() - (lastMessage.timestamp ?? 0) < 2500
+    ) {
+      return;
+    }
+
     this.messages.push({
       id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role: "user",
       content: normalized,
       timestamp: Date.now(),
+    });
+    const message = this.messages[this.messages.length - 1];
+    this.recordUIEvent({
+      id: message.id,
+      type: "message",
+      role: "user",
+      content: normalized,
+      timestamp: message.timestamp,
     });
     if (options?.optimistic) {
       this.pendingUserMessages.add(normalized);
@@ -388,7 +675,11 @@ export class InkChatAdapter {
     }>
   ): void {
     const restored = entries
-      .filter((entry) => entry.content.trim().length > 0)
+      .filter(
+        (entry) =>
+          entry.content.trim().length > 0 &&
+          !(entry.role === "system" && isTransientSystemTranscript(entry.content))
+      )
       .map((entry) => ({
         id: `msg-${entry.timestamp ?? Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         role: entry.role,
@@ -408,6 +699,8 @@ export class InkChatAdapter {
 
   beginTurn(): void {
     this.debouncedUpdateUI.cancel();
+    this.recordUIEvent({ id: `turn-${Date.now()}`, type: "turn", phase: "begin" });
+    this.turnActive = true;
     this.draftAssistant = null;
     this.isThinking = true;
     this.statusMessage = null;
@@ -417,11 +710,14 @@ export class InkChatAdapter {
     this.maxIterations = undefined;
     this.timelineEvents = [];
     this.timelineTaskMetadata.clear();
+    this.collapsedToolCount = 0;
     this.updateUI();
   }
 
   endTurn(): void {
     this.debouncedUpdateUI.cancel();
+    this.recordUIEvent({ id: `turn-${Date.now()}`, type: "turn", phase: "end" });
+    this.turnActive = false;
     this.isThinking = false;
     this.statusMessage = null;
     this.tools = [];
@@ -440,6 +736,13 @@ export class InkChatAdapter {
       content: '',
       timestamp: Date.now(),
     };
+    this.recordUIEvent({
+      id: this.draftAssistant.id,
+      type: "message",
+      role: "assistant",
+      content: "",
+      timestamp: this.draftAssistant.timestamp,
+    });
     this.updateUI();
   }
 
@@ -450,13 +753,19 @@ export class InkChatAdapter {
 
     if (this.draftAssistant) {
       this.draftAssistant.content += chunk;
+      this.recordUIEvent({
+        id: `delta-${this.draftAssistant.id}-${this.uiEventSequence + 1}`,
+        type: "assistant_delta",
+        messageId: this.draftAssistant.id,
+        delta: chunk,
+      });
       // Use debounced updateUI for streaming to reduce re-renders
       this.debouncedUpdateUI();
     }
   }
 
   finishAssistantMessage(): void {
-    this.isThinking = false;
+    this.isThinking = this.turnActive;
     // Cancel any pending debounced updates and render final state immediately
     this.debouncedUpdateUI.cancel();
     this.updateUI();
@@ -468,6 +777,18 @@ export class InkChatAdapter {
       return;
     }
 
+    const lastMessage = this.messages[this.messages.length - 1];
+    if (
+      lastMessage?.role === "assistant" &&
+      !lastMessage.isCot &&
+      lastMessage.content.trim() === normalized
+    ) {
+      this.draftAssistant = null;
+      this.isThinking = this.turnActive;
+      this.updateUI();
+      return;
+    }
+
     const draft = this.draftAssistant;
     this.messages.push({
       id: draft?.id ?? `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -475,46 +796,130 @@ export class InkChatAdapter {
       content: normalized,
       timestamp: draft?.timestamp ?? Date.now(),
     });
+    const message = this.messages[this.messages.length - 1];
+    this.recordUIEvent({
+      id: message.id,
+      type: "message",
+      role: "assistant",
+      content: normalized,
+      timestamp: message.timestamp,
+    });
     this.draftAssistant = null;
-    this.isThinking = false;
+    this.isThinking = this.turnActive;
     this.updateUI();
   }
 
   discardAssistantMessage(): void {
     this.debouncedUpdateUI.cancel();
     this.draftAssistant = null;
-    this.isThinking = false;
+    this.isThinking = this.turnActive;
     this.updateUI();
   }
 
   appendSystemMessage(content: string): void {
-    this.messages.push({ id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, role: 'system', content, timestamp: Date.now() });
+    const normalized = content.trim();
+    if (!normalized) {
+      return;
+    }
+
+    if (normalized.startsWith("/")) {
+      this.setStatus(`Ran ${normalized}`);
+      return;
+    }
+
+    const message = { id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, role: 'system' as const, content, timestamp: Date.now() };
+    this.messages.push(message);
+    this.recordUIEvent({
+      id: message.id,
+      type: "message",
+      role: "system",
+      content: normalized,
+      timestamp: message.timestamp,
+    });
     this.updateUI();
   }
 
   addCotMessage(content: string): void {
     const normalized = content.trim();
     if (!normalized) return;
-    this.messages.push({
-      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      role: 'assistant',
-      content: normalized,
-      isCot: true,
-      timestamp: Date.now(),
+    this.statusMessage = sanitizeStatusText(normalized) || normalized;
+    this.recordUIEvent({
+      id: `status-${Date.now()}`,
+      type: "status",
+      status: this.statusMessage,
     });
     this.updateUI();
   }
 
-  appendToolMessage(toolName: string, content: string, isError?: boolean): void {
+  appendToolMessage(
+    toolName: string,
+    content: string,
+    isError?: boolean,
+    metadata?: { toolCallId?: string; details?: Record<string, unknown> }
+  ): void {
     const toolArgs = this.recentToolArgs.get(toolName);
-    this.messages.push({
-      id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+    const tool =
+      [...this.tools]
+        .reverse()
+        .find((entry) =>
+          metadata?.toolCallId
+            ? entry.id === metadata.toolCallId
+            : entry.name === toolName
+        ) ?? null;
+
+    if (tool) {
+      tool.result = content;
+      tool.details = metadata?.details ?? tool.details;
+      if (isError) {
+        tool.error = content;
+      }
+    }
+
+    const shouldRenderTranscript = shouldRenderToolTranscript(toolName, isError);
+
+    if (!shouldRenderTranscript) {
+      this.collapsedToolCount += 1;
+      this.updateUI();
+      return;
+    }
+
+    const renderedContent = buildToolNarration(toolName, content, toolArgs, isError);
+    const id = metadata?.toolCallId
+      ? `tool-message-${metadata.toolCallId}`
+      : `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const existingIndex = this.messages.findIndex((message) => message.id === id);
+    const message: Message = {
+      id,
       role: 'tool',
-      content,
+      content: renderedContent,
       toolName,
+      toolCallId: metadata?.toolCallId,
       toolArgs,
+      toolDetails: metadata?.details,
       isError,
       timestamp: Date.now(),
+    };
+
+    if (existingIndex >= 0) {
+      this.messages[existingIndex] = {
+        ...this.messages[existingIndex],
+        ...message,
+        timestamp: this.messages[existingIndex].timestamp,
+      };
+    } else {
+      this.messages.push(message);
+    }
+    this.recordUIEvent({
+      id,
+      type: "message",
+      role: "tool",
+      content: renderedContent,
+      toolName,
+      toolCallId: metadata?.toolCallId,
+      toolArgs,
+      toolDetails: metadata?.details,
+      isError,
+      timestamp: message.timestamp,
     });
     this.updateUI();
   }
@@ -528,6 +933,11 @@ export class InkChatAdapter {
 
   setStatus(text: string): void {
     this.statusMessage = sanitizeStatusText(text ?? "") || null;
+    this.recordUIEvent({
+      id: `status-${Date.now()}`,
+      type: "status",
+      status: this.statusMessage ?? "",
+    });
     this.updateUI();
   }
 
@@ -541,6 +951,16 @@ export class InkChatAdapter {
 
   setQueueMode(mode: "steer" | "followUp"): void {
     this.queueMode = mode;
+    this.updateUI();
+  }
+
+  setBackgroundSessions(sessions: BackgroundTerminalSession[]): void {
+    this.backgroundSessions = sessions;
+    this.updateUI();
+  }
+
+  setBackgroundSessionStopHandler(handler: (id: string) => void): void {
+    this.stopBackgroundSessionHandler = handler;
     this.updateUI();
   }
 
@@ -589,6 +1009,34 @@ export class InkChatAdapter {
     return new Promise<T>((resolve, reject) => {
       this.choiceResolver = (value) => resolve(value as T);
       this.choiceRejecter = reject;
+    });
+  }
+
+  async promptForm(
+    title: string,
+    questions: Array<{
+      id: string;
+      label: string;
+      type: "select" | "multiselect";
+      required?: boolean;
+      options: Array<{ label: string; value: string; description?: string }>;
+    }>,
+    submitLabel = "Submit answers"
+  ): Promise<Record<string, string | string[]>> {
+    if (this.choiceResolver || this.promptResolver || this.formResolver) {
+      throw new Error("Prompt already active");
+    }
+
+    this.formPrompt = {
+      title,
+      questions,
+      submitLabel,
+    };
+    this.updateUI();
+
+    return new Promise<Record<string, string | string[]>>((resolve, reject) => {
+      this.formResolver = resolve;
+      this.formRejecter = reject;
     });
   }
 
@@ -795,7 +1243,7 @@ export class InkChatAdapter {
           detail: options?.detail,
           timestamp: Date.now(),
         });
-        this.setStatus(`?? ${label}`);
+        this.setStatus(label);
         return id;
       },
       updateTask: (id: string, detail: string) => {
@@ -808,7 +1256,7 @@ export class InkChatAdapter {
           detail,
           timestamp: Date.now(),
         });
-        this.setStatus(`?? ${detail}`);
+        this.setStatus(detail);
       },
       succeed: (id: string, detail?: string) => {
         const metadata = this.timelineTaskMetadata.get(id);
@@ -821,7 +1269,7 @@ export class InkChatAdapter {
           detail,
           timestamp: Date.now(),
         });
-        this.setStatus(detail ? `? ${detail}` : "");
+        this.setStatus(detail ?? "");
       },
       fail: (id: string, detail?: string) => {
         const metadata = this.timelineTaskMetadata.get(id);
@@ -834,7 +1282,7 @@ export class InkChatAdapter {
           detail,
           timestamp: Date.now(),
         });
-        this.setStatus(detail ? `? ${detail}` : "");
+        this.setStatus(detail ?? "");
       },
       info: (message: string) => {
         this.recordTimelineEvent({
@@ -880,15 +1328,30 @@ export class InkChatAdapter {
 
   // Enhanced UI tracking methods
 
-  addTool(toolName: string, args?: Record<string, unknown>): string {
-    const id = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  addTool(toolName: string, args?: Record<string, unknown>, idOverride?: string): string {
+    const id = idOverride ?? `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     if (args && Object.keys(args).length > 0) {
       this.recentToolArgs.set(toolName, args);
+    }
+    const existing = this.tools.find((tool) => tool.id === id);
+    if (existing) {
+      existing.name = toolName;
+      existing.args = args;
+      this.updateUI();
+      return id;
     }
     this.tools.push({
       id,
       name: toolName,
       status: 'pending',
+      args,
+    });
+    this.recordUIEvent({
+      id: `tool-${id}`,
+      type: "tool",
+      toolCallId: id,
+      toolName,
+      status: "pending",
       args,
     });
     this.updateUI();
@@ -913,32 +1376,85 @@ export class InkChatAdapter {
     if (tool) {
       tool.status = 'running';
       tool.startTime = Date.now();
+      this.recordUIEvent({
+        id: `tool-${id}-running-${Date.now()}`,
+        type: "tool",
+        toolCallId: tool.id,
+        toolName: tool.name,
+        status: "running",
+        args: tool.args,
+      });
       this.updateUI();
     }
   }
 
-  completeTool(id: string, result?: string): void {
+  updateToolProgress(id: string, partial?: string): void {
+    if (!partial?.trim()) {
+      return;
+    }
+    const tool = this.findTool(id);
+    if (tool) {
+      tool.result = partial.trim();
+      this.recordUIEvent({
+        id: `tool-${id}-progress-${this.uiEventSequence + 1}`,
+        type: "tool",
+        toolCallId: tool.id,
+        toolName: tool.name,
+        status: tool.status,
+        args: tool.args,
+        preview: tool.result,
+      });
+      this.debouncedUpdateUI();
+    }
+  }
+
+  completeTool(id: string, result?: string, details?: Record<string, unknown>): void {
     const tool = this.findTool(id);
     if (tool) {
       tool.status = 'success';
       tool.endTime = Date.now();
       tool.result = result;
+      tool.details = details ?? tool.details;
+      this.recordUIEvent({
+        id: `tool-${id}-success-${Date.now()}`,
+        type: "tool",
+        toolCallId: tool.id,
+        toolName: tool.name,
+        status: "success",
+        args: tool.args,
+        details: tool.details,
+        preview: result,
+      });
       this.updateUI();
     }
   }
 
-  failTool(id: string, error: string): void {
+  failTool(id: string, error: string, details?: Record<string, unknown>): void {
     const tool = this.findTool(id);
     if (tool) {
       tool.status = 'error';
       tool.endTime = Date.now();
       tool.error = error;
+      tool.details = details ?? tool.details;
+      this.recordUIEvent({
+        id: `tool-${id}-error-${Date.now()}`,
+        type: "tool",
+        toolCallId: tool.id,
+        toolName: tool.name,
+        status: "error",
+        args: tool.args,
+        details: tool.details,
+        error,
+      });
       this.updateUI();
     }
   }
 
   clearTools(): void {
-    this.tools = [];
+    const retained = this.tools
+      .filter((tool) => tool.status === "success" || tool.status === "error")
+      .slice(-8);
+    this.tools = retained;
     this.updateUI();
   }
 
@@ -1004,7 +1520,7 @@ export class InkChatAdapter {
     this.updateUI();
   }
 
-  setIteration(current: number, max: number): void {
+  setIteration(current: number, max?: number): void {
     this.currentIteration = current;
     this.maxIterations = max;
     this.updateUI();
@@ -1033,6 +1549,9 @@ export class InkChatAdapter {
     if (this.choiceRejecter) {
       this.choiceRejecter(new Error("UI destroyed"));
     }
+    if (this.formRejecter) {
+      this.formRejecter(new Error("UI destroyed"));
+    }
 
     this.onSubmitCallback = undefined;
     this.promptResolver = null;
@@ -1041,6 +1560,9 @@ export class InkChatAdapter {
     this.choicePrompt = null;
     this.choiceResolver = null;
     this.choiceRejecter = null;
+    this.formPrompt = null;
+    this.formResolver = null;
+    this.formRejecter = null;
 
     if (this.instance) {
       this.instance.unmount();
@@ -1082,11 +1604,11 @@ export class InkChatAdapter {
       timestamp: event.timestamp,
     });
     if (event.status === "started" || event.status === "updated") {
-      this.setStatus(`?? ${event.detail ?? event.label}`);
+      this.setStatus(event.detail ?? event.label);
     } else if (event.status === "succeeded") {
-      this.setStatus(event.detail ? `? ${event.detail}` : "");
+      this.setStatus(event.detail ?? "");
     } else {
-      this.setStatus(event.detail ? `? ${event.detail}` : "");
+      this.setStatus(event.detail ?? "");
     }
   }
 

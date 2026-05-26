@@ -25,6 +25,7 @@ import {
 } from "fs";
 import * as fs from "fs";
 import { join, relative, dirname } from "path";
+import { tmpdir } from "os";
 import * as pathLib from "path";
 import chalk from "chalk";
 import { spawn, execSync } from "child_process";
@@ -33,16 +34,26 @@ import { ProjectContextManager } from "../context/manager.js";
 import { diffLines } from "diff";
 import type { Plan } from "../plan/types.js";
 import { planStore } from "../plan/store.js";
+import { formatErrorWithContext } from "../utils/errors.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const BRAVE_SEARCH_PORTAL_URL = "https://search.brave.com/search";
 const MAX_BRAVE_RESULTS = 20;
+const COMMAND_RESULT_MAX_LINES = 2000;
+const COMMAND_RESULT_MAX_BYTES = 200 * 1024;
+const COMMAND_TAIL_LINES = 12;
 
 export interface ToolResult {
   tool: string;
   result: string;
   error?: string;
   plan?: Plan | null;
+  details?: Record<string, unknown>;
+}
+
+interface CommandOutputSnapshot {
+  resultText: string;
+  details: Record<string, unknown>;
 }
 
 export interface FileEdit {
@@ -60,6 +71,35 @@ const PLACEHOLDER_PATTERNS: Array<RegExp> = [
   /\.\.\.\s*(rest|snip|omitted)/i,
   /\bTODO:?[^.\n]*rest/i,
 ];
+
+function normalizePlanTaskId(taskId: string): string {
+  return taskId
+    .trim()
+    .toLowerCase()
+    .replace(/^task\s+#?/i, "task-")
+    .replace(/^#/, "")
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9_-]/g, "");
+}
+
+function resolvePlanTask(
+  plan: Plan,
+  taskId: string
+): Plan["tasks"][number] | undefined {
+  const normalizedTaskId = normalizePlanTaskId(taskId);
+  const numericMatch = normalizedTaskId.match(/(?:^|-)#?(\d+)$/);
+  const numericIndex = numericMatch
+    ? Number.parseInt(numericMatch[1], 10)
+    : Number.parseInt(normalizedTaskId, 10);
+
+  return (
+    plan.tasks.find((task) => normalizePlanTaskId(task.id) === normalizedTaskId) ??
+    plan.tasks.find((task) => normalizePlanTaskId(task.id) === `task-${normalizedTaskId}`) ??
+    (Number.isFinite(numericIndex) && numericIndex >= 1
+      ? plan.tasks[numericIndex - 1]
+      : undefined)
+  );
+}
 
 function detectPlaceholder(content: string): string | null {
   for (const pattern of PLACEHOLDER_PATTERNS) {
@@ -224,10 +264,24 @@ export function applyEdit(edit: FileEdit, cwd: string): ToolResult {
 
     writeFileSync(fullPath, edit.newContent, "utf-8");
     ProjectContextManager.getInstance().invalidate(cwd);
+    const diffPreview = generateDiff(edit.oldContent, edit.newContent)
+      .slice(0, 120)
+      .join("\n");
+    const fullDiff = generateDiff(edit.oldContent, edit.newContent).join("\n");
+    const firstChangedLine = getFirstChangedLine(fullDiff);
 
     return {
       tool: "apply_edit",
-      result: `Successfully updated ${edit.path}`,
+      result: diffPreview
+        ? `Successfully updated ${edit.path}\n\n${diffPreview}`
+        : `Successfully updated ${edit.path}`,
+      details: {
+        path: edit.path,
+        diff: fullDiff,
+        firstChangedLine,
+        oldBytes: Buffer.byteLength(edit.oldContent, "utf8"),
+        newBytes: Buffer.byteLength(edit.newContent, "utf8"),
+      },
     };
   } catch (error) {
     return {
@@ -697,33 +751,111 @@ export function analyzeProject(cwd: string): ToolResult {
 export async function runCommand(
   command: string,
   cwd: string,
-  options?: { timeoutMs?: number }
+  options?: {
+    timeoutMs?: number;
+    onUpdate?: (partial: string) => void;
+    silent?: boolean;
+    signal?: AbortSignal;
+  }
 ): Promise<ToolResult> {
   const startTime = Date.now();
-  const timeoutMs = options?.timeoutMs ?? 120000; // Default 2 min timeout
+  const timeoutMs = options?.timeoutMs ?? 600000; // Default 10 min timeout
+  const normalizedCommand = normalizeNonInteractiveCommand(command);
+  const interactiveWarning = detectInteractiveCommand(normalizedCommand);
+  const useInlineUpdates = Boolean(options?.onUpdate);
 
-  console.log(chalk.gray(`  🚀 Running: ${command}`));
-  console.log(chalk.gray(`  ⏱️  Timeout: ${timeoutMs / 1000}s`));
-  console.log("");
+  if (interactiveWarning) {
+    return {
+      tool: "run_command",
+      result: "",
+      error: interactiveWarning,
+      details: {
+        command: normalizedCommand,
+        cwd,
+        blocked: true,
+        reason: interactiveWarning,
+        durationMs: Date.now() - startTime,
+      },
+    };
+  }
+
+  if (options?.signal?.aborted) {
+    return {
+      tool: "run_command",
+      result: "",
+      error: `Command cancelled before start: ${normalizedCommand}`,
+      details: {
+        command: normalizedCommand,
+        cwd,
+        cancelled: true,
+        durationMs: Date.now() - startTime,
+      },
+    };
+  }
+
+  if (!options?.silent && !useInlineUpdates) {
+    console.log(chalk.gray(`  🚀 Running: ${normalizedCommand}`));
+    console.log(chalk.gray(`  ⏱️  Timeout: ${timeoutMs / 1000}s`));
+    console.log("");
+  }
 
   return new Promise((resolve) => {
-    const child = spawn(command, {
+    const child = spawn(normalizedCommand, {
       cwd,
       shell: true,
       env: process.env,
-      stdio: ['inherit', 'pipe', 'pipe'], // Inherit stdin for interactive prompts
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     let stdoutBuffer = "";
     let stderrBuffer = "";
     let didTimeout = false;
+    let didCancel = false;
+    let settled = false;
+    let forceKillHandle: NodeJS.Timeout | undefined;
+
+    const buildProgress = (
+      state:
+        | "starting"
+        | "running"
+        | "completed"
+        | "failed"
+        | "timed_out"
+        | "cancelled" = "running"
+    ) => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const combined = [stdoutBuffer, stderrBuffer].filter(Boolean).join("\n").trim();
+      const lines = combined.split("\n").filter(Boolean);
+      const tail = lines.slice(-12).join("\n");
+      return [
+        `$ ${normalizedCommand}`,
+        `${state} ${elapsed}s`,
+        tail,
+      ].filter(Boolean).join("\n");
+    };
+
+    const emitProgress = (
+      state:
+        | "starting"
+        | "running"
+        | "completed"
+        | "failed"
+        | "timed_out"
+        | "cancelled" = "running"
+    ) => {
+      options?.onUpdate?.(buildProgress(state));
+    };
+
+    emitProgress("starting");
 
     // Display elapsed time every 10 seconds
     const timerInterval = setInterval(() => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       const remaining = Math.floor((timeoutMs - (Date.now() - startTime)) / 1000);
 
-      if (remaining > 0) {
+      if (useInlineUpdates) {
+        emitProgress();
+      } else if (!options?.silent && remaining > 0) {
         console.log(chalk.gray(`  ⏱️  Elapsed: ${elapsed}s | Timeout in: ${remaining}s`));
       }
     }, 10000);
@@ -731,86 +863,179 @@ export async function runCommand(
     const timeoutHandle = setTimeout(() => {
       didTimeout = true;
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      console.log(
-        chalk.yellow(
-          `\n  ⏰ Command timed out after ${elapsed}s, sending SIGTERM...`
-        )
+      options?.onUpdate?.(
+        `$ ${normalizedCommand}\ntimed_out ${elapsed}s\nsending SIGTERM...`
       );
-      console.log(chalk.yellow(`  💡 Tip: Use timeoutMs option to increase timeout`));
+      if (!options?.silent && !useInlineUpdates) {
+        console.log(
+          chalk.yellow(
+            `\n  ⏰ Command timed out after ${elapsed}s, sending SIGTERM...`
+          )
+        );
+        console.log(chalk.yellow(`  💡 Tip: Use timeoutMs option to increase timeout`));
+      }
       child.kill("SIGTERM");
 
       // Force kill if still running after grace period
-      setTimeout(() => {
-        if (!child.killed) {
-          console.log(
-            chalk.red(
-              "  ⛔ Command unresponsive, sending SIGKILL to terminate"
-            )
+      forceKillHandle = setTimeout(() => {
+        if (!settled) {
+          options?.onUpdate?.(
+            `$ ${normalizedCommand}\ntimed_out ${elapsed}s\nunresponsive, sending SIGKILL`
           );
+          if (!options?.silent && !useInlineUpdates) {
+            console.log(
+              chalk.red(
+                "  ⛔ Command unresponsive, sending SIGKILL to terminate"
+              )
+            );
+          }
           child.kill("SIGKILL");
         }
       }, 5000);
     }, timeoutMs);
 
+    const abortHandler = () => {
+      if (settled || didCancel) {
+        return;
+      }
+      didCancel = true;
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      options?.onUpdate?.(
+        `$ ${normalizedCommand}\ncancelled ${elapsed}s\nsending SIGTERM...`
+      );
+      child.kill("SIGTERM");
+      forceKillHandle = setTimeout(() => {
+        if (!settled) {
+          child.kill("SIGKILL");
+        }
+      }, 3000);
+    };
+
+    options?.signal?.addEventListener("abort", abortHandler, { once: true });
+
     child.stdout?.on("data", (chunk) => {
       const text = chunk.toString();
       stdoutBuffer += text;
-      process.stdout.write(text);
+      if (useInlineUpdates) {
+        emitProgress();
+      } else if (!options?.silent) {
+        process.stdout.write(text);
+      }
     });
 
     child.stderr?.on("data", (chunk) => {
       const text = chunk.toString();
       stderrBuffer += text;
-      process.stderr.write(chalk.gray(text)); // Gray for stderr
+      if (useInlineUpdates) {
+        emitProgress();
+      } else if (!options?.silent) {
+        process.stderr.write(chalk.gray(text)); // Gray for stderr
+      }
     });
 
-    const finalize = (result: ToolResult) => {
+    const finalize = (
+      result: ToolResult,
+      state: "completed" | "failed" | "timed_out" | "cancelled"
+    ) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       clearInterval(timerInterval);
       if (timeoutHandle) {
         clearTimeout(timeoutHandle);
       }
+      if (forceKillHandle) {
+        clearTimeout(forceKillHandle);
+      }
+      options?.signal?.removeEventListener("abort", abortHandler);
 
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      console.log(chalk.gray(`\n  ✓ Completed in ${elapsed}s\n`));
+      options?.onUpdate?.(
+        `${buildProgress(state)}\n${state} in ${elapsed}s`
+      );
+      if (!options?.silent && !useInlineUpdates) {
+        console.log(chalk.gray(`\n  ✓ Completed in ${elapsed}s\n`));
+      }
 
       resolve(result);
     };
 
-    child.on("error", (error) => {
-      finalize({
-        tool: "run_command",
-        result: stdoutBuffer,
-        error: `Failed to start command: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+    const buildResult = (
+      outputText: string,
+      metadata: {
+        state: "completed" | "failed" | "timed_out" | "cancelled";
+        exitCode?: number | null;
+        signal?: NodeJS.Signals | null;
+        error?: string;
+      }
+    ): ToolResult => {
+      const snapshot = buildCommandOutputSnapshot({
+        command: normalizedCommand,
+        cwd,
+        stdout: stdoutBuffer,
+        stderr: stderrBuffer,
+        outputText,
+        startTime,
+        timeoutMs,
+        ...metadata,
       });
+      return {
+        tool: "run_command",
+        result: snapshot.resultText,
+        error: metadata.error,
+        details: snapshot.details,
+      };
+    };
+
+    child.on("error", (error) => {
+      const errorMessage = `Failed to start command: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      finalize(buildResult(stdoutBuffer, {
+        state: "failed",
+        error: errorMessage,
+      }), "failed");
     });
 
     child.on("close", (code, signal) => {
+      if (didCancel) {
+        finalize(buildResult(stdoutBuffer, {
+          state: "cancelled",
+          exitCode: code,
+          signal,
+          error: `Command cancelled: ${normalizedCommand}`,
+        }), "cancelled");
+        return;
+      }
+
       if (didTimeout) {
-        finalize({
-          tool: "run_command",
-          result: stdoutBuffer,
+        finalize(buildResult(stdoutBuffer, {
+          state: "timed_out",
+          exitCode: code,
+          signal,
           error: `Command timed out after ${timeoutMs / 1000}s. Increase timeout with timeoutMs option if needed.`,
-        });
+        }), "timed_out");
         return;
       }
 
       if (signal && signal !== "SIGTERM") {
-        finalize({
-          tool: "run_command",
-          result: stdoutBuffer,
+        finalize(buildResult(stdoutBuffer, {
+          state: "failed",
+          exitCode: code,
+          signal,
           error: `Command terminated with signal ${signal}`,
-        });
+        }), "failed");
         return;
       }
 
       if (code === 0) {
         ProjectContextManager.getInstance().invalidate(cwd);
-        finalize({
-          tool: "run_command",
-          result: stdoutBuffer || "Command executed successfully.",
-        });
+        finalize(buildResult(stdoutBuffer || "Command executed successfully.", {
+          state: "completed",
+          exitCode: code,
+          signal,
+        }), "completed");
       } else {
         // Many tools exit non-zero to signal findings (npm audit, eslint, tsc, etc.)
         // When stdout has content, treat it as a result not a hard failure.
@@ -820,22 +1045,101 @@ export async function runCommand(
           const exitNote = stderrText
             ? `\n[exit ${code}: ${stderrText}]`
             : `\n[exit ${code}]`;
-          finalize({
-            tool: "run_command",
-            result: stdoutBuffer + exitNote,
-          });
+          finalize(buildResult(stdoutBuffer + exitNote, {
+            state: "failed",
+            exitCode: code,
+            signal,
+          }), "failed");
         } else {
-          finalize({
-            tool: "run_command",
-            result: stdoutBuffer,
-            error: stderrText.length > 0
+          const errorMessage = stderrText.length > 0
               ? `Command failed (exit ${code}): ${stderrText}`
-              : `Command failed with exit code ${code}.`,
-          });
+              : `Command failed with exit code ${code}.`;
+          finalize(buildResult(stdoutBuffer, {
+            state: "failed",
+            exitCode: code,
+            signal,
+            error: errorMessage,
+          }), "failed");
         }
       }
     });
   });
+}
+
+function buildCommandOutputSnapshot(input: {
+  command: string;
+  cwd: string;
+  stdout: string;
+  stderr: string;
+  outputText: string;
+  startTime: number;
+  timeoutMs: number;
+  state: "completed" | "failed" | "timed_out" | "cancelled";
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  error?: string;
+}): CommandOutputSnapshot {
+  const outputText = input.outputText || "";
+  const outputBytes = Buffer.byteLength(outputText, "utf8");
+  const outputLines = outputText.split("\n").length;
+  const truncated =
+    outputBytes > COMMAND_RESULT_MAX_BYTES || outputLines > COMMAND_RESULT_MAX_LINES;
+  let resultText = outputText;
+  let fullOutputPath: string | undefined;
+
+  if (truncated) {
+    fullOutputPath = join(
+      tmpdir(),
+      `meer-command-${Date.now()}-${Math.random().toString(36).slice(2)}.log`
+    );
+    writeFileSync(fullOutputPath, outputText, "utf8");
+    const lines = outputText.split("\n");
+    resultText = [
+      ...lines.slice(-COMMAND_RESULT_MAX_LINES),
+      "",
+      `[Showing last ${COMMAND_RESULT_MAX_LINES} of ${outputLines} lines. Full output: ${fullOutputPath}]`,
+    ].join("\n");
+  }
+
+  const stdoutLines = input.stdout.split("\n").filter(Boolean);
+  const stderrLines = input.stderr.split("\n").filter(Boolean);
+  const combinedLines = [input.stdout, input.stderr]
+    .filter(Boolean)
+    .join("\n")
+    .split("\n")
+    .filter(Boolean);
+
+  return {
+    resultText,
+    details: {
+      command: input.command,
+      cwd: input.cwd,
+      state: input.state,
+      exitCode: input.exitCode,
+      signal: input.signal,
+      durationMs: Date.now() - input.startTime,
+      timeoutMs: input.timeoutMs,
+      stdoutBytes: Buffer.byteLength(input.stdout, "utf8"),
+      stderrBytes: Buffer.byteLength(input.stderr, "utf8"),
+      outputBytes,
+      outputLines,
+      stdoutTail: stdoutLines.slice(-COMMAND_TAIL_LINES).join("\n"),
+      stderrTail: stderrLines.slice(-COMMAND_TAIL_LINES).join("\n"),
+      outputTail: combinedLines.slice(-COMMAND_TAIL_LINES).join("\n"),
+      truncation: truncated
+        ? {
+            truncated: true,
+            totalLines: outputLines,
+            outputLines: Math.min(outputLines, COMMAND_RESULT_MAX_LINES),
+            totalBytes: outputBytes,
+            maxBytes: COMMAND_RESULT_MAX_BYTES,
+            fullOutputPath,
+          }
+        : undefined,
+      fullOutputPath,
+      error: input.error,
+    },
+  };
 }
 
 /**
@@ -852,23 +1156,31 @@ export function scaffoldProject(
 
     switch (projectType.toLowerCase()) {
       case "react":
-        command = `npx create-react-app ${projectName}`;
+        command = `npx create-react-app ${projectName} --template typescript`;
         description = "React application";
         break;
       case "vue":
-        command = `npm create vue@latest ${projectName}`;
+        command = `npm create vue@latest ${projectName} -- --default`;
         description = "Vue application";
         break;
       case "angular":
-        command = `npx @angular/cli new ${projectName}`;
+        command = `npx @angular/cli new ${projectName} --defaults --skip-git`;
         description = "Angular application";
         break;
       case "next":
-        command = `npx create-next-app@latest ${projectName}`;
+        command = [
+          `npx create-next-app@latest ${projectName}`,
+          "--ts",
+          "--tailwind",
+          "--eslint",
+          "--app",
+          "--use-npm",
+          "--yes",
+        ].join(" ");
         description = "Next.js application";
         break;
       case "nuxt":
-        command = `npx nuxi@latest init ${projectName}`;
+        command = `npx nuxi@latest init ${projectName} --packageManager npm`;
         description = "Nuxt.js application";
         break;
       case "node":
@@ -1793,7 +2105,12 @@ export async function googleSearch(
       result: `Brave Search Results for "${query}"${options.site ? ` (site:${options.site})` : ""}:\n\n${formattedResults}${corrected}\n\nView more results:\n🔗 ${fallbackUrl}`,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatErrorWithContext(error, {
+      source: "tool",
+      name: "google_search",
+      operation: "Brave Search request",
+      target: fallbackUrl,
+    });
     console.log(chalk.red(`  ❌ Brave Search failed: ${message}`));
     return {
       tool: "google_search",
@@ -1827,7 +2144,12 @@ export function webFetch(
     return {
       tool: "web_fetch",
       result: "",
-      error: error instanceof Error ? error.message : String(error),
+      error: formatErrorWithContext(error, {
+        source: "tool",
+        name: "web_fetch",
+        operation: options.method || "GET",
+        target: url,
+      }),
     };
   }
 }
@@ -2431,15 +2753,34 @@ export function writeFile(
 
     // Check if file already exists
     const fileExists = existsSync(fullPath);
+    const previousContent = fileExists ? readFileSync(fullPath, "utf-8") : "";
 
     writeFileSync(fullPath, content, "utf-8");
     ProjectContextManager.getInstance().invalidate(cwd);
+    const diffPreview =
+      fileExists && previousContent !== content
+        ? generateDiff(previousContent, content).slice(0, 120).join("\n")
+        : "";
+    const fullDiff =
+      previousContent !== content ? generateDiff(previousContent, content).join("\n") : "";
+    const lineCount = content.split("\n").length;
 
     return {
       tool: "write_file",
       result: fileExists
-        ? `Successfully updated ${filepath} (${content.length} bytes)`
-        : `Successfully created ${filepath} (${content.length} bytes)`,
+        ? diffPreview
+          ? `Successfully updated ${filepath} (${lineCount} lines)\n\n${diffPreview}`
+          : `Successfully updated ${filepath} (${lineCount} lines)`
+        : `Successfully created ${filepath} (${lineCount} lines)`,
+      details: {
+        path: filepath,
+        diff: fullDiff,
+        firstChangedLine: getFirstChangedLine(fullDiff),
+        lineCount,
+        created: !fileExists,
+        oldBytes: Buffer.byteLength(previousContent, "utf8"),
+        newBytes: Buffer.byteLength(content, "utf8"),
+      },
     };
   } catch (error) {
     return {
@@ -2648,6 +2989,15 @@ export function packageRunScript(
         command = `npm run ${script}`;
     }
 
+    const interactiveWarning = detectInteractiveCommand(command, { scriptName: script });
+    if (interactiveWarning) {
+      return {
+        tool: "package_run_script",
+        result: "",
+        error: interactiveWarning,
+      };
+    }
+
     const result = execSync(command, { cwd, encoding: "utf-8", stdio: "pipe" });
 
     return {
@@ -2661,6 +3011,68 @@ export function packageRunScript(
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+function getFirstChangedLine(diff: string): number | undefined {
+  const clean = diff.replace(/\x1b\[[0-9;]*m/g, "");
+  const match = clean.match(/@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+  return match ? Number.parseInt(match[1], 10) : undefined;
+}
+
+function normalizeNonInteractiveCommand(command: string): string {
+  const trimmed = command.trim();
+
+  if (/^npx\s+create-next-app(@latest)?\b/i.test(trimmed) && !/\s--yes\b/i.test(trimmed)) {
+    return `${trimmed} --ts --tailwind --eslint --app --use-npm --yes`;
+  }
+
+  if (/^npm\s+create\s+vue@latest\b/i.test(trimmed) && !/\s--\s--default\b/i.test(trimmed)) {
+    return `${trimmed} -- --default`;
+  }
+
+  if (/^npx\s+@angular\/cli\s+new\b/i.test(trimmed) && !/\s--defaults\b/i.test(trimmed)) {
+    return `${trimmed} --defaults --skip-git`;
+  }
+
+  if (/^npx\s+nuxi@latest\s+init\b/i.test(trimmed) && !/\s--packageManager\b/i.test(trimmed)) {
+    return `${trimmed} --packageManager npm`;
+  }
+
+  return trimmed;
+}
+
+function detectInteractiveCommand(
+  command: string,
+  options?: { scriptName?: string }
+): string | null {
+  const normalized = command.trim().toLowerCase();
+  const scriptName = options?.scriptName?.trim().toLowerCase();
+
+  if (
+    scriptName &&
+    ["dev", "start", "serve", "watch", "storybook"].includes(scriptName)
+  ) {
+    return `Script '${scriptName}' is long-running or interactive. Start it manually in a terminal or use a dedicated background terminal flow instead of running it as a one-shot tool.`;
+  }
+
+  if (
+    /\b(npm run dev|npm start|pnpm dev|pnpm start|yarn dev|yarn start|vite|next dev|nuxt dev|astro dev)\b/.test(
+      normalized
+    )
+  ) {
+    return "This command starts a long-running dev server. Start it manually in a terminal or use a dedicated background terminal flow instead of running it as a one-shot tool.";
+  }
+
+  if (
+    /\b(create-next-app|npm create vue|@angular\/cli new|nuxi@latest init|create-react-app)\b/.test(
+      normalized
+    ) &&
+    !/\b(--yes|--defaults|--default|--skip-git|--packageManager)\b/.test(normalized)
+  ) {
+    return "This scaffold command is likely interactive. Use scaffold_project or add non-interactive flags such as --yes / --defaults so Meer can run it safely.";
+  }
+
+  return null;
 }
 
 /**
@@ -2908,7 +3320,12 @@ export async function httpRequest(
     return {
       tool: "http_request",
       result: "",
-      error: error instanceof Error ? error.message : String(error),
+      error: formatErrorWithContext(error, {
+        source: "tool",
+        name: "http_request",
+        operation: options.method || "GET",
+        target: url,
+      }),
     };
   }
 }
@@ -3582,7 +3999,7 @@ export function validateProject(
       "",
       ...activePlan.tasks.map((task, index) => {
         const statusIcon = "📌";
-        return `  ${chalk.gray(`${index + 1}.`)} ${statusIcon} ${task.description}`;
+        return `  ${chalk.gray(`${index + 1}.`)} ${statusIcon} ${task.description} ${chalk.gray(`(${task.id})`)}`;
       }),
       "",
       chalk.gray(`Total tasks: ${activePlan.tasks.length}`),
@@ -3620,18 +4037,21 @@ export function validateProject(
           };
         }
 
-        const taskExists = currentPlan.tasks.some((t) => t.id === taskId);
-        if (!taskExists) {
+        const resolvedTask = resolvePlanTask(currentPlan, taskId);
+
+        if (!resolvedTask) {
           return {
             tool: "update_plan_task",
             result: "",
-            error: `Task ${taskId} not found in the plan.`,
+            error: `Task ${taskId} not found in the plan. Valid task IDs: ${currentPlan.tasks
+              .map((task, index) => `${task.id} (${index + 1})`)
+              .join(", ")}`,
           };
         }
 
         const updatedPlan = (
           planStore.update((plan) => {
-            const mutableTask = plan.tasks.find((t) => t.id === taskId);
+            const mutableTask = plan.tasks.find((t) => t.id === resolvedTask.id);
             if (!mutableTask) {
               return;
             }
@@ -3662,7 +4082,7 @@ export function validateProject(
             : t.status === "skipped"
             ? chalk.gray
             : chalk.white;
-        return `  ${chalk.gray(`${index + 1}.`)} ${icon} ${color(t.description)}`;
+        return `  ${chalk.gray(`${index + 1}.`)} ${icon} ${color(t.description)} ${chalk.gray(`(${t.id})`)}`;
       }),
       "",
       chalk.gray(
@@ -3717,7 +4137,7 @@ export function validateProject(
             : task.status === "skipped"
             ? chalk.gray
             : chalk.white;
-        let line = `  ${chalk.gray(`${index + 1}.`)} ${icon} ${color(task.description)}`;
+        let line = `  ${chalk.gray(`${index + 1}.`)} ${icon} ${color(task.description)} ${chalk.gray(`(${task.id})`)}`;
         if (task.notes) {
           line += `\n     ${chalk.gray(`Note: ${task.notes}`)}`;
         }

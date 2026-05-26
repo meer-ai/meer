@@ -1233,11 +1233,60 @@ export class ChatBoxUI {
     );
 
     console.log("");
-    displayWave();
-    console.log(
-      chalk.cyan("  Agent powering down. ") + chalk.blue("Thanks for diving in!")
-    );
+    const usePlainSummary =
+      process.platform === "win32" ||
+      process.env.MEER_PLAIN_SUMMARY === "1" ||
+      process.env.NO_COLOR === "1";
+
+    if (usePlainSummary) {
+      console.log(chalk.cyan("Meer session ended."));
+    } else {
+      displayWave();
+      console.log(
+        chalk.cyan("  Agent powering down. ") + chalk.blue("Thanks for diving in!")
+      );
+    }
     console.log("");
+
+    if (usePlainSummary) {
+      const line = (label: string, value: string) => {
+        console.log(`${label.padEnd(22)} ${value}`);
+      };
+
+      line("Session ID:", stats.sessionId);
+      line(
+        "Tool Calls:",
+        `${stats.toolCalls.total} (${stats.toolCalls.successful} ok, ${stats.toolCalls.failed} failed)`
+      );
+      line("Success Rate:", successRate);
+      line("Wall Time:", wallTime);
+      line(
+        "Agent Active:",
+        SessionTracker.formatDuration(stats.apiTime + stats.toolTime)
+      );
+      line("API Time:", SessionTracker.formatDuration(stats.apiTime));
+      line("Tool Time:", SessionTracker.formatDuration(stats.toolTime));
+      line("Prompt Tokens:", stats.promptTokens.toLocaleString());
+      line("Completion Tokens:", stats.completionTokens.toLocaleString());
+      if (typeof stats.contextLimit === "number") {
+        const currentPercent = (
+          (stats.currentPromptTokens / stats.contextLimit) * 100
+        ).toFixed(1);
+        const maxPercent = (
+          (stats.maxPromptTokens / stats.contextLimit) * 100
+        ).toFixed(1);
+        line(
+          "Context current:",
+          `${stats.currentPromptTokens.toLocaleString()} / ${stats.contextLimit.toLocaleString()} (${currentPercent}%)`
+        );
+        line(
+          "Context max:",
+          `${stats.maxPromptTokens.toLocaleString()} / ${stats.contextLimit.toLocaleString()} (${maxPercent}%)`
+        );
+      }
+      console.log("");
+      return;
+    }
 
     // Summary box (responsive to terminal width)
     const terminalWidth = process.stdout.columns || 80;

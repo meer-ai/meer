@@ -128,16 +128,16 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = React.memo(({
   return (
     <Box
       flexDirection="column"
-      borderStyle="round"
-      borderColor="blue"
+      borderStyle="single"
+      borderColor="gray"
       paddingX={1}
       paddingY={0}
-      marginBottom={1}
+      marginBottom={0}
     >
-      <Text color="cyan" bold>
-        🕑 Timeline
+      <Text color="dim" dimColor>
+        Activity
       </Text>
-      <Box flexDirection="column" marginTop={1} gap={0}>
+      <Box flexDirection="column" gap={0}>
         {visible.map((event, index) => (
           <TimelineRow
             key={`${event.id}-${event.timestamp}-${index}`}

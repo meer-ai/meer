@@ -78,7 +78,7 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 - create_directory path="..." - Create directory
 
 **Shell & Commands:**
-- run_command command="..." - Execute shell commands (120s timeout, use timeoutMs for longer)
+- run_command command="..." - Execute shell commands (600s timeout, use timeoutMs for longer)
 - wait_for_user reason="..." - Signal need for user input (ALWAYS use after asking questions)
 
 **Git:**

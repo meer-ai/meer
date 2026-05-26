@@ -32,22 +32,14 @@ import {
   type SlashCommandResult,
 } from "./chat/slash.js";
 import type { ChatMessage } from "./providers/base.js";
+import { backgroundTerminals } from "./runtime/backgroundTerminals.js";
+import { AgentSession, type SessionAgentRuntime } from "./agent/agent-session.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const VERSION = JSON.parse(
   readFileSync(join(__dirname, "..", "package.json"), "utf-8")
 ).version;
-
-interface InteractiveAgent {
-  initialize(
-    options?: string | { contextPrompt?: string; priorMessages?: ChatMessage[] }
-  ): Promise<void>;
-  processMessage(userMessage: string): Promise<string>;
-  abort?(): void;
-  isProcessing?(): boolean;
-  queueMessage?(userMessage: string, mode?: "steer" | "followUp"): boolean;
-}
 
 function emitQueueChanges(
   eventBus: AgentEventBus,
@@ -85,6 +77,7 @@ export function createCLI(): Command {
     .version(VERSION)
     .option("-p, --profile <name>", "Override the active profile")
     .option("-v, --verbose", "Enable verbose logging output")
+    .option("--always-ask", "Enable approval prompts for edits and commands")
     .option("--resume [session]", "Resume the latest or a specific saved session")
     .option("--fork <session>", "Fork a saved session into a new one")
     .hook("preAction", (thisCommand) => {
@@ -113,6 +106,7 @@ export function createCLI(): Command {
   program.action(async () => {
     const { loadConfig } = await import("./config.js");
     let restarting = false;
+    let restartResumeSession: string | undefined;
 
     do {
       restarting = false;
@@ -122,10 +116,18 @@ export function createCLI(): Command {
         const cliOptions = program.opts() as {
           resume?: string | boolean;
           fork?: string;
+          alwaysAsk?: boolean;
         };
+        const effectiveResume =
+          restartResumeSession ??
+          (typeof cliOptions.resume === "string" ? cliOptions.resume : cliOptions.resume);
+        restartResumeSession = undefined;
+        const approvalsEnabled =
+          Boolean(cliOptions.alwaysAsk) ||
+          Boolean(config.approvals?.alwaysAsk);
         const providerType = config.providerType ?? "unknown";
         const currentCwd = process.cwd();
-        if (cliOptions.resume && cliOptions.fork) {
+        if (effectiveResume && cliOptions.fork) {
           throw new Error("Use either --resume or --fork, not both.");
         }
 
@@ -161,9 +163,9 @@ export function createCLI(): Command {
             maxMessages: 24,
           });
           sessionBanner = `Forked session ${source.id.slice(0, 8)} into ${forked.sessionId.slice(0, 8)}.`;
-        } else if (cliOptions.resume) {
+        } else if (effectiveResume) {
           const requested =
-            typeof cliOptions.resume === "string" ? cliOptions.resume : undefined;
+            typeof effectiveResume === "string" ? effectiveResume : undefined;
           const source = requested
             ? memory.resolveSession(requested, currentCwd)
             : memory.listSessions(currentCwd)[0] ?? null;
@@ -207,6 +209,13 @@ export function createCLI(): Command {
         const sessionTracker = new SessionTracker(providerType, config.model);
         const eventBus = new AgentEventBus();
         const eventRecorder = new AgentEventRecorder(eventBus);
+        if (approvalsEnabled && process.stdout.isTTY) {
+          console.log(
+            chalk.dim(
+              "Approval prompts enabled for edits and shell commands."
+            )
+          );
+        }
 
         // ── TUI setup ─────────────────────────────────────────────────────────
         const useTui =
@@ -219,15 +228,78 @@ export function createCLI(): Command {
 
         const pendingInputs: string[] = [];
         let pendingResolver: ((value: string) => void) | null = null;
-        let agent: InteractiveAgent | null = null;
+        let session: AgentSession | null = null;
+        let exitRequested = false;
+        let queuedMessage: string | null = null;
+
+        const executeSlashCommand = async (
+          rawInput: string
+        ): Promise<SlashCommandResult> => {
+          if (chatUI) {
+            chatUI.appendSystemMessage(rawInput);
+          }
+          return handleSlashCommand(
+            rawInput,
+            config,
+            sessionTracker,
+            chatUI,
+            eventRecorder
+          );
+        };
+
+        const applySlashResult = async (
+          slashResult: SlashCommandResult
+        ): Promise<boolean> => {
+          if (slashResult.status === "exit") {
+            exitRequested = true;
+            return true;
+          }
+          if (slashResult.status === "restart") {
+            restarting = true;
+            restartResumeSession = slashResult.resumeSession;
+            if (!chatUI) {
+              console.log(chalk.yellow("\n🔄 Reloading configuration...\n"));
+            } else {
+              chatUI.appendSystemMessage(
+                slashResult.resumeSession
+                  ? "Reloading into selected session..."
+                  : "Reloading configuration..."
+              );
+            }
+            return true;
+          }
+          if (slashResult.status === "send") {
+            queuedMessage = slashResult.message;
+            if (!chatUI) {
+              console.log(chalk.gray(`\n> ${slashResult.message}\n`));
+            }
+          }
+          if (!chatUI) console.log("");
+          return false;
+        };
 
         const enqueueInput = (value: string) => {
           const trimmed = value.trim();
+          if (!trimmed) {
+            return;
+          }
+          if (trimmed.startsWith("/")) {
+            void (async () => {
+              try {
+                const result = await executeSlashCommand(trimmed);
+                await applySlashResult(result);
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                chatUI?.appendSystemMessage(`❌ ${message}`);
+              }
+            })();
+            return;
+          }
           if (
             trimmed &&
-            !trimmed.startsWith("/") &&
-            agent?.isProcessing?.() &&
-            agent.queueMessage?.(
+            session?.isProcessing() &&
+            session.queueMessage(
               trimmed,
               chatUI?.getQueueMode?.() ?? "steer"
             )
@@ -256,10 +328,13 @@ export function createCLI(): Command {
         if (chatUI && restoredTranscript?.length) {
           chatUI.replayTranscript(restoredTranscript);
         }
+        chatUI?.setBackgroundSessions(backgroundTerminals.list());
+        chatUI?.setBackgroundSessionStopHandler((id: string) => {
+          backgroundTerminals.stop(id);
+          chatUI.setBackgroundSessions(backgroundTerminals.list());
+        });
 
         // ── Agent setup ───────────────────────────────────────────────────────
-        const useClassicAgent =
-          (process.env.MEER_AGENT || "").toLowerCase() === "classic";
         const agentConfig = {
           provider: config.provider,
           cwd: currentCwd,
@@ -275,68 +350,145 @@ export function createCLI(): Command {
           onStreamingEnd: () => chatUI?.finishAssistantMessage(),
           onAssistantMessage: (content: string) => chatUI?.settleAssistantMessage(content),
           onCotMessage: (content: string) => chatUI?.addCotMessage(content),
-          onTurnStart: () => chatUI?.beginTurn(),
-          onTurnEnd: () => chatUI?.endTurn(),
-          onIterationChange: (current: number, max: number) =>
-            chatUI?.setIteration(current, max),
-          onWorkflowStageStart: (name: string) => {
-            chatUI?.addWorkflowStage(name);
-            chatUI?.startWorkflowStage(name);
-          },
-          onWorkflowStageComplete: (name: string) =>
-            chatUI?.completeWorkflowStage(name),
-          onWorkflowStageFail: (name: string) => chatUI?.failWorkflowStage(name),
-          onToolStart: (tool: string, args: any) => chatUI?.addTool(tool, args),
-          onToolUpdate: (toolName: string, status: string, result?: string) => {
+          onToolStart: (tool: string, args: any, metadata?: { toolCallId?: string }) =>
+            chatUI?.addTool(tool, args, metadata?.toolCallId),
+          onToolUpdate: (
+            toolName: string,
+            status: string,
+            result?: string,
+            metadata?: { toolCallId?: string; details?: Record<string, unknown> }
+          ) => {
+            const handle = metadata?.toolCallId ?? toolName;
             if (status === "running") {
-              chatUI?.startTool(toolName);
+              chatUI?.startTool(handle);
+              if (result) {
+                chatUI?.updateToolProgress(handle, result);
+              }
             } else if (status === "succeeded") {
-              chatUI?.completeTool(toolName, result);
+              chatUI?.completeTool(handle, result, metadata?.details);
             } else if (status === "failed") {
-              chatUI?.failTool(toolName, result || "Error");
+              chatUI?.failTool(handle, result || "Error", metadata?.details);
             }
           },
-          onToolMessage: (toolName: string, result: string, metadata?: { toolCallId?: string; isError?: boolean }) => {
-            chatUI?.appendToolMessage(toolName, result, metadata?.isError);
+          onToolMessage: (
+            toolName: string,
+            result: string,
+            metadata?: { toolCallId?: string; isError?: boolean; details?: Record<string, unknown> }
+          ) => {
+            chatUI?.appendToolMessage(toolName, result, metadata?.isError, {
+              toolCallId: metadata?.toolCallId,
+              details: metadata?.details,
+            });
           },
           onToolEnd: () => chatUI?.clearTools(),
-          onStatusChange: (status: string) => chatUI?.setStatus(status),
-          onQueueUpdate: (queue: {
-            steering: string[];
-            followUp: string[];
-            changes?: Array<{
-              action: "queued" | "delivered";
-              mode: "steer" | "followUp";
-              message: string;
-            }>;
-          }) => {
-            chatUI?.setQueueState(queue);
-            emitQueueChanges(eventBus, queue);
-          },
           onError: () => {},
-          promptChoice: async (
-            promptMessage: string,
-            choices: Array<{ label: string; value: string }>,
-            defaultChoice?: string
+          promptChoice: approvalsEnabled
+            ? async (
+                promptMessage: string,
+                choices: Array<{ label: string; value: string }>,
+                defaultChoice?: string
+              ) => {
+                if (chatUI) {
+                  const fallback = defaultChoice ?? choices[0]?.value ?? "";
+                  return chatUI.promptChoice(promptMessage, choices, fallback);
+                }
+                return defaultChoice ?? choices[0]?.value ?? "";
+              }
+            : undefined,
+          promptForm: async (
+            title: string,
+            questions: Array<{
+              id: string;
+              label: string;
+              type: "select" | "multiselect";
+              required?: boolean;
+              options: Array<{
+                label: string;
+                value: string;
+                description?: string;
+              }>;
+            }>,
+            submitLabel?: string
           ) => {
             if (chatUI) {
-              const fallback = defaultChoice ?? choices[0]?.value ?? "";
-              return chatUI.promptChoice(promptMessage, choices, fallback);
+              return chatUI.promptForm(title, questions, submitLabel);
             }
-            return defaultChoice ?? choices[0]?.value ?? "";
+
+            const fallback: Record<string, string | string[]> = {};
+            for (const question of questions) {
+              fallback[question.id] =
+                question.type === "multiselect"
+                  ? question.options[0]
+                    ? [question.options[0].value]
+                    : []
+                  : question.options[0]?.value ?? "";
+            }
+            return fallback;
           },
         };
 
-        agent = useClassicAgent
-          ? new (await import("./agent/workflow-v3.js")).AgentWorkflowV3(agentConfig)
-          : new (await import("./agent/meer-agent.js")).MeerAgent(agentConfig);
+        const { MeerAgent } = await import("./agent/meer-agent.js");
+        const runtime: SessionAgentRuntime = new MeerAgent(agentConfig);
 
-        await agent.initialize({
+        session = new AgentSession({
+          runtime,
+          retry: config.retry,
+          sessionTracker,
+          compaction: config.compaction,
+          onEvent: (event) => {
+            if (event.type === "turn_start") {
+              chatUI?.beginTurn();
+            } else if (event.type === "iteration_change") {
+              chatUI?.setIteration(event.current, event.max);
+            } else if (event.type === "workflow_stage") {
+              if (event.status === "started") {
+                chatUI?.addWorkflowStage(event.name);
+                chatUI?.startWorkflowStage(event.name);
+              } else if (event.status === "completed") {
+                chatUI?.completeWorkflowStage(event.name);
+              } else {
+                chatUI?.failWorkflowStage(event.name);
+              }
+            } else if (event.type === "turn_end") {
+              chatUI?.endTurn();
+              if (!event.success && event.error) {
+                chatUI?.appendSystemMessage(`❌ ${event.error}`);
+              }
+            } else if (event.type === "status_change") {
+              chatUI?.setStatus(event.status);
+            } else if (event.type === "queue_update") {
+              chatUI?.setQueueState(event);
+              emitQueueChanges(eventBus, event);
+            } else if (event.type === "auto_retry_start") {
+              const label = `Retrying in ${Math.round(event.delayMs / 1000)}s (attempt ${event.attempt}/${event.maxAttempts})…`;
+              chatUI?.setStatus(label);
+              eventBus.emitLog({
+                id: `retry-start-${Date.now()}-${event.attempt}`,
+                level: "warn",
+                message: `${label} ${event.errorMessage}`,
+                timestamp: Date.now(),
+              });
+            } else if (event.type === "auto_retry_end") {
+              if (!event.success) {
+                eventBus.emitLog({
+                  id: `retry-end-${Date.now()}-${event.attempt}`,
+                  level: "error",
+                  message: event.finalError
+                    ? `Retry failed after ${event.attempt} attempts: ${event.finalError}`
+                    : `Retry failed after ${event.attempt} attempts.`,
+                  timestamp: Date.now(),
+                });
+              }
+            }
+          },
+        });
+
+        await session.initialize({
           contextPrompt: previousSessionContext ?? undefined,
           priorMessages: restoredModelMessages ?? undefined,
         });
 
-        chatUI?.setInterruptHandler(() => agent.abort?.());
+        chatUI?.setInterruptHandler(() => session?.abort());
 
         if (sessionBanner && !chatUI) {
           console.log(chalk.gray(`${sessionBanner}\n`));
@@ -353,9 +505,17 @@ export function createCLI(): Command {
 
         chatUI?.captureConsole();
         chatUI?.enableContinuousChat(enqueueInput);
+        const backgroundSessionTimer = chatUI
+          ? setInterval(() => {
+              chatUI.setBackgroundSessions(backgroundTerminals.list());
+            }, 1000)
+          : null;
 
         // ── Exit handler ──────────────────────────────────────────────────────
         const handleExit = async () => {
+          if (backgroundSessionTimer) {
+            clearInterval(backgroundSessionTimer);
+          }
           const finalStats = await sessionTracker.endSession();
           if (chatUI) {
             chatUI.appendSystemMessage("Session ended. Goodbye! 🌊");
@@ -391,9 +551,6 @@ export function createCLI(): Command {
         };
 
         // ── Main chat loop ────────────────────────────────────────────────────
-        let exitRequested = false;
-        let queuedMessage: string | null = null;
-
         while (!exitRequested && !restarting) {
           if (!chatUI) {
             ChatBoxUI.renderStatusBar({
@@ -424,37 +581,11 @@ export function createCLI(): Command {
           if (userInput.startsWith("/")) {
             if (chatUI) chatUI.appendSystemMessage(userInput);
 
-            const runSlash = (): Promise<SlashCommandResult> =>
-              handleSlashCommand(
-                userInput,
-                config,
-                sessionTracker,
-                chatUI,
-                eventRecorder
-              );
-
-            const slashResult = await runSlash();
-
-            if (slashResult.status === "exit") {
-              exitRequested = true;
+            const slashResult = await executeSlashCommand(userInput);
+            const shouldBreak = await applySlashResult(slashResult);
+            if (shouldBreak) {
               break;
             }
-            if (slashResult.status === "restart") {
-              restarting = true;
-              if (!chatUI) {
-                console.log(chalk.yellow("\n🔄 Reloading configuration...\n"));
-              } else {
-                chatUI.appendSystemMessage("Reloading configuration...");
-              }
-              break;
-            }
-            if (slashResult.status === "send") {
-              queuedMessage = slashResult.message;
-              if (!chatUI) {
-                console.log(chalk.gray(`\n> ${slashResult.message}\n`));
-              }
-            }
-            if (!chatUI) console.log("");
             continue;
           }
 
@@ -471,7 +602,7 @@ export function createCLI(): Command {
 
           try {
             const start = Date.now();
-            await agent.processMessage(userInput);
+            await session.prompt(userInput);
             sessionTracker.trackApiCall(Date.now() - start);
           } catch (error) {
             const message =
@@ -482,8 +613,6 @@ export function createCLI(): Command {
               chatUI.setStatus("");
               if (isAbort) {
                 chatUI.appendSystemMessage("Interrupted.");
-              } else {
-                chatUI.appendSystemMessage(`❌ ${message}`);
               }
             } else {
               if (isAbort) {
@@ -502,6 +631,9 @@ export function createCLI(): Command {
         // ── Session teardown ──────────────────────────────────────────────────
         process.off("SIGINT", handleExit);
         process.off("SIGTERM", handleExit);
+        if (backgroundSessionTimer) {
+          clearInterval(backgroundSessionTimer);
+        }
 
         const finalStats = await sessionTracker.endSession();
         if (chatUI) {

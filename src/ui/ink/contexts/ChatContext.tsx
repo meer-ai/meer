@@ -13,7 +13,9 @@ export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   toolName?: string;
+  toolCallId?: string;
   toolArgs?: Record<string, unknown>;
+  toolDetails?: Record<string, unknown>;
   isError?: boolean;
   isCot?: boolean;
   timestamp?: number;
@@ -75,7 +77,7 @@ export interface ChatState {
   // Workflow
   workflowStages: WorkflowStage[];
   currentIteration: number;
-  maxIterations: number;
+  maxIterations?: number;
   
   // Metrics
   tokens: Tokens;
@@ -116,7 +118,7 @@ type ChatAction =
   | { type: 'UPDATE_TOOL'; payload: { id: string; updates: Partial<ToolCall> } }
   | { type: 'ADD_WORKFLOW_STAGE'; payload: WorkflowStage }
   | { type: 'UPDATE_WORKFLOW_STAGE'; payload: { name: string; status: WorkflowStage['status'] } }
-  | { type: 'SET_ITERATION'; payload: { current: number; max: number } }
+  | { type: 'SET_ITERATION'; payload: { current: number; max?: number } }
   | { type: 'UPDATE_TOKENS'; payload: Partial<Tokens> }
   | { type: 'UPDATE_COST'; payload: Partial<Cost> }
   | { type: 'SET_MODE'; payload: 'edit' | 'plan' }
@@ -145,7 +147,7 @@ const initialState: ChatState = {
   toolHistory: [],
   workflowStages: [],
   currentIteration: 0,
-  maxIterations: 10,
+  maxIterations: undefined,
   tokens: { used: 0, prompt: 0, completion: 0 },
   cost: { current: 0, formatted: { prompt: '$0.00', completion: '$0.00', total: '$0.00' } },
   messageCount: 0,
@@ -475,7 +477,7 @@ export function useWorkflow() {
     dispatch({ type: 'UPDATE_WORKFLOW_STAGE', payload: { name, status } });
   }, [dispatch]);
 
-  const setIteration = useCallback((current: number, max: number) => {
+  const setIteration = useCallback((current: number, max?: number) => {
     dispatch({ type: 'SET_ITERATION', payload: { current, max } });
   }, [dispatch]);
 

@@ -31,6 +31,12 @@ export interface DiffViewerProps {
     showActions?: boolean;
 }
 
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+
+function stripAnsi(value: string): string {
+    return value.replace(ANSI_PATTERN, '');
+}
+
 export const DiffViewer: React.FC<DiffViewerProps> = React.memo(({
     filePath,
     hunks,
@@ -76,7 +82,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = React.memo(({
         if (input === 'n' && onRejectHunk) {
             onRejectHunk(currentHunk);
         }
-    });
+    }, { isActive: showActions });
 
     const getLineColor = (type: DiffLine['type']): string => {
         switch (type) {
@@ -108,19 +114,47 @@ export const DiffViewer: React.FC<DiffViewerProps> = React.memo(({
 
     const hunk = hunks[currentHunk];
 
+    if (!showActions) {
+        return (
+            <Box flexDirection="column" marginTop={0}>
+                {hunks.map((item, hunkIndex) => (
+                    <Box key={`hunk-${hunkIndex}`} flexDirection="column" marginTop={hunkIndex === 0 ? 0 : 1}>
+                        <Text color="cyan" dimColor>
+                            @@ -{item.oldStart},{item.oldLines} +{item.newStart},{item.newLines} @@
+                        </Text>
+                        {item.lines.map((line, idx) => (
+                            <Box key={`${hunkIndex}-${idx}`}>
+                                <Text color="dim" dimColor>
+                                    {formatLineNumber(line.oldLineNumber)}
+                                </Text>
+                                <Text color="dim" dimColor> </Text>
+                                <Text color="dim" dimColor>
+                                    {formatLineNumber(line.newLineNumber)}
+                                </Text>
+                                <Text color={getLineColor(line.type)}>
+                                    {' '}{getLinePrefix(line.type)} {line.content}
+                                </Text>
+                            </Box>
+                        ))}
+                    </Box>
+                ))}
+            </Box>
+        );
+    }
+
     return (
         <Box
             flexDirection="column"
-            borderStyle="round"
-            borderColor="yellow"
-            paddingX={1}
+            borderStyle={showActions ? "round" : undefined}
+            borderColor={showActions ? "yellow" : undefined}
+            paddingX={showActions ? 1 : 0}
             paddingY={0}
-            marginY={1}
+            marginY={showActions ? 1 : 0}
         >
             {/* Header */}
             <Box justifyContent="space-between" paddingY={0}>
                 <Box gap={1}>
-                    <Text color="yellow" bold>📝 {filePath}</Text>
+                    <Text color={showActions ? "yellow" : "cyan"} bold>{filePath}</Text>
                     <Text color="green">+{addedLines}</Text>
                     <Text color="red">-{removedLines}</Text>
                 </Box>
@@ -226,7 +260,7 @@ export const DiffViewer: React.FC<DiffViewerProps> = React.memo(({
 // Helper function to parse diff output into hunks
 export function parseDiff(diffOutput: string): DiffHunk[] {
     const hunks: DiffHunk[] = [];
-    const lines = diffOutput.split('\n');
+    const lines = stripAnsi(diffOutput).split('\n');
 
     let currentHunk: DiffHunk | null = null;
     let oldLineNum = 0;

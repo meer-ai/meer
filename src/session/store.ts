@@ -59,6 +59,19 @@ export interface SessionFileInfo {
   branchDepth?: number;
 }
 
+export interface CompactionSummaryInput {
+  previousSummary: string | null;
+  messagesToSummarize: SessionMessageEntry[];
+  keptMessages: SessionMessageEntry[];
+}
+
+export interface CompactSessionOptions {
+  keepRecentMessages?: number;
+  summaryGenerator?: (
+    input: CompactionSummaryInput
+  ) => Promise<string> | string;
+}
+
 function encodeCwd(cwd: string): string {
   return cwd
     .replace(/[:]/g, "")
@@ -212,10 +225,10 @@ export class SessionStore {
     this.appendEntry(payload, cwd);
   }
 
-  compactSession(
+  async compactSession(
     sessionPath: string,
-    options?: { keepRecentMessages?: number }
-  ): SessionCompactionEntry | null {
+    options?: CompactSessionOptions
+  ): Promise<SessionCompactionEntry | null> {
     const info = this.getSessionInfoByPath(sessionPath);
     if (!info) {
       return null;
@@ -234,10 +247,25 @@ export class SessionStore {
     const keptMessages = visibleMessages.slice(-keepRecentMessages);
     const firstKeptTimestamp = keptMessages[0]?.timestamp ?? null;
     const previousSummary = latestCompaction?.summary?.trim();
-    const summary = this.buildCompactionSummary(
+    const fallbackSummary = this.buildCompactionSummary(
       messagesToSummarize,
       previousSummary || null
     );
+    let summary = fallbackSummary;
+    if (options?.summaryGenerator) {
+      try {
+        const generated = await options.summaryGenerator({
+          previousSummary: previousSummary || null,
+          messagesToSummarize,
+          keptMessages,
+        });
+        if (generated.trim()) {
+          summary = generated.trim();
+        }
+      } catch {
+        summary = fallbackSummary;
+      }
+    }
     const tokensBefore = visibleMessages.reduce(
       (sum, message) => sum + message.content.length,
       0
@@ -638,29 +666,73 @@ export class SessionStore {
     messages: SessionMessageEntry[],
     previousSummary: string | null
   ): string {
-    const lines = messages.slice(-20).map((message) => {
-      const role =
-        message.role === "assistant"
-          ? "Assistant"
-          : message.role === "tool"
-          ? `Tool${message.metadata?.toolName ? ` (${message.metadata.toolName})` : ""}`
-          : message.role === "system"
-          ? "System"
-          : "User";
+    const files = new Set<string>();
+    const findings: string[] = [];
+    const nextSteps: string[] = [];
+    const userRequests: string[] = [];
+    const filePattern =
+      /\b(?:src|app|lib|tests?|docs|scripts|packages|components|pages|memory|session|agent|ui|providers|mcp|chat|commands|tools|slash|telemetry|context|plan|search|token|auth|pricing|lsp|utils|config)\/[A-Za-z0-9._/-]+\b/g;
+
+    for (const message of messages.slice(-24)) {
+      for (const match of message.content.matchAll(filePattern)) {
+        files.add(match[0]);
+      }
+
       const normalized = message.content.replace(/\s+/g, " ").trim();
       const preview =
-        normalized.length > 200 ? `${normalized.slice(0, 199).trim()}…` : normalized;
-      return `- ${role}: ${preview}`;
-    });
+        normalized.length > 220 ? `${normalized.slice(0, 219).trim()}…` : normalized;
+      const lower = normalized.toLowerCase();
+
+      if (message.role === "user") {
+        userRequests.push(preview);
+      }
+
+      if (
+        lower.includes("error") ||
+        lower.includes("failed") ||
+        lower.includes("warning") ||
+        lower.includes("fixed") ||
+        lower.includes("verified") ||
+        lower.includes("audit") ||
+        lower.includes("issue")
+      ) {
+        findings.push(preview);
+      }
+
+      if (message.role === "assistant" || message.role === "system") {
+        nextSteps.push(preview);
+      }
+    }
+
+    const latestUserRequest = userRequests[userRequests.length - 1];
+    const dedupedFindings = [...new Set(findings)].slice(-5);
+    const dedupedNextSteps = [...new Set(nextSteps)].slice(-4);
+    const touchedFiles = [...files].slice(0, 12);
 
     return [
-      "Compacted conversation summary.",
+      "## Task State",
       ...(previousSummary
-        ? ["Previous summary context:", previousSummary]
-        : []),
-      `${messages.length} older messages were summarized and removed from active context.`,
-      "Recent summarized highlights:",
-      ...lines,
+        ? ["- Previous summary context preserved.", `- Prior summary: ${previousSummary}`]
+        : ["- No previous compaction summary."]),
+      `- Summarized ${messages.length} older messages and removed them from active context.`,
+      ...(latestUserRequest
+        ? [`- Latest summarized user request: ${latestUserRequest}`]
+        : ["- Latest summarized user request: None yet."]),
+      "",
+      "## Findings",
+      ...(dedupedFindings.length > 0
+        ? dedupedFindings.map((line) => `- ${line}`)
+        : ["- None yet."]),
+      "",
+      "## Files Touched",
+      ...(touchedFiles.length > 0
+        ? touchedFiles.map((file) => `- ${file}`)
+        : ["- None yet."]),
+      "",
+      "## Next Steps",
+      ...(dedupedNextSteps.length > 0
+        ? dedupedNextSteps.map((line) => `- ${line}`)
+        : ["- Continue from the latest active user request."]),
     ].join("\n");
   }
 }

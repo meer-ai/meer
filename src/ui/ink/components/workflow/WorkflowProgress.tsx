@@ -28,7 +28,7 @@ export interface WorkflowProgressProps {
 export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
     stages,
     currentIteration = 1,
-    maxIterations = 10,
+    maxIterations,
     startTime,
     collapsed = false,
     compact = false,
@@ -107,7 +107,9 @@ export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
             <Box flexDirection="column" marginY={1} paddingLeft={2}>
                 <Box gap={1}>
                     <Text color="blue" bold>Workflow</Text>
-                    <Text color="dim">Iteration {currentIteration}/{maxIterations}</Text>
+                    <Text color="dim">
+                        Turn {currentIteration}{maxIterations ? `/${maxIterations}` : ''}
+                    </Text>
                     {runningStages > 0 && (
                         <Text color="cyan">
                             <Spinner type="dots" />
@@ -163,7 +165,7 @@ export const WorkflowProgress: React.FC<WorkflowProgressProps> = React.memo(({
                 </Box>
                 <Box gap={2}>
                     <Text color="dim">
-                        Iteration {currentIteration}/{maxIterations}
+                        Turn {currentIteration}{maxIterations ? `/${maxIterations}` : ''}
                     </Text>
                     {elapsed > 0 && (
                         <Text color="dim">{formatDuration(elapsed)}</Text>

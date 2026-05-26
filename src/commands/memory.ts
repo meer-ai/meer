@@ -96,8 +96,8 @@ export function createMemoryCommand(): Command {
     .command('compact')
     .description('Compact the current session into a summary plus recent messages')
     .option('--keep <count>', 'Number of recent messages to keep', (value) => Number(value))
-    .action((options: { keep?: number }) => {
-      const result = memory.compactCurrentSession(process.cwd(), {
+    .action(async (options: { keep?: number }) => {
+      const result = await memory.compactCurrentSession(process.cwd(), {
         keepRecentMessages: options.keep,
       });
       if (!result) {
@@ -223,7 +223,7 @@ async function showMemoryMenu(): Promise<void> {
       break;
 
     case 'compact':
-      const compacted = memory.compactCurrentSession(process.cwd());
+      const compacted = await memory.compactCurrentSession(process.cwd());
       if (!compacted) {
         console.log(chalk.yellow('\n⚠️  Nothing to compact yet\n'));
       } else {

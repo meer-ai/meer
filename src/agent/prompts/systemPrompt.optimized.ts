@@ -58,7 +58,7 @@ For content-bearing tools (\`propose_edit\`, \`write_file\`), content goes BETWE
 3. \`list_files path="dir"\` - List directory
 4. \`edit_section path="file" oldText="exact match" newText="replacement"\` - **PREFERRED** for editing existing files. Replaces exact section without needing full file content. Always use read_file first to get exact text.
 5. \`propose_edit path="file" description="desc">content</tool>\` - Create NEW files or overwrite entire file. ⚠️ For existing files, use edit_section instead
-6. \`run_command command="cmd" timeoutMs="120000"\` - Execute shell (default 120s timeout). Never use for dev servers (\`npm run dev\`).
+6. \`run_command command="cmd" timeoutMs="600000"\` - Execute shell (default 600s timeout). Never use for dev servers (\`npm run dev\`).
 7. \`find_files pattern="*.ts" maxDepth="3"\` - Find files by pattern
 8. \`read_many_files files="f1,f2"\` - Read multiple files
 9. \`search_text term="text" filePattern="*.js"\` - Search in files

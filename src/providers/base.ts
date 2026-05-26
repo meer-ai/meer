@@ -38,6 +38,7 @@ export interface ProviderStructuredTurn {
   toolCalls: ProviderToolCall[];
   finalAnswer?: string;
   rawText: string;
+  reasoningContent?: string;
 }
 
 export type ProviderEvent =
@@ -46,7 +47,7 @@ export type ProviderEvent =
   | { type: 'tool-call-delta'; toolCallId: string; toolName?: string; inputTextDelta: string }
   | { type: 'tool-call'; toolCall: ProviderToolCall }
   | { type: 'final-answer'; text: string }
-  | { type: 'done'; rawText: string; turn?: ProviderStructuredTurn };
+  | { type: 'done'; rawText: string; turn?: ProviderStructuredTurn; reasoningContent?: string };
 
 export interface Provider {
   /**

@@ -1,6 +1,6 @@
 import { randomBytes } from "crypto";
 import chalk from "chalk";
-import { AgentWorkflowV3, type AgentConfig } from "../agent/workflow-v3.js";
+import { MeerAgent, type MeerAgentConfig } from "../agent/meer-agent.js";
 import type { ChatMessage } from "../providers/base.js";
 import { logVerbose } from "../logger.js";
 import type {
@@ -14,7 +14,7 @@ import type {
 /**
  * SubAgent - An isolated agent instance with its own context and lifecycle
  *
- * Each SubAgent wraps an AgentWorkflowV2 instance and maintains:
+ * Each SubAgent wraps an isolated MeerAgent instance and maintains:
  * - Isolated message history
  * - Independent status tracking
  * - Tool access control
@@ -23,7 +23,7 @@ import type {
 export class SubAgent {
   private id: string;
   private definition: SubAgentDefinition;
-  private workflow: AgentWorkflowV3;
+  private workflow: MeerAgent;
   private messages: ChatMessage[] = [];
   private status: AgentStatus = 'idle';
   private result?: string;
@@ -35,15 +35,15 @@ export class SubAgent {
   private toolCalls = 0;
   private toolsUsed: Set<string> = new Set();
 
-  constructor(definition: SubAgentDefinition, config: AgentConfig) {
+  constructor(definition: SubAgentDefinition, config: MeerAgentConfig) {
     this.id = this.generateId();
     this.definition = definition;
 
     // Create isolated workflow instance — auto-approve edits since sub-agents
     // run under explicit user invocation via `meer agents`
-    this.workflow = new AgentWorkflowV3({
+    this.workflow = new MeerAgent({
       ...config,
-      maxIterations: definition.maxIterations || config.maxIterations || 10,
+      maxIterations: definition.maxIterations ?? config.maxIterations,
       promptChoice: async (_msg, choices, defaultChoice) =>
         defaultChoice ?? choices[0]?.value ?? "",
     });
@@ -70,20 +70,22 @@ export class SubAgent {
       // Build task message with context
       const taskMessage = this.buildTaskMessage(task, context);
 
-      // Process the task (AgentWorkflowV3 handles the iteration loop)
-      const response = await this.workflow.processMessage(taskMessage);
+      // Process the task with the same production agent runtime used by Meer.
+      const response = await this.workflow.processMessage(taskMessage, {
+        systemPrompt,
+      });
 
       // Mark as completed
       this.status = 'completed';
       this.endTime = Date.now();
-      this.result = response;
+      this.result = response.response;
 
       const result: SubAgentResult = {
         success: true,
-        output: response,
-        summary: this.generateSummary(response),
+        output: response.response,
+        summary: this.generateSummary(response.response),
         metadata: {
-          tokensUsed: this.estimateTokens(response),
+          tokensUsed: this.estimateTokens(response.response),
           duration: this.endTime - this.startTime,
           toolCalls: this.toolCalls,
           toolsUsed: Array.from(this.toolsUsed),
@@ -146,7 +148,7 @@ export class SubAgent {
     logVerbose(chalk.yellow(`[SubAgent ${this.definition.name}] Abort requested`));
     this.status = 'failed';
     this.error = new Error('Aborted by user');
-    // TODO: Implement workflow abortion when AgentWorkflowV2 supports it
+    this.workflow.abort();
   }
 
   /**

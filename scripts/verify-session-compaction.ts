@@ -36,7 +36,23 @@ try {
     );
   });
 
-  const compaction = memory.compactCurrentSession(cwd, { keepRecentMessages: 2 });
+  const compaction = await memory.compactCurrentSession(cwd, {
+    keepRecentMessages: 2,
+    summaryGenerator: () =>
+      [
+        "## Task State",
+        "- Session compacted by custom summarizer.",
+        "",
+        "## Findings",
+        "- message 1 and message 2 were summarized.",
+        "",
+        "## Files Touched",
+        "- None yet.",
+        "",
+        "## Next Steps",
+        "- Continue with recent messages.",
+      ].join("\n"),
+  });
   assert(compaction, "compaction should be created");
   assert.equal(compaction?.summarizedMessageCount, 4);
   assert.equal(compaction?.firstKeptTimestamp, 5);
@@ -47,7 +63,8 @@ try {
     (entry) => entry.metadata?.summaryKind === "compaction"
   );
   assert.equal(compactionEntries.length, 1);
-  assert.match(compactionEntries[0]?.content ?? "", /Compacted conversation summary/);
+  assert.match(compactionEntries[0]?.content ?? "", /## Task State/);
+  assert.match(compactionEntries[0]?.content ?? "", /custom summarizer/);
 
   const context = memory.buildSessionContext(session.sessionPath, 4);
   assert(context, "context should build");
@@ -90,12 +107,15 @@ try {
     cwd
   );
 
-  const secondCompaction = memory.compactCurrentSession(cwd, {
+  const secondCompaction = await memory.compactCurrentSession(cwd, {
     keepRecentMessages: 2,
+    summaryGenerator: () => {
+      throw new Error("forced fallback");
+    },
   });
   assert(secondCompaction, "second compaction should be created");
   assert.equal(secondCompaction?.summarizedMessageCount, 7);
-  assert.match(secondCompaction?.summary ?? "", /Previous summary context:/);
+  assert.match(secondCompaction?.summary ?? "", /## Task State/);
   assert.match(secondCompaction?.summary ?? "", /message 7/);
 
   const updatedStats = memory.getCurrentSessionContextStats(cwd);

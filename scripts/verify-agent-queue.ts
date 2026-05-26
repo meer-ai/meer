@@ -14,6 +14,7 @@ process.env.HOME = tempHome;
 process.env.USERPROFILE = tempHome;
 
 const { MeerAgent } = await import("../src/agent/meer-agent.js");
+const { AgentSession } = await import("../src/agent/agent-session.js");
 const { memory } = await import("../src/memory/index.js");
 const { MCPManager } = await import("../src/mcp/manager.js");
 
@@ -125,20 +126,52 @@ class FollowUpProvider implements Provider {
   }
 }
 
+class RetryThenAnswerProvider implements Provider {
+  attempts = 0;
+
+  async chat(): Promise<string> {
+    throw new Error("unused");
+  }
+
+  async *stream(): AsyncIterable<string> {
+    throw new Error("unused");
+  }
+
+  async *streamWithTools(): AsyncIterable<ProviderEvent> {
+    this.attempts += 1;
+    if (this.attempts === 1) {
+      throw new Error("Network timeout while contacting provider");
+    }
+
+    const finalText = "recovered after retry";
+    yield {
+      type: "done",
+      rawText: finalText,
+      turn: {
+        assistantMessage: finalText,
+        finalAnswer: finalText,
+        rawText: finalText,
+        toolCalls: [],
+      },
+    };
+  }
+}
+
 async function verifySteeringQueue(): Promise<void> {
   const cwd = join(tempHome, "steering-project");
   mkdirSync(cwd, { recursive: true });
   memory.startSession(cwd);
 
-  const agent = new MeerAgent({
+  const runtime = new MeerAgent({
     provider: new SteeringProvider(),
     cwd,
     enableMemory: true,
   }) as any;
-  agent.buildAgentTools = () => [createStubTool()];
+  runtime.buildAgentTools = () => [createStubTool()];
+  const agent = new AgentSession({ runtime });
   await agent.initialize();
 
-  const run = agent.processMessage("start");
+  const run = agent.prompt("start");
   await sleep(5);
   assert.equal(agent.isProcessing(), true, "agent should still be running");
   assert.equal(agent.queueMessage("steer now", "steer"), true);
@@ -180,16 +213,17 @@ async function verifyFollowUpQueue(): Promise<void> {
   memory.startSession(cwd);
 
   const assistantMessages: string[] = [];
-  const agent = new MeerAgent({
+  const runtime = new MeerAgent({
     provider: new FollowUpProvider(),
     cwd,
     enableMemory: true,
     onAssistantMessage: (content) => assistantMessages.push(content),
   }) as any;
-  agent.buildAgentTools = () => [createStubTool()];
+  runtime.buildAgentTools = () => [createStubTool()];
+  const agent = new AgentSession({ runtime });
   await agent.initialize();
 
-  const run = agent.processMessage("start");
+  const run = agent.prompt("start");
   await sleep(5);
   assert.equal(agent.queueMessage("after current run", "followUp"), true);
   const result = await run;
@@ -225,9 +259,42 @@ async function verifyFollowUpQueue(): Promise<void> {
   );
 }
 
+async function verifyRetryDoesNotDuplicateUserTurn(): Promise<void> {
+  const cwd = join(tempHome, "retry-project");
+  mkdirSync(cwd, { recursive: true });
+  memory.startSession(cwd);
+
+  const provider = new RetryThenAnswerProvider();
+  const runtime = new MeerAgent({
+    provider,
+    cwd,
+    enableMemory: true,
+  }) as any;
+  const agent = new AgentSession({
+    runtime,
+    retry: {
+      attempts: 1,
+      delayMs: 1,
+      backoffFactor: 1,
+    },
+  });
+  await agent.initialize();
+
+  const result = await agent.prompt("retry me");
+  assert.equal(result, "recovered after retry");
+  assert.equal(provider.attempts, 2);
+
+  const sessionEntries = memory.loadCurrentSession(cwd);
+  const userEntries = sessionEntries
+    .filter((entry) => entry.role === "user")
+    .map((entry) => entry.content);
+  assert.deepEqual(userEntries, ["retry me"]);
+}
+
 try {
   await verifySteeringQueue();
   await verifyFollowUpQueue();
+  await verifyRetryDoesNotDuplicateUserTurn();
   console.log("✅ MeerAgent queue behavior verified.");
 } finally {
   rmSync(tempHome, { recursive: true, force: true });

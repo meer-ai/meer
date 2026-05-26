@@ -1,17 +1,26 @@
-import { randomUUID } from "crypto";
 import type { Provider, ChatMessage } from "../providers/base.js";
 import { ProviderWrapper } from "../providers/provider-wrapper.js";
 import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";
-import type { SessionTracker } from "../session/tracker.js";
-import { buildNativeSystemPrompt } from "./prompts/nativeSystemPrompt.js";
 import { createMeerAgentTools } from "./tools/agent.js";
 import type { AgentTool } from "./core/types.js";
+import type { AgentToolCallResult } from "./runtime/types.js";
 import { runLoop } from "./core/loop.js";
 import type { AgentEvent } from "./core/types.js";
 import type { AgentMessage as CoreAgentMessage } from "./core/types.js";
 import { generateDiff, type FileEdit } from "../tools/index.js";
+import { backgroundTerminals } from "../runtime/backgroundTerminals.js";
+import {
+  formatSkillInvocation,
+  loadSkillsForCwd,
+  type Skill,
+  type SkillDiagnostic,
+} from "../skills/index.js";
+import type {
+  RuntimeExecutionEvent,
+  RuntimeProcessResult,
+} from "./agent-session.js";
 
 // Re-export the config type so cli.ts can use it
 export interface MeerAgentConfig {
@@ -22,48 +31,45 @@ export interface MeerAgentConfig {
   autoCollectContext?: boolean;
   providerType?: string;
   model?: string;
-  sessionTracker?: SessionTracker;
-  compaction?: {
-    enabled: boolean;
-    maxVisibleMessages: number;
-    maxVisibleChars: number;
-    keepRecentMessages: number;
-  };
   onStreamingStart?: () => void;
   onStreamingChunk?: (chunk: string) => void;
   onStreamingEnd?: () => void;
   onAssistantMessage?: (content: string) => void;
   onCotMessage?: (content: string) => void;
-  onTurnStart?: () => void;
-  onTurnEnd?: (result?: { success: boolean; error?: string }) => void;
-  onIterationChange?: (current: number, max: number) => void;
-  onWorkflowStageStart?: (name: string) => void;
-  onWorkflowStageComplete?: (name: string) => void;
-  onWorkflowStageFail?: (name: string) => void;
-  onToolStart?: (tool: string, args: unknown) => void;
-  onToolUpdate?: (tool: string, status: string, result?: string) => void;
+  onToolStart?: (
+    tool: string,
+    args: unknown,
+    metadata?: { toolCallId?: string }
+  ) => void;
+  onToolUpdate?: (
+    tool: string,
+    status: string,
+    result?: string,
+    metadata?: { toolCallId?: string; details?: Record<string, unknown> }
+  ) => void;
   onToolMessage?: (
     tool: string,
     result: string,
-    metadata?: { toolCallId?: string; isError?: boolean }
+    metadata?: { toolCallId?: string; isError?: boolean; details?: Record<string, unknown> }
   ) => void;
   onToolEnd?: () => void;
-  onStatusChange?: (status: string) => void;
-  onQueueUpdate?: (queue: {
-    steering: string[];
-    followUp: string[];
-    changes?: Array<{
-      action: "queued" | "delivered";
-      mode: "steer" | "followUp";
-      message: string;
-    }>;
-  }) => void;
   onError?: (error: Error) => void;
   promptChoice?: (
     message: string,
     choices: Array<{ label: string; value: string }>,
     defaultChoice?: string
   ) => Promise<string>;
+  promptForm?: (
+    title: string,
+    questions: Array<{
+      id: string;
+      label: string;
+      type: "select" | "multiselect";
+      required?: boolean;
+      options: Array<{ label: string; value: string; description?: string }>;
+    }>,
+    submitLabel?: string
+  ) => Promise<Record<string, string | string[]>>;
 }
 
 export interface MeerAgentInitOptions {
@@ -77,23 +83,23 @@ export class MeerAgent {
   private cwd: string;
   private mcpManager = MCPManager.getInstance();
   private mcpTools: MCPTool[] = [];
-  private conversationHistory: CoreAgentMessage[] = [];
   private abortController: AbortController | null = null;
   private isRunning = false;
   private enableMemory: boolean;
   private providerType: string;
   private model: string;
-  private sessionTracker?: SessionTracker;
-  private compaction?: {
-    enabled: boolean;
-    maxVisibleMessages: number;
-    maxVisibleChars: number;
-    keepRecentMessages: number;
-  };
+  private skills: Skill[] = [];
+  private skillDiagnostics: SkillDiagnostic[] = [];
   private editedFiles = new Set<string>();
-  private currentTurnId: string | null = null;
-  private steeringQueue: CoreAgentMessage[] = [];
-  private followUpQueue: CoreAgentMessage[] = [];
+  private externalQueueAccessors:
+    | {
+        takeQueuedMessages: (mode: "steer" | "followUp") => CoreAgentMessage[];
+      }
+    | null = null;
+  private sessionEventSink:
+    | ((event: import("./agent-session.js").AgentSessionEvent) => void)
+    | null = null;
+  private executionEventSink: ((event: RuntimeExecutionEvent) => void) | null = null;
 
   constructor(config: MeerAgentConfig) {
     this.config = config;
@@ -104,136 +110,72 @@ export class MeerAgent {
     this.enableMemory = config.enableMemory ?? true;
     this.providerType = config.providerType ?? "unknown";
     this.model = config.model ?? "unknown";
-    this.sessionTracker = config.sessionTracker;
-    this.compaction = config.compaction;
-    if (this.compaction?.enabled && this.compaction.maxVisibleChars > 0) {
-      this.sessionTracker?.setContextLimit(
-        Math.ceil(this.compaction.maxVisibleChars / 4)
-      );
-    }
   }
 
   async initialize(
     options?: string | MeerAgentInitOptions
   ): Promise<void> {
-    const normalized =
-      typeof options === "string" ? { contextPrompt: options } : options ?? {};
-
     if (!this.mcpManager.isInitialized()) {
       await this.mcpManager.initialize();
     }
     this.mcpTools = this.mcpManager.listAllTools();
-
-    this.conversationHistory = [];
-
-    if (normalized.contextPrompt?.trim()) {
-      this.conversationHistory.push({
-        role: "user",
-        content: `[Context from previous sessions]\n${normalized.contextPrompt}`,
-        timestamp: Date.now(),
-      });
-    }
-
-    if (normalized.priorMessages?.length) {
-      for (const msg of normalized.priorMessages) {
-        if (msg.role === "user" || msg.role === "assistant" || msg.role === "system") {
-          this.conversationHistory.push({
-            role: msg.role,
-            content: msg.content,
-            timestamp: Date.now(),
-          });
-        }
-      }
-    }
+    await this.reloadSkills();
   }
 
-  async processMessage(userMessage: string): Promise<string> {
+  async processMessage(
+    userMessage: string,
+    options?: {
+      persistUserMessage?: boolean;
+      turnId?: string;
+      preparedMessages?: CoreAgentMessage[];
+      systemPrompt?: string;
+    }
+  ): Promise<RuntimeProcessResult> {
     if (this.isRunning) {
       throw new Error("Agent is already running");
     }
 
     this.isRunning = true;
     this.abortController = new AbortController();
-    let currentUserMessage = userMessage;
-    let lastAssistantResponse = "";
-    let shouldPersistCurrentMessage = true;
 
     try {
-      while (currentUserMessage) {
-        this.currentTurnId = randomUUID();
-        if (shouldPersistCurrentMessage) {
-          this.persistUserMessage(currentUserMessage);
-        }
-        this.config.onTurnStart?.();
-        this.config.onStatusChange?.("Thinking…");
+      const turnId = options?.turnId;
+      if (options?.persistUserMessage !== false) {
+        this.persistUserMessage(userMessage, turnId);
+      }
+        this.sessionEventSink?.({ type: "turn_start" });
+        this.sessionEventSink?.({ type: "status_change", status: "Thinking…" });
 
-        const userMsg: CoreAgentMessage = {
-          role: "user",
-          content: currentUserMessage,
-          timestamp: Date.now(),
-        };
-
-        const recentEvidenceSummary = this.buildRecentEvidenceSummary(
-          this.conversationHistory,
-          currentUserMessage
-        );
-
-        const inputMessages: CoreAgentMessage[] = [
-          ...this.conversationHistory,
-          ...(recentEvidenceSummary
-            ? [
+        const inputMessages: CoreAgentMessage[] =
+          options?.preparedMessages?.length
+            ? options.preparedMessages
+            : [
                 {
-                  role: "system" as const,
-                  content: recentEvidenceSummary,
+                  role: "user",
+                  content: userMessage,
                   timestamp: Date.now(),
                 },
-              ]
-            : []),
-          userMsg,
-        ];
+              ];
 
         let finalAssistantText = "";
+        let currentAssistantText = "";
+        const settledAssistantMessages = new Set<string>();
         let streamStarted = false;
         let turnCount = 0;
         let loopError: Error | null = null;
         let wasAborted = false;
-        let activeWorkflowStage: string | null = null;
-        let sawToolActivity = false;
         let toolsCleared = false;
 
         const agentTools = this.buildAgentTools();
 
-        const systemPrompt = buildNativeSystemPrompt({
-          cwd: this.cwd,
-          mcpTools: this.mcpTools,
-          providerType: this.providerType,
-        });
-
-        const startWorkflowStage = (name: string) => {
-          activeWorkflowStage = name;
-          this.config.onWorkflowStageStart?.(name);
-        };
+        const systemPrompt =
+          options?.systemPrompt ??
+          `You are Meer AI, a coding assistant. Use the provided messages and tools to complete the task.`;
 
         const clearToolUi = () => {
           if (toolsCleared) return;
           toolsCleared = true;
           this.config.onToolEnd?.();
-        };
-
-        const completeWorkflowStage = (name = activeWorkflowStage) => {
-          if (!name) return;
-          this.config.onWorkflowStageComplete?.(name);
-          if (activeWorkflowStage === name) {
-            activeWorkflowStage = null;
-          }
-        };
-
-        const failWorkflowStage = (name = activeWorkflowStage) => {
-          if (!name) return;
-          this.config.onWorkflowStageFail?.(name);
-          if (activeWorkflowStage === name) {
-            activeWorkflowStage = null;
-          }
         };
 
         const emit = async (event: AgentEvent): Promise<void> => {
@@ -243,32 +185,31 @@ export class MeerAgent {
                 streamStarted = true;
                 this.config.onStreamingStart?.();
               }
-              finalAssistantText += event.text;
+              currentAssistantText += event.text;
+              finalAssistantText = currentAssistantText;
               this.config.onStreamingChunk?.(event.text);
               break;
 
             case "turn_start":
               turnCount++;
-              this.config.onIterationChange?.(
-                turnCount,
-                this.config.maxIterations ?? 50
-              );
+              this.executionEventSink?.({
+                type: "iteration",
+                current: turnCount,
+                max: this.config.maxIterations,
+              });
               if (turnCount > 1) {
                 if (streamStarted) {
                   this.config.onStreamingEnd?.();
-                  if (finalAssistantText) {
-                    this.config.onCotMessage?.(finalAssistantText);
+                  if (currentAssistantText.trim()) {
+                    const text = currentAssistantText.trim();
+                    this.config.onAssistantMessage?.(text);
+                    settledAssistantMessages.add(text);
+                    this.saveAssistantToMemory(text, turnId);
                   }
                   streamStarted = false;
+                  currentAssistantText = "";
                   finalAssistantText = "";
                 }
-              }
-              if (!activeWorkflowStage) {
-                startWorkflowStage(
-                  turnCount === 1
-                    ? this.describeInitialWorkflowStage(currentUserMessage)
-                    : "Plan next step"
-                );
               }
               break;
 
@@ -276,28 +217,41 @@ export class MeerAgent {
               break;
 
             case "tool_start":
-              sawToolActivity = true;
-              completeWorkflowStage();
-              startWorkflowStage(this.describeToolWorkflowStage(event.toolName));
-              this.config.onStatusChange?.(`Running ${event.toolName}…`);
-              this.config.onToolStart?.(event.toolName, event.args);
-              this.config.onToolUpdate?.(event.toolName, "running");
+              this.executionEventSink?.({
+                type: "tool_start",
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+              });
+              this.config.onToolStart?.(event.toolName, event.args, {
+                toolCallId: event.toolCallId,
+              });
+              this.config.onToolUpdate?.(event.toolName, "running", undefined, {
+                toolCallId: event.toolCallId,
+              });
               break;
 
             case "tool_update":
+              this.config.onToolUpdate?.(
+                event.toolName,
+                "running",
+                previewContent(event.partial),
+                { toolCallId: event.toolCallId }
+              );
               break;
 
             case "tool_end": {
-              if (event.isError) {
-                failWorkflowStage();
-              } else {
-                completeWorkflowStage();
-              }
+              this.executionEventSink?.({
+                type: "tool_end",
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                success: !event.isError,
+              });
               const preview = previewContent(event.result.content);
               this.config.onToolUpdate?.(
                 event.toolName,
                 event.isError ? "failed" : "succeeded",
-                preview
+                preview,
+                { toolCallId: event.toolCallId, details: event.result.details }
               );
               const transcriptResult = formatToolTranscript(
                 event.toolName,
@@ -306,6 +260,7 @@ export class MeerAgent {
               this.config.onToolMessage?.(event.toolName, transcriptResult, {
                 toolCallId: event.toolCallId,
                 isError: event.isError,
+                details: event.result.details,
               });
               if (this.enableMemory) {
                 memory.addToSession({
@@ -316,7 +271,7 @@ export class MeerAgent {
                     toolName: event.toolName,
                     isError: event.isError,
                     toolCallId: event.toolCallId,
-                    turnId: this.currentTurnId ?? undefined,
+                    turnId,
                   },
                 });
               }
@@ -325,8 +280,7 @@ export class MeerAgent {
 
             case "error":
               loopError = event.error;
-              failWorkflowStage();
-              this.config.onStatusChange?.("");
+              this.sessionEventSink?.({ type: "status_change", status: "" });
               if (streamStarted) {
                 this.config.onStreamingEnd?.();
                 streamStarted = false;
@@ -335,8 +289,7 @@ export class MeerAgent {
 
             case "aborted":
               wasAborted = true;
-              failWorkflowStage();
-              this.config.onStatusChange?.("");
+              this.sessionEventSink?.({ type: "status_change", status: "" });
               if (streamStarted) {
                 this.config.onStreamingEnd?.();
                 streamStarted = false;
@@ -355,8 +308,9 @@ export class MeerAgent {
             this.provider,
             {
               systemPrompt,
-              maxTurns: this.config.maxIterations ?? 50,
+              maxTurns: this.config.maxIterations,
               getSteeringMessages: async () => this.takeQueuedMessages("steer"),
+              getFollowUpMessages: async () => this.takeQueuedMessages("followUp"),
             },
             emit,
             this.abortController.signal
@@ -367,12 +321,11 @@ export class MeerAgent {
             streamStarted = false;
           }
 
-          this.conversationHistory = [...inputMessages, ...newMessages];
-          this.trimConversationHistory();
+          const updatedConversationHistory = [...inputMessages, ...newMessages];
 
           if (wasAborted || this.abortController.signal.aborted) {
             clearToolUi();
-            this.config.onStatusChange?.("");
+            this.sessionEventSink?.({ type: "status_change", status: "" });
             const abortError = new Error("Interrupted");
             abortError.name = "AbortError";
             throw abortError;
@@ -394,13 +347,23 @@ export class MeerAgent {
 
           const hadToolCalls = newMessages.some((m) => m.role === "tool_result");
           const lastMsg = newMessages[newMessages.length - 1];
+          const terminalAssistantMessages = newMessages.filter(
+            (
+              message
+            ): message is Extract<CoreAgentMessage, { role: "assistant" }> =>
+              message.role === "assistant" &&
+              !message.toolCalls?.length &&
+              message.content.trim().length > 0
+          );
           if (!finalAssistantText && lastMsg?.role === "tool_result") {
-            const limit = this.config.maxIterations ?? 50;
-            finalAssistantText = `Reached the maximum of ${limit} iterations. The task may be incomplete — send a follow-up message to continue.`;
-            this.config.onStreamingStart?.();
-            this.config.onStreamingChunk?.(finalAssistantText);
-            this.config.onStreamingEnd?.();
-            streamStarted = false;
+            if (this.config.maxIterations) {
+              const limit = this.config.maxIterations;
+              finalAssistantText = `Reached the configured safety limit of ${limit} turns. The task may be incomplete — send a follow-up message to continue.`;
+              this.config.onStreamingStart?.();
+              this.config.onStreamingChunk?.(finalAssistantText);
+              this.config.onStreamingEnd?.();
+              streamStarted = false;
+            }
           }
 
           if (!finalAssistantText && !hadToolCalls) {
@@ -412,47 +375,48 @@ export class MeerAgent {
           }
 
           if (finalAssistantText) {
-            completeWorkflowStage();
-            if (sawToolActivity) {
-              startWorkflowStage("Summarize findings");
-              completeWorkflowStage("Summarize findings");
+            const intermediateAssistantMessages = terminalAssistantMessages.slice(0, -1);
+            for (const message of intermediateAssistantMessages) {
+              const text = message.content.trim();
+              if (!settledAssistantMessages.has(text)) {
+                this.config.onAssistantMessage?.(text);
+                this.saveAssistantToMemory(text, turnId);
+                settledAssistantMessages.add(text);
+              }
             }
-            this.config.onAssistantMessage?.(finalAssistantText);
+            if (!settledAssistantMessages.has(finalAssistantText)) {
+              this.config.onAssistantMessage?.(finalAssistantText);
+              this.saveAssistantToMemory(finalAssistantText, turnId);
+              settledAssistantMessages.add(finalAssistantText);
+            }
           }
-          this.saveAssistantToMemory(finalAssistantText);
-          this.refreshContextUsage();
-          await this.maybeAutoCompactSession();
           clearToolUi();
-          this.config.onStatusChange?.("");
-          this.config.onTurnEnd?.({ success: true });
-          lastAssistantResponse = finalAssistantText;
+          this.sessionEventSink?.({ type: "status_change", status: "" });
+          this.sessionEventSink?.({ type: "turn_end", success: true });
+          return {
+            response: finalAssistantText,
+            conversationHistory: updatedConversationHistory,
+          };
         } catch (error) {
-          if (activeWorkflowStage) {
-            failWorkflowStage(activeWorkflowStage);
-          }
           if (streamStarted) {
             this.config.onStreamingEnd?.();
           }
           clearToolUi();
-          this.config.onStatusChange?.("");
+          this.sessionEventSink?.({ type: "status_change", status: "" });
           const message = error instanceof Error ? error.message : String(error);
-          this.config.onTurnEnd?.({ success: false, error: message });
+          this.sessionEventSink?.({
+            type: "turn_end",
+            success: false,
+            error: message,
+          });
           if (!(error instanceof Error && error.name === "AbortError")) {
             this.config.onError?.(error as Error);
           }
           throw error;
         }
-
-        const nextQueuedMessage = this.takeNextFollowUpMessage();
-        currentUserMessage = nextQueuedMessage?.content ?? "";
-        shouldPersistCurrentMessage = false;
-      }
-
-      return lastAssistantResponse;
     } finally {
       this.isRunning = false;
       this.abortController = null;
-      this.currentTurnId = null;
     }
   }
 
@@ -464,167 +428,80 @@ export class MeerAgent {
     return this.isRunning;
   }
 
-  queueMessage(userMessage: string, mode: "steer" | "followUp" = "steer"): boolean {
-    const trimmed = userMessage.trim();
-    if (!trimmed) {
-      return false;
-    }
+  setQueueAccessors(accessors: {
+    takeQueuedMessages: (mode: "steer" | "followUp") => CoreAgentMessage[];
+  }): void {
+    this.externalQueueAccessors = accessors;
+  }
 
-    const queuedMessage: CoreAgentMessage = {
-      role: "user",
-      content: trimmed,
-      timestamp: Date.now(),
+  getProviderIdentity(): { providerType: string; model: string } {
+    return {
+      providerType: this.providerType,
+      model: this.model,
     };
+  }
 
-    if (mode === "followUp") {
-      this.followUpQueue.push(queuedMessage);
-    } else {
-      this.steeringQueue.push(queuedMessage);
+  getProvider(): Provider {
+    return this.provider;
+  }
+
+  async refreshPromptContext(): Promise<void> {
+    await this.reloadSkills();
+  }
+
+  getPromptContext(): {
+    cwd: string;
+    mcpTools: MCPTool[];
+    providerType: string;
+    skills: Skill[];
+  } {
+    return {
+      cwd: this.cwd,
+      mcpTools: [...this.mcpTools],
+      providerType: this.providerType,
+      skills: [...this.skills],
+    };
+  }
+
+  setSessionEventSink(
+    sink: (event: import("./agent-session.js").AgentSessionEvent) => void
+  ): void {
+    this.sessionEventSink = sink;
+  }
+
+  setExecutionEventSink(sink: (event: RuntimeExecutionEvent) => void): void {
+    this.executionEventSink = sink;
+  }
+
+  recordQueueChange(change: {
+    action: "queued" | "delivered";
+    mode: "steer" | "followUp";
+    message: string;
+  }, options?: { turnId?: string }): void {
+    if (!this.enableMemory) {
+      return;
     }
-
-    this.persistUserMessage(trimmed);
-    this.notifyQueueUpdate([
-      {
-        action: "queued",
-        mode,
-        message: trimmed,
+    memory.addToSession({
+      timestamp: Date.now(),
+      role: "system",
+      content: `${change.action === "queued" ? "Queued" : "Delivered"} ${
+        change.mode === "followUp" ? "follow-up" : "steer"
+      }: ${change.message}`,
+      metadata: {
+        provider: this.providerType,
+        model: this.model,
+        turnId: options?.turnId,
+        queueAction: change.action,
+        queueMode: change.mode,
       },
-    ]);
-    return true;
-  }
-
-  private describeInitialWorkflowStage(userMessage: string): string {
-    const prompt = userMessage.toLowerCase();
-
-    if (/\bsecurity\b|\baudit\b|\bvulnerab|\bscan\b/.test(prompt)) {
-      return "Inspect project for security review";
-    }
-    if (/\btest\b|\bfail(?:ing|ed)?\b|\bbug\b|\berror\b/.test(prompt)) {
-      return "Inspect failing area";
-    }
-    if (/\brefactor\b|\bedit\b|\bchange\b|\bimplement\b|\bfix\b/.test(prompt)) {
-      return "Inspect code to change";
-    }
-    if (/\bexplain\b|\bunderstand\b|\bwhat is\b|\bcurrent project\b/.test(prompt)) {
-      return "Inspect repository";
-    }
-
-    return "Inspect repository";
-  }
-
-  private describeToolWorkflowStage(toolName: string): string {
-    const name = toolName.toLowerCase();
-
-    if (["analyze_project", "list_files", "find_files", "read_folder"].includes(name)) {
-      return "Inspect repository layout";
-    }
-    if (["read_file", "read_many_files", "grep", "search_text", "semantic_search", "find_references", "get_file_outline", "find_symbol_definition", "explain_code"].includes(name)) {
-      return "Inspect source code";
-    }
-    if (["dependency_audit", "package_list", "package_install"].includes(name)) {
-      return "Audit dependencies";
-    }
-    if (["security_scan", "validate_project", "check_syntax", "code_review", "check_complexity", "detect_smells", "analyze_coverage", "run_tests"].includes(name)) {
-      return "Scan project health";
-    }
-    if (["propose_edit", "edit_line", "write_file", "delete_file", "move_file", "create_directory", "format_code", "organize_imports", "fix_lint"].includes(name)) {
-      return "Apply code changes";
-    }
-    if (name.startsWith("git_")) {
-      return "Inspect git state";
-    }
-    if (["run_command", "package_run_script"].includes(name)) {
-      return "Run project command";
-    }
-
-    return this.humanizeToolName(toolName);
-  }
-
-  private humanizeToolName(toolName: string): string {
-    return toolName
-      .split("_")
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
-  }
-
-  private buildRecentEvidenceSummary(
-    history: CoreAgentMessage[],
-    userMessage: string
-  ): string | null {
-    if (history.length === 0) {
-      return null;
-    }
-
-    const recentToolResults = history
-      .filter(
-        (message): message is Extract<CoreAgentMessage, { role: "tool_result" }> =>
-          message.role === "tool_result"
-      )
-      .slice(-4);
-
-    const recentAssistantMessages = history
-      .filter(
-        (message): message is Extract<CoreAgentMessage, { role: "assistant" }> =>
-          message.role === "assistant"
-      )
-      .slice(-2)
-      .map((message) => this.truncateForSummary(message.content, 220))
-      .filter(Boolean);
-
-    if (recentToolResults.length === 0 && recentAssistantMessages.length === 0) {
-      return null;
-    }
-
-    const toolSummaryLines = recentToolResults.map((result) => {
-      const preview = this.truncateForSummary(result.content, 220);
-      const errorTag = result.isError ? " (error)" : "";
-      return `- ${result.toolName}${errorTag}: ${preview}`;
     });
-
-    const lowerUserMessage = userMessage.toLowerCase();
-    const focusHint =
-      /\bsecurity\b|\baudit\b|\breview\b|\bscan\b/.test(lowerUserMessage)
-        ? "Focus on turning the gathered evidence into concrete findings and only gather more context if a specific gap remains."
-        : /\bfix\b|\bedit\b|\bchange\b|\bimplement\b|\brefactor\b/.test(
-              lowerUserMessage
-            )
-          ? "Use the gathered evidence to make the smallest coherent change, then verify it."
-          : "Use the gathered evidence to choose the next most specific action instead of repeating broad inspection tools.";
-
-    const sections: string[] = [
-      "## Recent Evidence",
-      "Use this as a compact memory of the latest verified context. Do not repeat the same broad tool calls unless the latest evidence clearly requires it.",
-    ];
-
-    if (toolSummaryLines.length > 0) {
-      sections.push("Latest tool results:");
-      sections.push(toolSummaryLines.join("\n"));
-    }
-
-    if (recentAssistantMessages.length > 0) {
-      sections.push("Latest assistant conclusions:");
-      sections.push(
-        recentAssistantMessages.map((message) => `- ${message}`).join("\n")
-      );
-    }
-
-    sections.push(`Next-step guidance: ${focusHint}`);
-    return sections.join("\n\n");
   }
 
-  private truncateForSummary(content: string, maxLength: number): string {
-    const normalized = content.replace(/\s+/g, " ").trim();
-    if (!normalized) {
-      return "";
-    }
-    if (normalized.length <= maxLength) {
-      return normalized;
-    }
-    return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+  persistQueuedUserMessage(content: string, options?: { turnId?: string }): void {
+    this.persistUserMessage(content, options?.turnId);
   }
 
-  private saveAssistantToMemory(content: string): void {
+  private saveAssistantToMemory(content: string, turnId?: string): void {
     if (!this.enableMemory || !content.trim()) return;
     memory.addToSession({
       timestamp: Date.now(),
@@ -633,12 +510,12 @@ export class MeerAgent {
       metadata: {
         provider: this.providerType,
         model: this.model,
-        turnId: this.currentTurnId ?? undefined,
+        turnId,
       },
     });
   }
 
-  private persistUserMessage(content: string): void {
+  private persistUserMessage(content: string, turnId?: string): void {
     if (!this.enableMemory || !content.trim()) return;
     memory.addToSession({
       timestamp: Date.now(),
@@ -647,138 +524,32 @@ export class MeerAgent {
       metadata: {
         provider: this.providerType,
         model: this.model,
-        turnId: this.currentTurnId ?? undefined,
+        turnId,
       },
     });
   }
 
   private takeQueuedMessages(mode: "steer" | "followUp"): CoreAgentMessage[] {
-    const queue = mode === "followUp" ? this.followUpQueue : this.steeringQueue;
-    const next = queue.shift();
-    if (next) {
-      this.notifyQueueUpdate([
-        {
-          action: "delivered",
-          mode,
-          message: next.content,
-        },
-      ]);
-    }
-    return next ? [next] : [];
+    return this.externalQueueAccessors?.takeQueuedMessages(mode) ?? [];
   }
 
-  private takeNextFollowUpMessage(): CoreAgentMessage | null {
-    const next = this.followUpQueue.shift() ?? null;
-    if (next) {
-      this.notifyQueueUpdate([
-        {
-          action: "delivered",
-          mode: "followUp",
-          message: next.content,
-        },
-      ]);
-    }
-    return next;
+  getContextStats(): { visibleMessages: number; totalChars: number } | null {
+    return memory.getCurrentSessionContextStats(this.cwd);
   }
 
-  private trimConversationHistory(): void {
-    if (this.conversationHistory.length > 48) {
-      this.conversationHistory = this.conversationHistory.slice(
-        this.conversationHistory.length - 48
-      );
-    }
-  }
-
-  private refreshContextUsage(): void {
-    const stats = memory.getCurrentSessionContextStats(this.cwd);
-    if (!stats) {
-      return;
-    }
-    const estimatedTokens = Math.ceil(stats.totalChars / 4);
-    this.sessionTracker?.trackContextUsage(estimatedTokens);
-  }
-
-  private async maybeAutoCompactSession(): Promise<void> {
-    if (!this.enableMemory || !this.compaction?.enabled) {
-      return;
-    }
-
-    const stats = memory.getCurrentSessionContextStats(this.cwd);
-    if (!stats) {
-      return;
-    }
-
-    const shouldCompactByMessages =
-      this.compaction.maxVisibleMessages > 0 &&
-      stats.visibleMessages > this.compaction.maxVisibleMessages;
-    const shouldCompactByChars =
-      this.compaction.maxVisibleChars > 0 &&
-      stats.totalChars > this.compaction.maxVisibleChars;
-
-    if (!shouldCompactByMessages && !shouldCompactByChars) {
-      return;
-    }
-
-    this.config.onStatusChange?.("Compacting session…");
-    const result = memory.compactCurrentSession(this.cwd, {
-      keepRecentMessages: this.compaction.keepRecentMessages,
-    });
-    if (!result) {
-      this.refreshContextUsage();
-      return;
-    }
-
-    const sessionPath = memory.getCurrentSessionPath();
-    if (sessionPath) {
-      this.conversationHistory = memory
-        .loadChatMessages(sessionPath, {
-          maxMessages: this.compaction.keepRecentMessages + 6,
-        })
-        .map((message) => ({
-          role: message.role,
-          content: message.content,
-          timestamp: Date.now(),
-        }));
-      this.trimConversationHistory();
-    }
-    this.refreshContextUsage();
-  }
-
-  private notifyQueueUpdate(
-    changes?: Array<{
-      action: "queued" | "delivered";
-      mode: "steer" | "followUp";
-      message: string;
-    }>
-  ): void {
-    if (this.enableMemory) {
-      for (const change of changes ?? []) {
-        memory.addToSession({
-          timestamp: Date.now(),
-          role: "system",
-          content: `${change.action === "queued" ? "Queued" : "Delivered"} ${
-            change.mode === "followUp" ? "follow-up" : "steer"
-          }: ${change.message}`,
-          metadata: {
-            provider: this.providerType,
-            model: this.model,
-            turnId: this.currentTurnId ?? undefined,
-            queueAction: change.action,
-            queueMode: change.mode,
-          },
-        });
-      }
-    }
-
-    this.config.onQueueUpdate?.({
-      steering: this.steeringQueue.map((message) => message.content),
-      followUp: this.followUpQueue.map((message) => message.content),
-      changes,
-    });
+  async compactSession(options: {
+    keepRecentMessages: number;
+    summaryGenerator?: (input: import("../session/store.js").CompactionSummaryInput) => Promise<string> | string;
+  }): Promise<boolean> {
+    const result = await memory.compactCurrentSession(this.cwd, options);
+    return Boolean(result);
   }
 
   private async reviewFileEdit(edit: FileEdit): Promise<boolean> {
-    if (!this.config.promptChoice) return false;
+    if (!this.config.promptChoice) {
+      this.editedFiles.add(edit.path);
+      return true;
+    }
 
     const diff = generateDiff(edit.oldContent, edit.newContent);
     const previewLines = diff.slice(0, 20);
@@ -866,6 +637,7 @@ export class MeerAgent {
   }
 
   private buildAgentTools(): AgentTool[] {
+    const skillTools = this.buildSkillTools();
     const legacyTools = createMeerAgentTools(
       {
         cwd: this.cwd,
@@ -881,32 +653,129 @@ export class MeerAgent {
             .join("\n") || "Tool completed.";
         },
         confirmCommand: (command) => this.confirmCommand(command),
+        promptForm: (title, questions, submitLabel) => {
+          if (!this.config.promptForm) {
+            throw new Error("Structured user input is unavailable in this UI.");
+          }
+          return this.config.promptForm(title, questions, submitLabel);
+        },
+        startBackgroundCommand: async (command, cwd) => {
+          const session = backgroundTerminals.start(command, cwd);
+          return {
+            id: session.id,
+            status: session.status,
+            command: session.command,
+            cwd: session.cwd,
+          };
+        },
       },
       { mcpTools: this.mcpTools }
     );
 
-    return legacyTools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema as AgentTool["inputSchema"],
-      async execute(_toolCallId, input, _signal, _onUpdate) {
-        try {
-          const content = await tool.call(input);
-          return { content: String(content), isError: false };
-        } catch (err) {
-          return {
-            content: err instanceof Error ? err.message : String(err),
-            isError: true,
-          };
-        }
-      },
-    }));
+    return [
+      ...skillTools,
+      ...legacyTools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema as AgentTool["inputSchema"],
+        async execute(
+          _toolCallId: string,
+          input: Record<string, unknown>,
+          _signal?: AbortSignal,
+          _onUpdate?: (partial: string) => void
+        ) {
+          try {
+            const output = await tool.call(input, _onUpdate, _signal);
+            const normalized = normalizeToolCallOutput(output);
+            return { ...normalized, isError: normalized.isError ?? false };
+          } catch (err) {
+            return {
+              content: err instanceof Error ? err.message : String(err),
+              isError: true,
+            };
+          }
+        },
+      })),
+    ];
   }
+
+  private async reloadSkills(): Promise<void> {
+    const result = await loadSkillsForCwd(this.cwd);
+    this.skills = result.skills;
+    this.skillDiagnostics = result.diagnostics;
+  }
+
+  private buildSkillTools(): AgentTool[] {
+    return [
+      {
+        name: "load_skill",
+        description:
+          "Load the full instructions for an available Meer agent skill by name. Use this before acting when a task matches a listed skill description.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: {
+              type: "string",
+              description: "Skill name from the available_skills list.",
+            },
+          },
+          required: ["name"],
+        },
+        execute: async (_toolCallId, input) => {
+          const rawName = String(input.name ?? "").trim();
+          if (!rawName) {
+            return {
+              content: "load_skill requires a skill name.",
+              isError: true,
+            };
+          }
+          const skill = this.skills.find(
+            (candidate) => candidate.name.toLowerCase() === rawName.toLowerCase()
+          );
+          if (!skill) {
+            const visible = this.skills
+              .filter((candidate) => !candidate.disableModelInvocation)
+              .map((candidate) => candidate.name)
+              .sort();
+            return {
+              content:
+                visible.length > 0
+                  ? `Skill "${rawName}" not found. Available skills: ${visible.join(", ")}`
+                  : `Skill "${rawName}" not found. No skills are loaded.`,
+              isError: true,
+            };
+          }
+          return {
+            content: formatSkillInvocation(skill),
+            details: {
+              skillName: skill.name,
+              source: skill.source,
+              filePath: skill.filePath,
+              diagnostics: this.skillDiagnostics.length,
+            },
+          };
+        },
+      },
+    ];
+  }
+}
+
+function normalizeToolCallOutput(
+  output: string | AgentToolCallResult
+): { content: string; isError?: boolean; details?: Record<string, unknown> } {
+  if (typeof output === "string") {
+    return { content: output };
+  }
+  return {
+    content: String(output.content ?? ""),
+    isError: output.isError,
+    details: output.details,
+  };
 }
 
 function previewContent(value: string): string {
   const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
+  return normalized.length > 1200 ? `${normalized.slice(0, 1197)}...` : normalized;
 }
 
 function formatToolTranscript(toolName: string, result: string): string {
