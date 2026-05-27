@@ -5,6 +5,7 @@ import type { Plan, PlanTask } from "../../../../plan/types.js";
 export interface PlanPanelProps {
   plan: Plan;
   maxVisibleTasks?: number;
+  hiddenHint?: string;
 }
 
 const STATUS_MARK: Record<
@@ -76,6 +77,7 @@ export function selectVisiblePlanTasks(
 export const PlanPanel: React.FC<PlanPanelProps> = React.memo(({
   plan,
   maxVisibleTasks = 6,
+  hiddenHint,
 }) => {
   if (!plan || plan.tasks.length === 0) {
     return null;
@@ -117,11 +119,12 @@ export const PlanPanel: React.FC<PlanPanelProps> = React.memo(({
       ) : null}
       {visibleTasks.map((task, index) => {
         const meta = STATUS_MARK[task.status] ?? STATUS_MARK.pending;
+        const taskIndex = plan.tasks.findIndex((candidate) => candidate.id === task.id) + 1;
         return (
           <Box key={task.id} flexDirection="column" marginLeft={2}>
             <Box gap={1}>
               <Text color={meta.color} dimColor={meta.dim}>{meta.mark}</Text>
-              <Text color="gray" dimColor>{task.id || String(index + 1)}</Text>
+              <Text color="gray" dimColor>{taskIndex > 0 ? `${taskIndex}.` : `${index + 1}.`}</Text>
               <Text color={meta.color} dimColor={meta.dim}>
                 {task.description}
               </Text>
@@ -138,6 +141,7 @@ export const PlanPanel: React.FC<PlanPanelProps> = React.memo(({
         <Box marginLeft={2}>
           <Text color="gray" dimColor>
             +{hiddenCount} more{formatHiddenSummary(hiddenTasks)}
+            {hiddenHint ? ` · ${hiddenHint}` : ""}
           </Text>
         </Box>
       )}

@@ -73,8 +73,24 @@ export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
         return;
       }
 
-      if (key.backspace || key.delete) {
-        const next = key.delete
+      const keyName = String((key as { name?: string }).name ?? "").toLowerCase();
+      const singleCharCode = input.length === 1 ? input.charCodeAt(0) : undefined;
+      const isRawBackspace =
+        keyName === "backspace" ||
+        singleCharCode === 8 ||
+        singleCharCode === 127 ||
+        input === "\x7f" ||
+        input === "\b";
+      const isRawDelete =
+        keyName === "delete" ||
+        input === "\x1b[3~" ||
+        input.startsWith("\x1b[3");
+      if (key.backspace || key.delete || isRawBackspace || isRawDelete) {
+        // Ink reports the common terminal Backspace byte (0x7f) as
+        // `key.delete`, with an empty input string. Treat it as Backspace
+        // unless we can positively identify a forward-delete escape sequence.
+        const shouldDeleteAtCursor = isRawDelete && input.length > 0;
+        const next = shouldDeleteAtCursor
           ? deleteAtCursor(value, cursorOffset)
           : deleteBeforeCursor(value, cursorOffset);
         onChange(next.value);
@@ -113,7 +129,7 @@ export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
 
   if (disabled) {
     return (
-      <Text color="black" dimColor>
+      <Text color="white" dimColor>
         {placeholder}
       </Text>
     );
@@ -124,14 +140,14 @@ export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
   return (
     <Box flexDirection="column" flexGrow={1}>
       {view.hiddenAbove > 0 ? (
-        <Text color="black" dimColor>
+        <Text color="white" dimColor>
           ... {view.hiddenAbove} earlier input line{view.hiddenAbove === 1 ? "" : "s"}
         </Text>
       ) : null}
       {value.length === 0 ? (
         <Box>
           <Text inverse color="white"> </Text>
-          <Text color="black" dimColor>
+          <Text color="white" dimColor>
             {placeholder}
           </Text>
         </Box>
@@ -145,12 +161,12 @@ export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
         ))
       )}
       {view.hiddenBelow > 0 ? (
-        <Text color="black" dimColor>
+        <Text color="white" dimColor>
           ... {view.hiddenBelow} more input line{view.hiddenBelow === 1 ? "" : "s"}
         </Text>
       ) : null}
       {isPasteLike ? (
-        <Text color="black" dimColor>
+        <Text color="white" dimColor>
           {view.totalLines} wrapped line{view.totalLines === 1 ? "" : "s"}
         </Text>
       ) : null}
@@ -164,7 +180,7 @@ const ComposerLine: React.FC<{ text: string; cursorColumn: number | null }> = ({
 }) => {
   if (cursorColumn === null) {
     return (
-      <Text color="black">
+      <Text color="white">
         {text.length > 0 ? text : " "}
       </Text>
     );
@@ -176,9 +192,9 @@ const ComposerLine: React.FC<{ text: string; cursorColumn: number | null }> = ({
 
   return (
     <Box>
-      <Text color="black">{before}</Text>
+      <Text color="white">{before}</Text>
       <Text inverse color="white">{cursorChar}</Text>
-      <Text color="black">{after}</Text>
+      <Text color="white">{after}</Text>
     </Box>
   );
 };

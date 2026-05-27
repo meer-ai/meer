@@ -759,8 +759,8 @@ export class InkChatAdapter {
         messageId: this.draftAssistant.id,
         delta: chunk,
       });
-      // Use debounced updateUI for streaming to reduce re-renders
-      this.debouncedUpdateUI();
+      this.debouncedUpdateUI.cancel();
+      this.updateUI();
     }
   }
 

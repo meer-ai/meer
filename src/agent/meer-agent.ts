@@ -178,6 +178,22 @@ export class MeerAgent {
           this.config.onToolEnd?.();
         };
 
+        const settleCurrentAssistantText = () => {
+          if (streamStarted) {
+            this.config.onStreamingEnd?.();
+            streamStarted = false;
+          }
+
+          const text = currentAssistantText.trim();
+          if (text && !settledAssistantMessages.has(text)) {
+            this.config.onAssistantMessage?.(text);
+            settledAssistantMessages.add(text);
+            this.saveAssistantToMemory(text, turnId);
+          }
+
+          currentAssistantText = "";
+        };
+
         const emit = async (event: AgentEvent): Promise<void> => {
           switch (event.type) {
             case "text_delta":
@@ -198,18 +214,8 @@ export class MeerAgent {
                 max: this.config.maxIterations,
               });
               if (turnCount > 1) {
-                if (streamStarted) {
-                  this.config.onStreamingEnd?.();
-                  if (currentAssistantText.trim()) {
-                    const text = currentAssistantText.trim();
-                    this.config.onAssistantMessage?.(text);
-                    settledAssistantMessages.add(text);
-                    this.saveAssistantToMemory(text, turnId);
-                  }
-                  streamStarted = false;
-                  currentAssistantText = "";
-                  finalAssistantText = "";
-                }
+                settleCurrentAssistantText();
+                finalAssistantText = "";
               }
               break;
 
@@ -217,6 +223,7 @@ export class MeerAgent {
               break;
 
             case "tool_start":
+              settleCurrentAssistantText();
               this.executionEventSink?.({
                 type: "tool_start",
                 toolCallId: event.toolCallId,

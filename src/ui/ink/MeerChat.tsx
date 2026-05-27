@@ -247,7 +247,9 @@ const TurnActivityIndicator: React.FC<{
   status?: string;
   isStreaming: boolean;
   activeTask?: string;
-}> = React.memo(({ active, status, isStreaming, activeTask }) => {
+  activeTool?: string;
+  tokens?: { used: number; limit?: number };
+}> = React.memo(({ active, status, isStreaming, activeTask, activeTool, tokens }) => {
   const [frame, setFrame] = useState(0);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -271,23 +273,33 @@ const TurnActivityIndicator: React.FC<{
   }
 
   const elapsed =
-    startedAt === null ? "" : `${Math.max(0, Math.floor((now - startedAt) / 1000))}s`;
+    startedAt === null
+      ? ""
+      : formatDurationSeconds(Math.floor((now - startedAt) / 1000));
   const normalizedStatus = status?.trim() ?? "";
   const label =
-    normalizedStatus && activeTask && /thinking/i.test(normalizedStatus)
+    activeTool
+      ? `Running ${activeTool.replace(/_/g, " ")}`
+      : normalizedStatus && activeTask && /thinking/i.test(normalizedStatus)
       ? `${normalizedStatus} - ${activeTask}`
       : normalizedStatus ||
         (isStreaming
-          ? "Streaming response"
+          ? "Writing response"
           : activeTask
             ? `Working on ${activeTask}`
-            : "Working - waiting for next step");
+            : "Thinking");
+  const tokenText =
+    typeof tokens?.used === "number" && tokens.used > 0
+      ? `${formatCompactNumber(tokens.used)} tokens`
+      : "";
 
   return (
     <Box paddingX={1} marginTop={0}>
       <Text color="#67E8F9">{BRAILLE_FRAMES[frame]} </Text>
       <Text color="#67E8F9">{label}</Text>
-      {elapsed ? <Text color="dim"> {elapsed}</Text> : null}
+      {elapsed ? <Text color="dim"> · {elapsed}</Text> : null}
+      {tokenText ? <Text color="dim"> · {tokenText}</Text> : null}
+      <Text color="dim"> · Esc stop</Text>
     </Box>
   );
 });
@@ -1494,6 +1506,13 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const activePlanTask =
     plan?.tasks.find((task) => task.status === "in_progress") ??
     plan?.tasks.find((task) => task.status === "pending");
+  const activeTool = (tools ?? []).find(
+    (tool) => tool.status === "running" || tool.status === "pending"
+  );
+  const turnLooksActive =
+    isThinking ||
+    Boolean(draftAssistant) ||
+    Boolean(activeTool);
   const shouldPinConversationToBottom =
     scrollAnchor === "end" &&
     !hasBackgroundPanel &&
@@ -1602,15 +1621,18 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       {plan ? (
         <PlanPanel
           plan={plan}
-          maxVisibleTasks={showTasksExpanded ? Number.POSITIVE_INFINITY : 6}
+          maxVisibleTasks={showTasksExpanded ? Number.POSITIVE_INFINITY : 9}
+          hiddenHint="^T tasks"
         />
       ) : null}
 
       <TurnActivityIndicator
-        active={isThinking || Boolean(draftAssistant)}
+        active={turnLooksActive}
         status={status}
         isStreaming={hasDraftContent}
         activeTask={activePlanTask?.description}
+        activeTool={activeTool?.name}
+        tokens={tokens}
       />
 
       <WorkLogSection
