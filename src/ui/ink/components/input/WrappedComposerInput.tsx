@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import {
   buildWrappedInputView,
@@ -17,6 +17,14 @@ interface WrappedComposerInputProps {
   disabled?: boolean;
   maxVisibleLines?: number;
   rightReserve?: number;
+  /**
+   * Fired when the user presses Ctrl+V. Parent should attempt to read an
+   * image from the clipboard and call back with attachment metadata. If
+   * `onPasteImage` returns false (or is omitted), the keystroke falls
+   * through to normal text-paste behavior so users don't lose the existing
+   * Cmd+V text-paste flow.
+   */
+  onPasteImage?: () => boolean | Promise<boolean>;
 }
 
 export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
@@ -27,49 +35,108 @@ export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
   disabled = false,
   maxVisibleLines = 5,
   rightReserve = 0,
+  onPasteImage,
 }) => {
   const [cursorOffset, setCursorOffset] = useState(value.length);
   const { stdout } = useStdout();
   const terminalWidth = stdout?.columns || process.stdout.columns || 100;
   const inputWidth = Math.max(12, terminalWidth - rightReserve - 6);
 
+  // Refs that always hold the latest in-flight value/cursor. Stdin events can
+  // fire faster than React commits the parent's setInput, so reading `value`
+  // straight from the closure causes consecutive events (e.g. held-down
+  // Backspace) to see a stale string and collapse into a single deletion.
+  // We mirror every change into refs so the next handler in the same tick
+  // sees what the previous handler just produced.
+  const valueRef = useRef(value);
+  const cursorRef = useRef(cursorOffset);
+  const onChangeRef = useRef(onChange);
+  const onSubmitRef = useRef(onSubmit);
+  const onPasteImageRef = useRef(onPasteImage);
+
   useEffect(() => {
-    setCursorOffset((current) => clampCursorOffset(value, current));
+    valueRef.current = value;
+    cursorRef.current = clampCursorOffset(value, cursorRef.current);
+    setCursorOffset(cursorRef.current);
   }, [value]);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    onSubmitRef.current = onSubmit;
+  }, [onSubmit]);
+
+  useEffect(() => {
+    onPasteImageRef.current = onPasteImage;
+  }, [onPasteImage]);
+
+  const commitValue = (nextValue: string, nextCursor: number) => {
+    valueRef.current = nextValue;
+    cursorRef.current = nextCursor;
+    onChangeRef.current(nextValue);
+    setCursorOffset(nextCursor);
+  };
+
+  const commitCursor = (nextCursor: number) => {
+    cursorRef.current = nextCursor;
+    setCursorOffset(nextCursor);
+  };
 
   useInput(
     (input, key) => {
       if (disabled) return;
+      const currentValue = valueRef.current;
+      const currentCursor = cursorRef.current;
+
+      // Ctrl+V → try to paste an image from the clipboard. If the parent
+      // says no image was found (or no handler is wired), fall through so
+      // the keystroke can still produce a literal `v` or trigger the
+      // terminal's text-paste under Cmd+V on macOS.
+      if (key.ctrl && input === "v" && onPasteImageRef.current) {
+        const result = onPasteImageRef.current();
+        if (result instanceof Promise) {
+          // Fire-and-forget the async handler; we can't await inside the
+          // useInput callback. The parent is responsible for inserting the
+          // path token via onChange when its read finishes.
+          void result;
+          return;
+        }
+        if (result) {
+          return;
+        }
+        // Handler said "no image" — fall through to other Ctrl+V handlers.
+      }
 
       if (key.ctrl && input === "a") {
-        setCursorOffset(0);
+        commitCursor(0);
         return;
       }
 
       if (key.ctrl && input === "e") {
-        setCursorOffset(value.length);
+        commitCursor(currentValue.length);
         return;
       }
 
       if (key.ctrl && input === "u") {
-        const next = value.slice(cursorOffset);
-        onChange(next);
-        setCursorOffset(0);
+        const next = currentValue.slice(currentCursor);
+        commitValue(next, 0);
         return;
       }
 
       if (key.ctrl && input === "k") {
-        onChange(value.slice(0, cursorOffset));
+        commitValue(currentValue.slice(0, currentCursor), currentCursor);
         return;
       }
 
       if (key.leftArrow) {
-        setCursorOffset((current) => Math.max(0, current - 1));
+        commitCursor(Math.max(0, currentCursor - 1));
         return;
       }
 
       if (key.rightArrow) {
-        setCursorOffset((current) => Math.min(value.length, current + 1));
+        commitCursor(Math.min(currentValue.length, currentCursor + 1));
         return;
       }
 
@@ -91,22 +158,23 @@ export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
         // unless we can positively identify a forward-delete escape sequence.
         const shouldDeleteAtCursor = isRawDelete && input.length > 0;
         const next = shouldDeleteAtCursor
-          ? deleteAtCursor(value, cursorOffset)
-          : deleteBeforeCursor(value, cursorOffset);
-        onChange(next.value);
-        setCursorOffset(next.cursorOffset);
+          ? deleteAtCursor(currentValue, currentCursor)
+          : deleteBeforeCursor(currentValue, currentCursor);
+        if (next.value === currentValue && next.cursorOffset === currentCursor) {
+          return;
+        }
+        commitValue(next.value, next.cursorOffset);
         return;
       }
 
       if (key.return) {
         if (key.shift || key.meta) {
-          const next = insertAtCursor(value, cursorOffset, "\n");
-          onChange(next.value);
-          setCursorOffset(next.cursorOffset);
+          const next = insertAtCursor(currentValue, currentCursor, "\n");
+          commitValue(next.value, next.cursorOffset);
           return;
         }
 
-        onSubmit();
+        onSubmitRef.current();
         return;
       }
 
@@ -115,9 +183,8 @@ export const WrappedComposerInput: React.FC<WrappedComposerInputProps> = ({
       }
 
       const normalized = normalizePastedInput(input);
-      const next = insertAtCursor(value, cursorOffset, normalized);
-      onChange(next.value);
-      setCursorOffset(next.cursorOffset);
+      const next = insertAtCursor(currentValue, currentCursor, normalized);
+      commitValue(next.value, next.cursorOffset);
     },
     { isActive: !disabled }
   );

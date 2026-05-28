@@ -6,6 +6,7 @@ import type {
   EmbedOptions,
   ProviderMetadata,
 } from "./base.js";
+import { readAttachmentBase64 } from "../utils/attachments.js";
 
 export interface OllamaConfig {
   host: string;
@@ -29,7 +30,7 @@ export class OllamaProvider implements Provider {
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     const response = await this.makeRequest("/api/chat", {
       model: this.config.model,
-      messages,
+      messages: this.expandUserMessages(messages),
       stream: false,
       options: {
         temperature: options?.temperature ?? this.config.temperature,
@@ -44,13 +45,37 @@ export class OllamaProvider implements Provider {
     return response.message?.content || "";
   }
 
+  /**
+   * Ollama's multimodal models (llava, llama3.2-vision, etc.) accept base64
+   * images via an `images: string[]` field on the user message. Non-vision
+   * models will ignore the field gracefully.
+   */
+  private expandUserMessages(messages: ChatMessage[]): unknown[] {
+    return messages.map((msg) => {
+      if (msg.role !== "user" || !msg.attachments?.length) {
+        return { role: msg.role, content: msg.content };
+      }
+      const images: string[] = [];
+      for (const attachment of msg.attachments) {
+        if (attachment.kind !== "image") continue;
+        const { data } = readAttachmentBase64(attachment);
+        images.push(data);
+      }
+      return {
+        role: "user",
+        content: msg.content,
+        ...(images.length > 0 ? { images } : {}),
+      };
+    });
+  }
+
   async *stream(
     messages: ChatMessage[],
     options?: ChatOptions
   ): AsyncIterable<string> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
-    
+
     try {
       const response = await fetch(`${this.config.host}/api/chat`, {
         method: "POST",
@@ -58,7 +83,7 @@ export class OllamaProvider implements Provider {
         signal: controller.signal,
         body: JSON.stringify({
           model: this.config.model,
-          messages,
+          messages: this.expandUserMessages(messages),
           stream: true,
           options: {
             temperature: options?.temperature ?? this.config.temperature,

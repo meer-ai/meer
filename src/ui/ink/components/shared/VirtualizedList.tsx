@@ -15,6 +15,12 @@ export interface VirtualizedListProps<T> {
     position: "top" | "bottom",
     hiddenCount: number
   ) => React.ReactNode;
+  /**
+   * Stable per-item key. Without this, items use their slot index as their
+   * key, which makes React reuse memoized children across positions whenever
+   * the list shifts — producing visual "wrong-content-in-wrong-slot" glitches.
+   */
+  getItemKey?: (item: T, index: number) => string | number;
 }
 
 /**
@@ -26,6 +32,7 @@ export function VirtualizedList<T>({
   renderItem,
   scroll,
   renderGap,
+  getItemKey,
 }: VirtualizedListProps<T>): React.ReactElement {
   const windowSize = Math.max(
     1,
@@ -48,11 +55,15 @@ export function VirtualizedList<T>({
             <Text color="dim">{hiddenTop} items above</Text>
           </Box>
         ))}
-      {visibleItems.map((item, index) => (
-        <React.Fragment key={start + index}>
-          {renderItem(item, start + index)}
-        </React.Fragment>
-      ))}
+      {visibleItems.map((item, index) => {
+        const absoluteIndex = start + index;
+        const key = getItemKey ? getItemKey(item, absoluteIndex) : absoluteIndex;
+        return (
+          <React.Fragment key={key}>
+            {renderItem(item, absoluteIndex)}
+          </React.Fragment>
+        );
+      })}
       {hiddenBottom > 0 &&
         (renderGap ? (
           renderGap("bottom", hiddenBottom)

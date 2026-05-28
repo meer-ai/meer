@@ -12,6 +12,7 @@ import type {
 } from "./base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 import { createProviderToolNameRegistry } from "./toolNames.js";
+import { buildOpenAIUserContent } from "./openai.js";
 
 export interface OpenRouterConfig {
   apiKey: string;
@@ -481,7 +482,10 @@ export class OpenRouterProvider implements Provider {
   private convertMessages(messages: ChatMessage[]): any[] {
     return messages.map((msg) => ({
       role: msg.role,
-      content: msg.content,
+      content:
+        msg.role === "user"
+          ? buildOpenAIUserContent(msg.content, msg.attachments)
+          : msg.content,
     }));
   }
 
@@ -495,7 +499,10 @@ export class OpenRouterProvider implements Provider {
         converted.push({ role: "system", content: msg.content });
       } else if (msg.role === "user") {
         pendingToolCallIds.clear();
-        converted.push({ role: "user", content: msg.content });
+        converted.push({
+          role: "user",
+          content: buildOpenAIUserContent(msg.content, msg.attachments),
+        });
       } else if (msg.role === "assistant") {
         pendingToolCallIds.clear();
         if (msg.toolCalls?.length) {

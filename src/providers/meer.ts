@@ -7,6 +7,7 @@ import type {
 } from "./base.js";
 import { AuthClient } from "../auth/client.js";
 import { AuthStorage } from "../auth/storage.js";
+import { readAttachmentBase64 } from "../utils/attachments.js";
 
 interface MeerProviderConfig {
   apiKey?: string;
@@ -93,6 +94,31 @@ export class MeerProvider implements Provider {
     return response.data?.content ?? "";
   }
 
+  /**
+   * Base64-load any path-sourced image attachments before sending. The meer
+   * server runs remote and can't access the local user's filesystem, so we
+   * eagerly inline them on the user's machine.
+   */
+  private expandUserMessages(messages: ChatMessage[]): ChatMessage[] {
+    return messages.map((msg) => {
+      if (msg.role !== "user" || !msg.attachments?.length) {
+        return msg;
+      }
+      return {
+        ...msg,
+        attachments: msg.attachments.map((attachment) => {
+          if (attachment.source.type !== "path") return attachment;
+          const { mimeType, data } = readAttachmentBase64(attachment);
+          return {
+            ...attachment,
+            source: { type: "base64", data },
+            mimeType,
+          };
+        }),
+      };
+    });
+  }
+
   async *stream(
     messages: ChatMessage[],
     options?: ChatOptions
@@ -144,7 +170,7 @@ export class MeerProvider implements Provider {
     options?: ChatOptions
   ): Promise<MeerChatSuccessResponse> {
     const body = {
-      messages,
+      messages: this.expandUserMessages(messages),
       model: this.config.model !== "auto" ? this.config.model : undefined,
       options: {
         temperature: options?.temperature ?? this.config.temperature,

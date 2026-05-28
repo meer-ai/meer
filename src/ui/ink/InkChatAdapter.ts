@@ -16,6 +16,7 @@ import {
 } from "../ui-settings.js";
 import type { UITimelineEvent } from "./timelineTypes.js";
 import type { Plan } from "../../plan/types.js";
+import { planStore } from "../../plan/store.js";
 import {
   AgentEventBus,
   type AgentLogEvent,
@@ -26,6 +27,9 @@ import {
 } from "../../agent/eventBus.js";
 import { debounce } from "./utils/debounce.js";
 import { getAllCommands } from "../../slash/registry.js";
+import { isSlashCommandInput } from "../../slash/utils.js";
+import { recordDiagnostic } from "../../utils/diagnostics.js";
+import { clearLiveWorkState } from "./workState.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
 
 interface Message {
@@ -260,9 +264,28 @@ export interface InkChatConfig {
 
 type Mode = 'edit' | 'plan';
 
+/**
+ * Caps for unbounded UI state.
+ *
+ * Without these, a long-running session (think: an autonomous agent left
+ * running overnight) can accumulate enough messages/tools/stages to slow
+ * Ink reconciliation noticeably and bloat resident memory. Each cap is
+ * generous enough that real interactive use never trims, but bounded
+ * enough that runaway accumulation can't degrade the UI.
+ *
+ * Static's append-only contract IS respected by dropping from the front:
+ * items already committed to terminal scrollback aren't re-emitted (verified
+ * by reading ink/build/components/Static.js — it tracks an internal index
+ * and resets when items.length shrinks).
+ */
+const MAX_STORED_MESSAGES = 2000;
+const MAX_LIVE_TOOLS = 100;
+const MAX_WORKFLOW_STAGES = 50;
+
 export class InkChatAdapter {
   private config: InkChatConfig;
   private messages: Message[] = [];
+  private droppedMessageCount = 0;
   private uiEvents: CanonicalUIEvent[] = [];
   private readonly maxUiEvents = 500;
   private uiEventSequence = 0;
@@ -282,7 +305,10 @@ export class InkChatAdapter {
   private turnActive = false;
   private isThinking = false;
   private statusMessage: string | null = null;
-  private onSubmitCallback?: (text: string) => void;
+  private onSubmitCallback?: (
+    text: string,
+    attachments?: import("../../agent/core/types.js").MessageAttachment[]
+  ) => void;
   private onInterruptCallback?: () => void;
   private mode: Mode = 'edit';
   private onModeChangeCallback?: (mode: Mode) => void;
@@ -318,6 +344,10 @@ export class InkChatAdapter {
   // Coalesce streaming updates to roughly one terminal frame. This mirrors the
   // Claude/Pi approach: keep token streaming live without rendering per-token.
   private debouncedUpdateUI = debounce(() => this.updateUI(), { delay: 8, maxWait: 32 });
+  private pendingAssistantChunk = "";
+  private assistantChunkTimer: NodeJS.Timeout | null = null;
+  private readonly assistantChunkFlushMs = 24;
+  private readonly assistantChunkFrameChars = 96;
 
   constructor(config: InkChatConfig) {
     this.config = config;
@@ -387,7 +417,10 @@ export class InkChatAdapter {
   }
 
   private renderUI() {
-    const handleMessage = (message: string) => {
+    const handleMessage = (
+      message: string,
+      attachments?: import("../../agent/core/types.js").MessageAttachment[]
+    ) => {
       if (this.promptResolver) {
         this.promptResolver(message);
         this.promptResolver = null;
@@ -395,10 +428,13 @@ export class InkChatAdapter {
         this.promptActive = false;
       } else if (this.onSubmitCallback) {
         const trimmed = message.trim();
-        if (trimmed && !trimmed.startsWith("/")) {
-          this.appendUserMessage(trimmed, { optimistic: true });
+        if ((trimmed && !isSlashCommandInput(trimmed)) || attachments?.length) {
+          this.appendUserMessage(trimmed, {
+            optimistic: true,
+            attachmentCount: attachments?.length,
+          });
         }
-        this.onSubmitCallback(message);
+        this.onSubmitCallback(message, attachments);
       }
     };
 
@@ -464,6 +500,7 @@ export class InkChatAdapter {
         tokens: this.tokens.used > 0 ? this.tokens : undefined,
         cost: this.cost.current > 0 ? this.cost : undefined,
         messageCount: this.messageCount,
+        droppedMessageCount: this.droppedMessageCount,
         sessionUptime,
         timelineEvents: this.timelineEvents,
         plan: this.plan ?? undefined,
@@ -489,7 +526,10 @@ export class InkChatAdapter {
   private updateUI() {
     if (!this.instance) return;
 
-    const handleMessage = (message: string) => {
+    const handleMessage = (
+      message: string,
+      attachments?: import("../../agent/core/types.js").MessageAttachment[]
+    ) => {
       if (this.promptResolver) {
         this.promptResolver(message);
         this.promptResolver = null;
@@ -497,10 +537,13 @@ export class InkChatAdapter {
         this.promptActive = false;
       } else if (this.onSubmitCallback) {
         const trimmed = message.trim();
-        if (trimmed && !trimmed.startsWith("/")) {
-          this.appendUserMessage(trimmed, { optimistic: true });
+        if ((trimmed && !isSlashCommandInput(trimmed)) || attachments?.length) {
+          this.appendUserMessage(trimmed, {
+            optimistic: true,
+            attachmentCount: attachments?.length,
+          });
         }
-        this.onSubmitCallback(message);
+        this.onSubmitCallback(message, attachments);
       }
     };
 
@@ -567,6 +610,7 @@ export class InkChatAdapter {
         tokens: this.tokens.used > 0 ? this.tokens : undefined,
         cost: this.cost.current > 0 ? this.cost : undefined,
         messageCount: this.messageCount,
+        droppedMessageCount: this.droppedMessageCount,
         sessionUptime,
         plan: this.plan ?? undefined,
         timelineEvents: this.timelineEvents,
@@ -625,10 +669,16 @@ export class InkChatAdapter {
 
   appendUserMessage(
     content: string,
-    options?: { optimistic?: boolean; consumeOptimistic?: boolean }
+    options?: {
+      optimistic?: boolean;
+      consumeOptimistic?: boolean;
+      /** When non-zero, render an "📎 N image(s)" hint next to the text. */
+      attachmentCount?: number;
+    }
   ): void {
     const normalized = content.trim();
-    if (!normalized) return;
+    const attachmentCount = options?.attachmentCount ?? 0;
+    if (!normalized && attachmentCount === 0) return;
 
     if (options?.consumeOptimistic && this.pendingUserMessages.delete(normalized)) {
       return;
@@ -643,12 +693,20 @@ export class InkChatAdapter {
       return;
     }
 
+    this.clearFinishedPlan();
+
+    const displayed =
+      attachmentCount > 0
+        ? `${normalized}${normalized ? "\n\n" : ""}📎 ${attachmentCount} image${attachmentCount === 1 ? "" : "s"} attached`
+        : normalized;
+
     this.messages.push({
       id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role: "user",
-      content: normalized,
+      content: displayed,
       timestamp: Date.now(),
     });
+    this.trimMessages();
     const message = this.messages[this.messages.length - 1];
     this.recordUIEvent({
       id: message.id,
@@ -693,11 +751,13 @@ export class InkChatAdapter {
     }
 
     this.messages.push(...restored);
+    this.trimMessages();
     this.messageCount += restored.length;
     this.updateUI();
   }
 
   beginTurn(): void {
+    this.flushAssistantChunks();
     this.debouncedUpdateUI.cancel();
     this.recordUIEvent({ id: `turn-${Date.now()}`, type: "turn", phase: "begin" });
     this.turnActive = true;
@@ -715,17 +775,49 @@ export class InkChatAdapter {
   }
 
   endTurn(): void {
-    this.debouncedUpdateUI.cancel();
     this.recordUIEvent({ id: `turn-${Date.now()}`, type: "turn", phase: "end" });
     this.turnActive = false;
-    this.isThinking = false;
-    this.statusMessage = null;
-    this.tools = [];
-    this.workflowStages = [];
-    this.currentIteration = undefined;
-    this.maxIterations = undefined;
-    this.timelineTaskMetadata.clear();
+    this.resetLiveWorkState({ keepDraft: false, skipRender: true });
     this.updateUI();
+  }
+
+  /**
+   * Force-clear every transient work-log indicator (running tools, workflow
+   * stages, status text, streaming buffers, iteration counters). Safe to
+   * call multiple times; safe to call mid-turn (it leaves `turnActive`
+   * alone). The cli.ts error/abort handlers call this defensively so a
+   * thrown event-sink listener can't strand "Running…" on the screen.
+   */
+  forceResetWorkState(): void {
+    this.resetLiveWorkState({ keepDraft: false, skipRender: false });
+  }
+
+  private resetLiveWorkState(options?: {
+    keepDraft?: boolean;
+    skipRender?: boolean;
+  }): void {
+    // Streaming buffers/timers — silence in-flight chunk drains so a
+    // settled message can't be overwritten by a late frame.
+    try {
+      this.flushAssistantChunks();
+    } catch (err) {
+      recordDiagnostic("ui.resetLiveWorkState.flush", err);
+    }
+    try {
+      this.debouncedUpdateUI.cancel();
+    } catch (err) {
+      recordDiagnostic("ui.resetLiveWorkState.debounce", err);
+    }
+
+    // Pure helper does the field zeroing — same fn is exercised in tests.
+    clearLiveWorkState(this as unknown as Parameters<typeof clearLiveWorkState>[0], {
+      keepDraft: options?.keepDraft,
+    });
+    this.timelineTaskMetadata.clear();
+
+    if (!options?.skipRender) {
+      this.updateUI();
+    }
   }
 
   startAssistantMessage(): void {
@@ -752,19 +844,67 @@ export class InkChatAdapter {
     }
 
     if (this.draftAssistant) {
-      this.draftAssistant.content += chunk;
-      this.recordUIEvent({
-        id: `delta-${this.draftAssistant.id}-${this.uiEventSequence + 1}`,
-        type: "assistant_delta",
-        messageId: this.draftAssistant.id,
-        delta: chunk,
-      });
-      this.debouncedUpdateUI.cancel();
-      this.updateUI();
+      this.pendingAssistantChunk += chunk;
+      if (!this.assistantChunkTimer) {
+        this.assistantChunkTimer = setInterval(() => {
+          this.drainAssistantChunkFrame();
+        }, this.assistantChunkFlushMs);
+      }
     }
   }
 
+  private drainAssistantChunkFrame(): void {
+    if (!this.pendingAssistantChunk || !this.draftAssistant) {
+      if (this.assistantChunkTimer) {
+        clearInterval(this.assistantChunkTimer);
+        this.assistantChunkTimer = null;
+      }
+      this.pendingAssistantChunk = "";
+      return;
+    }
+
+    const frame = this.pendingAssistantChunk.slice(0, this.assistantChunkFrameChars);
+    this.pendingAssistantChunk = this.pendingAssistantChunk.slice(frame.length);
+    this.appendAssistantFrame(frame);
+
+    if (!this.pendingAssistantChunk && this.assistantChunkTimer) {
+      clearInterval(this.assistantChunkTimer);
+      this.assistantChunkTimer = null;
+    }
+  }
+
+  private appendAssistantFrame(chunk: string): void {
+    if (!chunk || !this.draftAssistant) {
+      return;
+    }
+    this.draftAssistant.content += chunk;
+    this.recordUIEvent({
+      id: `delta-${this.draftAssistant.id}-${this.uiEventSequence + 1}`,
+      type: "assistant_delta",
+      messageId: this.draftAssistant.id,
+      delta: chunk,
+    });
+    this.updateUI();
+  }
+
+  private flushAssistantChunks(): void {
+    if (this.assistantChunkTimer) {
+      clearInterval(this.assistantChunkTimer);
+      this.assistantChunkTimer = null;
+    }
+
+    if (!this.pendingAssistantChunk || !this.draftAssistant) {
+      this.pendingAssistantChunk = "";
+      return;
+    }
+
+    const chunk = this.pendingAssistantChunk;
+    this.pendingAssistantChunk = "";
+    this.appendAssistantFrame(chunk);
+  }
+
   finishAssistantMessage(): void {
+    this.flushAssistantChunks();
     this.isThinking = this.turnActive;
     // Cancel any pending debounced updates and render final state immediately
     this.debouncedUpdateUI.cancel();
@@ -772,6 +912,7 @@ export class InkChatAdapter {
   }
 
   settleAssistantMessage(content: string): void {
+    this.flushAssistantChunks();
     const normalized = content.trim() || this.draftAssistant?.content.trim() || "";
     if (!normalized) {
       return;
@@ -796,6 +937,7 @@ export class InkChatAdapter {
       content: normalized,
       timestamp: draft?.timestamp ?? Date.now(),
     });
+    this.trimMessages();
     const message = this.messages[this.messages.length - 1];
     this.recordUIEvent({
       id: message.id,
@@ -810,10 +952,11 @@ export class InkChatAdapter {
   }
 
   discardAssistantMessage(): void {
-    this.debouncedUpdateUI.cancel();
-    this.draftAssistant = null;
-    this.isThinking = this.turnActive;
-    this.updateUI();
+    // Drops the in-flight draft AND every transient work indicator. cli.ts
+    // calls this on the error/abort path; before this consolidation, the
+    // tools list and workflowStages could survive a thrown turn and the
+    // user would see "Running …" stranded on screen after the agent died.
+    this.resetLiveWorkState({ keepDraft: false });
   }
 
   appendSystemMessage(content: string): void {
@@ -822,13 +965,14 @@ export class InkChatAdapter {
       return;
     }
 
-    if (normalized.startsWith("/")) {
+    if (isSlashCommandInput(normalized)) {
       this.setStatus(`Ran ${normalized}`);
       return;
     }
 
     const message = { id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, role: 'system' as const, content, timestamp: Date.now() };
     this.messages.push(message);
+    this.trimMessages();
     this.recordUIEvent({
       id: message.id,
       type: "message",
@@ -908,6 +1052,7 @@ export class InkChatAdapter {
       };
     } else {
       this.messages.push(message);
+      this.trimMessages();
     }
     this.recordUIEvent({
       id,
@@ -924,10 +1069,42 @@ export class InkChatAdapter {
     this.updateUI();
   }
 
+  /**
+   * Drop the oldest messages once the buffer exceeds MAX_STORED_MESSAGES.
+   * Called after every push site that adds to `this.messages`. Static's
+   * internal index handles the front-drop cleanly.
+   */
+  private trimMessages(): void {
+    const overflow = this.messages.length - MAX_STORED_MESSAGES;
+    if (overflow <= 0) return;
+    this.messages.splice(0, overflow);
+    this.droppedMessageCount += overflow;
+  }
+
+  private trimTools(): void {
+    const overflow = this.tools.length - MAX_LIVE_TOOLS;
+    if (overflow > 0) {
+      this.tools.splice(0, overflow);
+    }
+  }
+
+  private trimWorkflowStages(): void {
+    const overflow = this.workflowStages.length - MAX_WORKFLOW_STAGES;
+    if (overflow > 0) {
+      this.workflowStages.splice(0, overflow);
+    }
+  }
+
+  /** Exposed for the chat surface so it can show "+N earlier dropped" hints. */
+  getDroppedMessageCount(): number {
+    return this.droppedMessageCount;
+  }
+
   clearMessages(): void {
     this.messages = [];
     this.draftAssistant = null;
     this.messageCount = 0;
+    this.droppedMessageCount = 0;
     this.updateUI();
   }
 
@@ -968,7 +1145,12 @@ export class InkChatAdapter {
     return this.queueMode;
   }
 
-  enableContinuousChat(onSubmit: (text: string) => void): void {
+  enableContinuousChat(
+    onSubmit: (
+      text: string,
+      attachments?: import("../../agent/core/types.js").MessageAttachment[]
+    ) => void
+  ): void {
     this.onSubmitCallback = onSubmit;
     this.updateUI();
   }
@@ -1329,6 +1511,7 @@ export class InkChatAdapter {
   // Enhanced UI tracking methods
 
   addTool(toolName: string, args?: Record<string, unknown>, idOverride?: string): string {
+    this.flushAssistantChunks();
     const id = idOverride ?? `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     if (args && Object.keys(args).length > 0) {
       this.recentToolArgs.set(toolName, args);
@@ -1346,6 +1529,7 @@ export class InkChatAdapter {
       status: 'pending',
       args,
     });
+    this.trimTools();
     this.recordUIEvent({
       id: `tool-${id}`,
       type: "tool",
@@ -1356,6 +1540,50 @@ export class InkChatAdapter {
     });
     this.updateUI();
     return id;
+  }
+
+  previewToolCall(
+    id: string,
+    toolName?: string,
+    inputTextDelta?: string
+  ): void {
+    this.flushAssistantChunks();
+    const name = toolName || "tool";
+    const tool = this.findTool(id);
+    const previous = tool?.result ?? "";
+    const preview =
+      inputTextDelta && inputTextDelta.length > 0
+        ? `${previous}${inputTextDelta}`
+        : previous;
+
+    if (tool) {
+      if (toolName && tool.name !== toolName) {
+        tool.name = toolName;
+      }
+      tool.status = tool.status === "pending" ? "pending" : tool.status;
+      if (preview) {
+        tool.result = preview;
+      }
+    } else {
+      this.tools.push({
+        id,
+        name,
+        status: "pending",
+        startTime: Date.now(),
+        result: preview || undefined,
+      });
+      this.trimTools();
+    }
+
+    this.recordUIEvent({
+      id: `tool-${id}-delta-${this.uiEventSequence + 1}`,
+      type: "tool",
+      toolCallId: id,
+      toolName: name,
+      status: "pending",
+      preview: preview || undefined,
+    });
+    this.debouncedUpdateUI();
   }
 
   private findTool(handle: string): ToolCall | undefined {
@@ -1372,6 +1600,7 @@ export class InkChatAdapter {
   }
 
   startTool(id: string): void {
+    this.flushAssistantChunks();
     const tool = this.findTool(id);
     if (tool) {
       tool.status = 'running';
@@ -1425,6 +1654,11 @@ export class InkChatAdapter {
         details: tool.details,
         preview: result,
       });
+      // Cancel any pending throttled progress render — completeTool's
+      // synchronous updateUI() below already shows the final state. Without
+      // this cancel, the debounced render fires ~32ms later with the same
+      // state and produces a redundant whole-tree reconcile.
+      this.debouncedUpdateUI.cancel();
       this.updateUI();
     }
   }
@@ -1446,6 +1680,7 @@ export class InkChatAdapter {
         details: tool.details,
         error,
       });
+      this.debouncedUpdateUI.cancel();
       this.updateUI();
     }
   }
@@ -1479,6 +1714,7 @@ export class InkChatAdapter {
       name,
       status: 'pending',
     });
+    this.trimWorkflowStages();
     this.updateUI();
   }
 
@@ -1542,6 +1778,8 @@ export class InkChatAdapter {
   }
 
   destroy(): void {
+    this.flushAssistantChunks();
+    this.debouncedUpdateUI.cancel();
     this.detachEventBus();
     if (this.promptActive && this.promptRejecter) {
       this.promptRejecter(new Error('UI destroyed'));
@@ -1642,6 +1880,7 @@ export class InkChatAdapter {
       content: `${verb} ${modeLabel}: ${event.message}`,
       timestamp: event.timestamp,
     });
+    this.trimMessages();
     this.updateUI();
   }
 
@@ -1673,6 +1912,7 @@ export class InkChatAdapter {
         result: event.resultPreview,
         error: event.error,
       });
+      this.trimTools();
     }
     this.updateUI();
   }
@@ -1687,6 +1927,24 @@ export class InkChatAdapter {
       ...plan,
       tasks: plan.tasks.map((task) => ({ ...task })),
     };
+  }
+
+  private isPlanFinished(plan: Plan | null): boolean {
+    return Boolean(
+      plan?.tasks.length &&
+        plan.tasks.every(
+          (task) => task.status === "completed" || task.status === "skipped"
+        )
+    );
+  }
+
+  private clearFinishedPlan(): void {
+    if (!this.isPlanFinished(this.plan)) {
+      return;
+    }
+
+    this.plan = null;
+    planStore.clear();
   }
 
   private recordTimelineEvent(event: UITimelineEvent): void {

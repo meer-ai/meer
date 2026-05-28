@@ -12,6 +12,39 @@ import type {
 } from "./base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 import { createProviderToolNameRegistry } from "./toolNames.js";
+import type { MessageAttachment } from "../agent/core/types.js";
+import { readAttachmentBase64 } from "../utils/attachments.js";
+
+/**
+ * Build the `content` field for an Anthropic user message. When there are no
+ * image attachments we return the raw string (the API accepts that shape).
+ * With attachments we emit Anthropic's multi-block format:
+ *   [{ type: "text", text }, { type: "image", source: { type: "base64", media_type, data } }, ...]
+ */
+function buildAnthropicUserContent(
+  text: string,
+  attachments?: MessageAttachment[]
+): unknown {
+  if (!attachments?.length) {
+    return text;
+  }
+  const blocks: unknown[] = [];
+  if (text) {
+    blocks.push({ type: "text", text });
+  }
+  for (const attachment of attachments) {
+    if (attachment.kind !== "image") continue;
+    const { mimeType, data } = readAttachmentBase64(attachment);
+    blocks.push({
+      type: "image",
+      source: { type: "base64", media_type: mimeType, data },
+    });
+  }
+  if (blocks.length === 0) {
+    return text;
+  }
+  return blocks;
+}
 
 export interface AnthropicConfig {
   apiKey: string;
@@ -383,7 +416,10 @@ export class AnthropicProvider implements Provider {
       }
 
       if (msg.role === "user") {
-        converted.push({ role: "user", content: msg.content });
+        converted.push({
+          role: "user",
+          content: buildAnthropicUserContent(msg.content, msg.attachments),
+        });
         i++;
         continue;
       }
@@ -433,7 +469,10 @@ export class AnthropicProvider implements Provider {
 
     const converted = chatMessages.map((msg) => ({
       role: msg.role === "assistant" ? "assistant" : "user",
-      content: msg.content,
+      content:
+        msg.role === "user"
+          ? buildAnthropicUserContent(msg.content, msg.attachments)
+          : msg.content,
     }));
 
     // If there are system messages, we need to prepend them as user messages

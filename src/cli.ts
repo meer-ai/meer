@@ -32,6 +32,7 @@ import {
   handleSlashCommand,
   type SlashCommandResult,
 } from "./chat/slash.js";
+import { isSlashCommandInput } from "./slash/utils.js";
 import type { ChatMessage } from "./providers/base.js";
 import { backgroundTerminals } from "./runtime/backgroundTerminals.js";
 import { AgentSession, type SessionAgentRuntime } from "./agent/agent-session.js";
@@ -255,8 +256,12 @@ export function createCLI(): Command {
           await showWelcomeScreen();
         }
 
-        const pendingInputs: string[] = [];
-        let pendingResolver: ((value: string) => void) | null = null;
+        type PendingInput = {
+          text: string;
+          attachments?: import("./agent/core/types.js").MessageAttachment[];
+        };
+        const pendingInputs: PendingInput[] = [];
+        let pendingResolver: ((value: PendingInput) => void) | null = null;
         let session: AgentSession | null = null;
         let exitRequested = false;
         let queuedMessage: string | null = null;
@@ -307,12 +312,17 @@ export function createCLI(): Command {
           return false;
         };
 
-        const enqueueInput = (value: string) => {
+        const enqueueInput = (
+          value: string,
+          attachments?: import("./agent/core/types.js").MessageAttachment[]
+        ) => {
           const trimmed = value.trim();
-          if (!trimmed) {
+          const hasAttachments = (attachments?.length ?? 0) > 0;
+          if (!trimmed && !hasAttachments) {
             return;
           }
-          if (trimmed.startsWith("/")) {
+          // Slash commands never carry attachments — they're CLI verbs, not chat.
+          if (!hasAttachments && isSlashCommandInput(trimmed)) {
             void (async () => {
               try {
                 const result = await executeSlashCommand(trimmed);
@@ -325,8 +335,13 @@ export function createCLI(): Command {
             })();
             return;
           }
+          // Queueing mid-turn currently only carries text (the queue is text-only
+          // for steering/follow-up). If the user attached an image while the
+          // agent is processing, fall through to the pending-input path so it
+          // lands on the next live turn instead of being silently dropped.
           if (
             trimmed &&
+            !hasAttachments &&
             session?.isProcessing() &&
             session.queueMessage(
               trimmed,
@@ -335,12 +350,16 @@ export function createCLI(): Command {
           ) {
             return;
           }
+          const payload: PendingInput = {
+            text: value,
+            attachments: hasAttachments ? attachments : undefined,
+          };
           if (pendingResolver) {
             const resolve = pendingResolver;
             pendingResolver = null;
-            resolve(value);
+            resolve(payload);
           } else {
-            pendingInputs.push(value);
+            pendingInputs.push(payload);
           }
         };
 
@@ -381,6 +400,17 @@ export function createCLI(): Command {
           onCotMessage: (content: string) => chatUI?.addCotMessage(content),
           onToolStart: (tool: string, args: any, metadata?: { toolCallId?: string }) =>
             chatUI?.addTool(tool, args, metadata?.toolCallId),
+          onToolCallDelta: (
+            toolName: string | undefined,
+            inputTextDelta: string,
+            metadata: { toolCallId: string }
+          ) => {
+            chatUI?.previewToolCall(
+              metadata.toolCallId,
+              toolName,
+              inputTextDelta
+            );
+          },
           onToolUpdate: (
             toolName: string,
             status: string,
@@ -559,24 +589,50 @@ export function createCLI(): Command {
           process.exit(0);
         };
 
-        process.on("SIGINT", handleExit);
+        // First SIGINT while the agent is processing → abort the turn (and
+        // kill in-flight tool subprocesses), don't quit. Second SIGINT
+        // within ~2s, or any SIGINT when idle → full exit. Matches the
+        // Ctrl+C behavior wired into MeerChat.useInput so users see a
+        // consistent "stop work" vs "exit" distinction whether the press
+        // is captured by the Ink raw-mode reader or by the OS signal
+        // pipeline (depends on which terminal/terminfo combo they're on).
+        let sigintArmedUntil = 0;
+        const handleSigint = () => {
+          const now = Date.now();
+          const armed = now < sigintArmedUntil;
+          const busy = Boolean(session?.isProcessing());
+          if (busy && !armed) {
+            sigintArmedUntil = now + 2000;
+            try {
+              session?.abort();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              chatUI?.appendSystemMessage(`❌ abort failed: ${msg}`);
+            }
+            return;
+          }
+          void handleExit();
+        };
+
+        process.on("SIGINT", handleSigint);
         process.on("SIGTERM", handleExit);
 
         // ── Input helper ──────────────────────────────────────────────────────
-        const askQuestion = async (): Promise<string> => {
+        const askQuestion = async (): Promise<PendingInput> => {
           if (chatUI) {
             if (pendingInputs.length > 0) {
-              return pendingInputs.shift() as string;
+              return pendingInputs.shift() as PendingInput;
             }
-            return new Promise<string>((resolve) => {
+            return new Promise<PendingInput>((resolve) => {
               pendingResolver = resolve;
             });
           }
-          return ChatBoxUI.handleInput({
+          const text = await ChatBoxUI.handleInput({
             provider: providerType,
             model: config.model,
             cwd: process.cwd(),
           });
+          return { text };
         };
 
         // ── Main chat loop ────────────────────────────────────────────────────
@@ -590,13 +646,18 @@ export function createCLI(): Command {
           }
 
           let userInput: string;
+          let userAttachments:
+            | import("./agent/core/types.js").MessageAttachment[]
+            | undefined;
           if (queuedMessage !== null) {
             userInput = queuedMessage;
             queuedMessage = null;
           } else {
-            userInput = (await askQuestion()).trim();
+            const payload = await askQuestion();
+            userInput = payload.text.trim();
+            userAttachments = payload.attachments;
           }
-          if (!userInput) continue;
+          if (!userInput && (userAttachments?.length ?? 0) === 0) continue;
 
           // Exit shortcuts
           const lowered = userInput.toLowerCase();
@@ -606,8 +667,11 @@ export function createCLI(): Command {
             break;
           }
 
-          // Slash commands
-          if (userInput.startsWith("/")) {
+          // Slash commands (attachments never accompany slash routes).
+          if (
+            (userAttachments?.length ?? 0) === 0 &&
+            isSlashCommandInput(userInput)
+          ) {
             if (chatUI) chatUI.appendSystemMessage(userInput);
 
             const slashResult = await executeSlashCommand(userInput);
@@ -620,7 +684,10 @@ export function createCLI(): Command {
 
           // Regular message
           if (chatUI) {
-            chatUI.appendUserMessage(userInput, { consumeOptimistic: true });
+            chatUI.appendUserMessage(userInput, {
+              consumeOptimistic: true,
+              attachmentCount: userAttachments?.length,
+            });
           }
           sessionTracker.trackMessage();
 
@@ -631,17 +698,23 @@ export function createCLI(): Command {
 
           try {
             const start = Date.now();
-            await session.prompt(userInput);
+            await session.prompt(userInput, { attachments: userAttachments });
             sessionTracker.trackApiCall(Date.now() - start);
           } catch (error) {
             const message =
               error instanceof Error ? error.message : String(error);
             const isAbort = error instanceof Error && error.name === "AbortError";
             if (chatUI) {
-              chatUI.discardAssistantMessage();
+              // Defense in depth: forceResetWorkState clears ALL transient
+              // indicators (tools, workflow stages, status text, draft) so a
+              // thrown event-sink listener in meer-agent can't strand
+              // "Running …" or a partial tool widget on screen.
+              chatUI.forceResetWorkState();
               chatUI.setStatus("");
               if (isAbort) {
                 chatUI.appendSystemMessage("Interrupted.");
+              } else {
+                chatUI.appendSystemMessage(`❌ ${message}`);
               }
             } else {
               if (isAbort) {
@@ -658,7 +731,7 @@ export function createCLI(): Command {
         }
 
         // ── Session teardown ──────────────────────────────────────────────────
-        process.off("SIGINT", handleExit);
+        process.off("SIGINT", handleSigint);
         process.off("SIGTERM", handleExit);
         if (backgroundSessionTimer) {
           clearInterval(backgroundSessionTimer);

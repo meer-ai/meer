@@ -39,6 +39,8 @@ import type { AgentEventRecorder } from "../agent/eventRecorder.js";
 import { backgroundTerminals } from "../runtime/backgroundTerminals.js";
 import { loadSkillsForCwd } from "../skills/index.js";
 import type { SkillDiagnostic } from "../skills/index.js";
+import { getDiagnostics } from "../utils/diagnostics.js";
+import { spawnSync } from "child_process";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -328,6 +330,100 @@ async function handleSkillsCommand(tui?: InkChatAdapter | null): Promise<void> {
 }
 
 // ─── Inline command implementations ──────────────────────────────────────────
+
+/**
+ * Build a self-contained diagnostics dump for bug reports. Writes JSON to
+ * ~/.meer/diagnostics-<timestamp>.json with runtime info, recent recorded
+ * errors, and environment capabilities. Also tries to copy the path to the
+ * clipboard (best-effort, platform-dependent) so users can paste it
+ * straight into an issue.
+ *
+ * Intentionally avoids exposing secrets: no API keys, no env vars beyond a
+ * curated allowlist of capability checks.
+ */
+async function writeDiagnosticsDump(args: {
+  config: any;
+  tui?: InkChatAdapter | null;
+}): Promise<{ path: string; copied: boolean }> {
+  const { config, tui } = args;
+  const tsLabel = new Date().toISOString().replace(/[:.]/g, "-");
+  const dumpDir = join(homedir(), ".meer");
+  mkdirSync(dumpDir, { recursive: true });
+  const dumpPath = join(dumpDir, `diagnostics-${tsLabel}.json`);
+
+  const recentDiagnostics = getDiagnostics(50);
+  const recentTimeline =
+    tui
+      ?.getTimelineEvents?.(50)
+      ?.map((event) => ({ ...event, timestamp: event.timestamp })) ?? [];
+
+  const payload = {
+    schemaVersion: 1,
+    capturedAt: new Date().toISOString(),
+    process: {
+      node: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      pid: process.pid,
+      cwd: process.cwd(),
+      uptimeSeconds: Math.round(process.uptime()),
+      memory: process.memoryUsage(),
+    },
+    config: {
+      provider:
+        config && typeof config === "object" && "providerType" in config
+          ? (config as { providerType?: unknown }).providerType
+          : undefined,
+      model:
+        config && typeof config === "object" && "model" in config
+          ? (config as { model?: unknown }).model
+          : undefined,
+      hasApiKey:
+        config && typeof config === "object" && "apiKey" in config
+          ? Boolean((config as { apiKey?: unknown }).apiKey)
+          : undefined,
+    },
+    capabilities: {
+      tty: Boolean(process.stdout.isTTY),
+      columns: process.stdout.columns ?? null,
+      rows: process.stdout.rows ?? null,
+      colorDepth:
+        typeof process.stdout.getColorDepth === "function"
+          ? process.stdout.getColorDepth()
+          : null,
+    },
+    recentTimeline,
+    recentDiagnostics,
+  };
+
+  writeFileSync(dumpPath, JSON.stringify(payload, null, 2));
+
+  // Best-effort: copy the path (not the contents) to clipboard so the user
+  // has it ready to paste into a bug report. Failures are silent.
+  let copied = false;
+  try {
+    const platform = process.platform;
+    if (platform === "darwin") {
+      copied = spawnSync("pbcopy", [], { input: dumpPath, timeout: 1000 }).status === 0;
+    } else if (platform === "linux") {
+      if (process.env.WAYLAND_DISPLAY) {
+        copied = spawnSync("wl-copy", [], { input: dumpPath, timeout: 1000 }).status === 0;
+      } else {
+        copied =
+          spawnSync("xclip", ["-selection", "clipboard"], {
+            input: dumpPath,
+            timeout: 1000,
+          }).status === 0;
+      }
+    } else if (platform === "win32") {
+      copied = spawnSync("clip", [], { input: dumpPath, timeout: 1000 }).status === 0;
+    }
+  } catch {
+    copied = false;
+  }
+
+  return { path: dumpPath, copied };
+}
 
 async function handleAccountCommand(): Promise<void> {
   const { AuthStorage } = await import("../auth/storage.js");
@@ -1191,6 +1287,22 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
       console.log(
         chalk.gray(
           `Compacted ${result.summarizedMessageCount} messages into a session summary; ${kept}.`
+        )
+      );
+    }
+    return continueResult();
+  },
+
+  "/diagnose": async ({ tui, config }) => {
+    const result = await writeDiagnosticsDump({ config, tui });
+    if (tui) {
+      tui.appendSystemMessage(
+        `Diagnostics written to ${result.path}${result.copied ? " (also on clipboard)" : ""}`
+      );
+    } else {
+      console.log(
+        chalk.gray(
+          `Diagnostics written to ${result.path}${result.copied ? " (also on clipboard)" : ""}`
         )
       );
     }

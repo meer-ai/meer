@@ -42,6 +42,8 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(
       return;
     }
 
+    // Elapsed times only need sub-second precision for the first ~10s, then
+    // tick once per second. Running at 100ms causes whole-chat re-renders.
     const interval = setInterval(() => {
       const newElapsed = new Map<string, number>();
       tools.forEach((tool: ToolCall) => {
@@ -50,7 +52,7 @@ export const ToolExecutionPanel: React.FC<ToolExecutionPanelProps> = React.memo(
         }
       });
       setElapsedTimes(newElapsed);
-    }, 100);
+    }, 500);
 
     return () => clearInterval(interval);
   }, [tools]);

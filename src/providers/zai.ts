@@ -6,6 +6,15 @@ import type {
   EmbedOptions,
   ProviderMetadata,
 } from "./base.js";
+import { buildOpenAIUserContent } from "./openai.js";
+
+function expandUserMessagesForOpenAI(messages: ChatMessage[]): unknown[] {
+  return messages.map((msg) =>
+    msg.role === "user"
+      ? { role: "user", content: buildOpenAIUserContent(msg.content, msg.attachments) }
+      : { role: msg.role, content: msg.content }
+  );
+}
 
 export interface ZaiConfig {
   apiKey: string;
@@ -140,10 +149,11 @@ class ZaiProviderBase implements Provider {
   }
 
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
+    const expanded = expandUserMessagesForOpenAI(messages);
     const response = await this.executeWithChatModels(async (model) => {
       return this.makeRequest("/chat/completions", {
         model,
-        messages,
+        messages: expanded,
         temperature: options?.temperature ?? this.config.temperature,
         max_tokens: options?.maxTokens,
         top_p: options?.topP,
@@ -154,6 +164,7 @@ class ZaiProviderBase implements Provider {
   }
 
   async *stream(messages: ChatMessage[], options?: ChatOptions): AsyncIterable<string> {
+    const expanded = expandUserMessagesForOpenAI(messages);
     const response = await this.executeWithChatModels(async (model) => {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
@@ -165,7 +176,7 @@ class ZaiProviderBase implements Provider {
         headers,
         body: JSON.stringify({
           model,
-          messages,
+          messages: expanded,
           stream: true,
           temperature: options?.temperature ?? this.config.temperature,
           max_tokens: options?.maxTokens,

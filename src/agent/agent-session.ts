@@ -50,6 +50,7 @@ export interface SessionAgentRuntime {
       turnId?: string;
       preparedMessages?: AgentMessage[];
       systemPrompt?: string;
+      attachments?: import("./core/types.js").MessageAttachment[];
     }
   ): Promise<RuntimeProcessResult>;
   abort?(): void;
@@ -291,7 +292,13 @@ export class AgentSession {
     this.runtime.abort?.();
   }
 
-  async prompt(userMessage: string): Promise<string> {
+  async prompt(
+    userMessage: string,
+    options?: {
+      attachments?: import("./core/types.js").MessageAttachment[];
+    }
+  ): Promise<string> {
+    const attachments = options?.attachments;
     const retries = Math.max(0, this.retry?.attempts ?? 0);
     const baseDelay = Math.max(0, this.retry?.delayMs ?? 0);
     const backoffFactor = Math.max(1, this.retry?.backoffFactor ?? 1);
@@ -331,6 +338,7 @@ export class AgentSession {
             turnId,
             preparedMessages,
             systemPrompt,
+            attachments,
           });
           this.conversationHistory = trimConversationHistory(
             result.conversationHistory

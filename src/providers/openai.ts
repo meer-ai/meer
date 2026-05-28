@@ -11,6 +11,42 @@ import type {
 } from "./base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 import { createProviderToolNameRegistry } from "./toolNames.js";
+import type { MessageAttachment } from "../agent/core/types.js";
+import { readAttachmentBase64 } from "../utils/attachments.js";
+
+/**
+ * Build the `content` field for an OpenAI-format user message. Returns a
+ * plain string when there are no attachments (the Chat Completions API
+ * accepts it), otherwise emits multi-part content with image_url parts:
+ *   [{ type: "text", text }, { type: "image_url", image_url: { url: "data:..." } }, ...]
+ *
+ * This shape is shared by the standard OpenAI API and any OpenAI-compatible
+ * gateway (OpenRouter, Z.ai, Opencode) so the same helper plugs into each.
+ */
+export function buildOpenAIUserContent(
+  text: string,
+  attachments?: MessageAttachment[]
+): unknown {
+  if (!attachments?.length) {
+    return text;
+  }
+  const parts: unknown[] = [];
+  if (text) {
+    parts.push({ type: "text", text });
+  }
+  for (const attachment of attachments) {
+    if (attachment.kind !== "image") continue;
+    const { mimeType, data } = readAttachmentBase64(attachment);
+    parts.push({
+      type: "image_url",
+      image_url: { url: `data:${mimeType};base64,${data}` },
+    });
+  }
+  if (parts.length === 0) {
+    return text;
+  }
+  return parts;
+}
 
 export interface OpenAIConfig {
   apiKey: string;
@@ -67,12 +103,20 @@ export class OpenAIProvider implements Provider {
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     const response = await this.makeRequest("/chat/completions", {
       model: this.config.model,
-      messages,
+      messages: this.expandUserMessages(messages),
       ...this.temperatureParams(options?.temperature),
       ...this.tokenParam(options?.maxTokens),
     });
 
     return response.choices?.[0]?.message?.content || "";
+  }
+
+  private expandUserMessages(messages: ChatMessage[]): unknown[] {
+    return messages.map((msg) =>
+      msg.role === "user"
+        ? { role: "user", content: buildOpenAIUserContent(msg.content, msg.attachments) }
+        : { role: msg.role, content: msg.content }
+    );
   }
 
   async *stream(
@@ -93,7 +137,7 @@ export class OpenAIProvider implements Provider {
       headers,
       body: JSON.stringify({
         model: this.config.model,
-        messages,
+        messages: this.expandUserMessages(messages),
         ...this.temperatureParams(options?.temperature),
         ...this.tokenParam(options?.maxTokens),
         stream: true,
@@ -391,7 +435,10 @@ export class OpenAIProvider implements Provider {
         converted.push({ role: "system", content: msg.content });
       } else if (msg.role === "user") {
         pendingToolCallIds.clear();
-        converted.push({ role: "user", content: msg.content });
+        converted.push({
+          role: "user",
+          content: buildOpenAIUserContent(msg.content, msg.attachments),
+        });
       } else if (msg.role === "assistant") {
         pendingToolCallIds.clear();
         if (

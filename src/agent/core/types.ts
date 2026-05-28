@@ -18,8 +18,37 @@ export interface ToolCallBlock {
   input: Record<string, unknown>;
 }
 
+/**
+ * Attachments rides alongside the user's text rather than rewriting the
+ * `content` field, so every existing consumer that reads `message.content`
+ * as a string keeps working untouched. Only provider adapters and the submit
+ * path need to know about attachments.
+ *
+ * Source variants:
+ *  - `{ type: "path", path }` — lazy, the provider reads + base64-encodes at
+ *    send time. Preferred for persistence (sessions stay small).
+ *  - `{ type: "base64", data }` — already loaded into memory. Used right
+ *    after a clipboard paste or when round-tripping in-flight.
+ */
+export interface MessageAttachment {
+  kind: "image";
+  mimeType: string;
+  source:
+    | { type: "path"; path: string }
+    | { type: "base64"; data: string };
+  /** Original filename or hint for display in the transcript. */
+  name?: string;
+  /** Approximate decoded byte size when known. */
+  sizeBytes?: number;
+}
+
 export type AgentMessage =
-  | { role: "user"; content: string; timestamp?: number }
+  | {
+      role: "user";
+      content: string;
+      attachments?: MessageAttachment[];
+      timestamp?: number;
+    }
   | { role: "system"; content: string; timestamp?: number }
   | {
       role: "assistant";
@@ -71,6 +100,12 @@ export type AgentEvent =
   | { type: "turn_start" }
   | { type: "turn_end" }
   | { type: "text_delta"; text: string }
+  | {
+      type: "tool_call_delta";
+      toolCallId: string;
+      toolName?: string;
+      inputTextDelta: string;
+    }
   | {
       type: "tool_start";
       toolCallId: string;

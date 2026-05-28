@@ -43,6 +43,12 @@ const COMMAND_RESULT_MAX_LINES = 2000;
 const COMMAND_RESULT_MAX_BYTES = 200 * 1024;
 const COMMAND_TAIL_LINES = 12;
 
+const ANSI_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]/g;
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_PATTERN, "");
+}
+
 export interface ToolResult {
   tool: string;
   result: string;
@@ -800,11 +806,15 @@ export async function runCommand(
   }
 
   return new Promise((resolve) => {
+    const isPosix = process.platform !== "win32";
     const child = spawn(normalizedCommand, {
       cwd,
       shell: true,
       env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ["ignore", "pipe", "pipe"],
+      // Run in its own process group on POSIX so we can kill descendants too.
+      detached: isPosix,
+      windowsHide: true,
     });
 
     let stdoutBuffer = "";
@@ -813,6 +823,32 @@ export async function runCommand(
     let didCancel = false;
     let settled = false;
     let forceKillHandle: NodeJS.Timeout | undefined;
+    let stdoutEnded = !child.stdout;
+    let stderrEnded = !child.stderr;
+    let exited = false;
+    let exitCode: number | null = null;
+    let exitSignal: NodeJS.Signals | null = null;
+    let postExitGrace: NodeJS.Timeout | undefined;
+
+    const STDIO_GRACE_MS = 100;
+
+    // Kill the whole process tree (children that may hold stdio handles).
+    const killTree = (sig: NodeJS.Signals) => {
+      if (!child.pid) return;
+      if (isPosix) {
+        try {
+          process.kill(-child.pid, sig);
+          return;
+        } catch {
+          // Fall through to direct kill if the group is gone.
+        }
+      }
+      try {
+        child.kill(sig);
+      } catch {
+        // Process is already gone; ignore.
+      }
+    };
 
     const buildProgress = (
       state:
@@ -831,10 +867,19 @@ export async function runCommand(
         `$ ${normalizedCommand}`,
         `${state} ${elapsed}s`,
         tail,
-      ].filter(Boolean).join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
     };
 
-    const emitProgress = (
+    // Throttle UI updates so chatty commands don't flood Ink with re-renders.
+    const UPDATE_THROTTLE_MS = 100;
+    let updateDirty = false;
+    let lastUpdateAt = 0;
+    let updateTimer: NodeJS.Timeout | undefined;
+    const onUpdate = options?.onUpdate;
+
+    const flushUpdate = (
       state:
         | "starting"
         | "running"
@@ -843,27 +888,59 @@ export async function runCommand(
         | "timed_out"
         | "cancelled" = "running"
     ) => {
-      options?.onUpdate?.(buildProgress(state));
+      if (!onUpdate) return;
+      updateDirty = false;
+      lastUpdateAt = Date.now();
+      onUpdate(buildProgress(state));
     };
 
-    emitProgress("starting");
+    const scheduleUpdate = () => {
+      if (!onUpdate) return;
+      updateDirty = true;
+      const delay = UPDATE_THROTTLE_MS - (Date.now() - lastUpdateAt);
+      if (delay <= 0) {
+        if (updateTimer) {
+          clearTimeout(updateTimer);
+          updateTimer = undefined;
+        }
+        flushUpdate();
+        return;
+      }
+      if (!updateTimer) {
+        updateTimer = setTimeout(() => {
+          updateTimer = undefined;
+          if (updateDirty) flushUpdate();
+        }, delay);
+      }
+    };
 
-    // Display elapsed time every 10 seconds
-    const timerInterval = setInterval(() => {
+    const clearUpdateTimer = () => {
+      if (updateTimer) {
+        clearTimeout(updateTimer);
+        updateTimer = undefined;
+      }
+    };
+
+    // Initial "starting" frame.
+    flushUpdate("starting");
+
+    // Console heartbeat when not piping to the Ink UI.
+    const heartbeatInterval = setInterval(() => {
+      if (useInlineUpdates) return;
+      if (options?.silent) return;
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       const remaining = Math.floor((timeoutMs - (Date.now() - startTime)) / 1000);
-
-      if (useInlineUpdates) {
-        emitProgress();
-      } else if (!options?.silent && remaining > 0) {
-        console.log(chalk.gray(`  ⏱️  Elapsed: ${elapsed}s | Timeout in: ${remaining}s`));
+      if (remaining > 0) {
+        console.log(
+          chalk.gray(`  ⏱️  Elapsed: ${elapsed}s | Timeout in: ${remaining}s`)
+        );
       }
     }, 10000);
 
     const timeoutHandle = setTimeout(() => {
       didTimeout = true;
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      options?.onUpdate?.(
+      onUpdate?.(
         `$ ${normalizedCommand}\ntimed_out ${elapsed}s\nsending SIGTERM...`
       );
       if (!options?.silent && !useInlineUpdates) {
@@ -874,12 +951,10 @@ export async function runCommand(
         );
         console.log(chalk.yellow(`  💡 Tip: Use timeoutMs option to increase timeout`));
       }
-      child.kill("SIGTERM");
-
-      // Force kill if still running after grace period
+      killTree("SIGTERM");
       forceKillHandle = setTimeout(() => {
         if (!settled) {
-          options?.onUpdate?.(
+          onUpdate?.(
             `$ ${normalizedCommand}\ntimed_out ${elapsed}s\nunresponsive, sending SIGKILL`
           );
           if (!options?.silent && !useInlineUpdates) {
@@ -889,71 +964,75 @@ export async function runCommand(
               )
             );
           }
-          child.kill("SIGKILL");
+          killTree("SIGKILL");
         }
       }, 5000);
     }, timeoutMs);
 
     const abortHandler = () => {
-      if (settled || didCancel) {
-        return;
-      }
+      if (settled || didCancel) return;
       didCancel = true;
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      options?.onUpdate?.(
+      onUpdate?.(
         `$ ${normalizedCommand}\ncancelled ${elapsed}s\nsending SIGTERM...`
       );
-      child.kill("SIGTERM");
+      killTree("SIGTERM");
       forceKillHandle = setTimeout(() => {
-        if (!settled) {
-          child.kill("SIGKILL");
-        }
+        if (!settled) killTree("SIGKILL");
       }, 3000);
     };
 
     options?.signal?.addEventListener("abort", abortHandler, { once: true });
 
-    child.stdout?.on("data", (chunk) => {
-      const text = chunk.toString();
+    const handleStdout = (chunk: Buffer) => {
+      const text = stripAnsi(chunk.toString());
       stdoutBuffer += text;
       if (useInlineUpdates) {
-        emitProgress();
+        scheduleUpdate();
       } else if (!options?.silent) {
         process.stdout.write(text);
       }
-    });
+    };
 
-    child.stderr?.on("data", (chunk) => {
-      const text = chunk.toString();
+    const handleStderr = (chunk: Buffer) => {
+      const text = stripAnsi(chunk.toString());
       stderrBuffer += text;
       if (useInlineUpdates) {
-        emitProgress();
+        scheduleUpdate();
       } else if (!options?.silent) {
-        process.stderr.write(chalk.gray(text)); // Gray for stderr
+        process.stderr.write(chalk.gray(text));
       }
+    };
+
+    child.stdout?.on("data", handleStdout);
+    child.stderr?.on("data", handleStderr);
+    child.stdout?.once("end", () => {
+      stdoutEnded = true;
+      maybeSettleAfterExit();
+    });
+    child.stderr?.once("end", () => {
+      stderrEnded = true;
+      maybeSettleAfterExit();
     });
 
     const finalize = (
       result: ToolResult,
       state: "completed" | "failed" | "timed_out" | "cancelled"
     ) => {
-      if (settled) {
-        return;
-      }
+      if (settled) return;
       settled = true;
-      clearInterval(timerInterval);
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-      if (forceKillHandle) {
-        clearTimeout(forceKillHandle);
-      }
+      clearInterval(heartbeatInterval);
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (forceKillHandle) clearTimeout(forceKillHandle);
+      if (postExitGrace) clearTimeout(postExitGrace);
+      clearUpdateTimer();
       options?.signal?.removeEventListener("abort", abortHandler);
+      // Detach streams so descendants holding inherited fds can't keep us alive.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
 
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      options?.onUpdate?.(
-        `${buildProgress(state)}\n${state} in ${elapsed}s`
-      );
+      onUpdate?.(`${buildProgress(state)}\n${state} in ${elapsed}s`);
       if (!options?.silent && !useInlineUpdates) {
         console.log(chalk.gray(`\n  ✓ Completed in ${elapsed}s\n`));
       }
@@ -988,80 +1067,140 @@ export async function runCommand(
       };
     };
 
-    child.on("error", (error) => {
-      const errorMessage = `Failed to start command: ${
-          error instanceof Error ? error.message : String(error)
-        }`;
-      finalize(buildResult(stdoutBuffer, {
-        state: "failed",
-        error: errorMessage,
-      }), "failed");
-    });
+    const settleFromExit = () => {
+      if (settled) return;
+      const code = exitCode;
+      const signal = exitSignal;
 
-    child.on("close", (code, signal) => {
       if (didCancel) {
-        finalize(buildResult(stdoutBuffer, {
-          state: "cancelled",
-          exitCode: code,
-          signal,
-          error: `Command cancelled: ${normalizedCommand}`,
-        }), "cancelled");
+        finalize(
+          buildResult(stdoutBuffer, {
+            state: "cancelled",
+            exitCode: code,
+            signal,
+            error: `Command cancelled: ${normalizedCommand}`,
+          }),
+          "cancelled"
+        );
         return;
       }
 
       if (didTimeout) {
-        finalize(buildResult(stdoutBuffer, {
-          state: "timed_out",
-          exitCode: code,
-          signal,
-          error: `Command timed out after ${timeoutMs / 1000}s. Increase timeout with timeoutMs option if needed.`,
-        }), "timed_out");
+        finalize(
+          buildResult(stdoutBuffer, {
+            state: "timed_out",
+            exitCode: code,
+            signal,
+            error: `Command timed out after ${timeoutMs / 1000}s. Increase timeout with timeoutMs option if needed.`,
+          }),
+          "timed_out"
+        );
         return;
       }
 
       if (signal && signal !== "SIGTERM") {
-        finalize(buildResult(stdoutBuffer, {
-          state: "failed",
-          exitCode: code,
-          signal,
-          error: `Command terminated with signal ${signal}`,
-        }), "failed");
+        finalize(
+          buildResult(stdoutBuffer, {
+            state: "failed",
+            exitCode: code,
+            signal,
+            error: `Command terminated with signal ${signal}`,
+          }),
+          "failed"
+        );
         return;
       }
 
       if (code === 0) {
         ProjectContextManager.getInstance().invalidate(cwd);
-        finalize(buildResult(stdoutBuffer || "Command executed successfully.", {
-          state: "completed",
+        finalize(
+          buildResult(stdoutBuffer || "Command executed successfully.", {
+            state: "completed",
+            exitCode: code,
+            signal,
+          }),
+          "completed"
+        );
+        return;
+      }
+
+      // Many tools exit non-zero to signal findings (npm audit, eslint, tsc).
+      const stderrText = stderrBuffer.trim();
+      if (stdoutBuffer.trim()) {
+        ProjectContextManager.getInstance().invalidate(cwd);
+        const exitNote = stderrText
+          ? `\n[exit ${code}: ${stderrText}]`
+          : `\n[exit ${code}]`;
+        finalize(
+          buildResult(stdoutBuffer + exitNote, {
+            state: "failed",
+            exitCode: code,
+            signal,
+          }),
+          "failed"
+        );
+        return;
+      }
+
+      const errorMessage =
+        stderrText.length > 0
+          ? `Command failed (exit ${code}): ${stderrText}`
+          : `Command failed with exit code ${code}.`;
+      finalize(
+        buildResult(stdoutBuffer, {
+          state: "failed",
           exitCode: code,
           signal,
-        }), "completed");
-      } else {
-        // Many tools exit non-zero to signal findings (npm audit, eslint, tsc, etc.)
-        // When stdout has content, treat it as a result not a hard failure.
-        const stderrText = stderrBuffer.trim();
-        if (stdoutBuffer.trim()) {
-          ProjectContextManager.getInstance().invalidate(cwd);
-          const exitNote = stderrText
-            ? `\n[exit ${code}: ${stderrText}]`
-            : `\n[exit ${code}]`;
-          finalize(buildResult(stdoutBuffer + exitNote, {
-            state: "failed",
-            exitCode: code,
-            signal,
-          }), "failed");
-        } else {
-          const errorMessage = stderrText.length > 0
-              ? `Command failed (exit ${code}): ${stderrText}`
-              : `Command failed with exit code ${code}.`;
-          finalize(buildResult(stdoutBuffer, {
-            state: "failed",
-            exitCode: code,
-            signal,
-            error: errorMessage,
-          }), "failed");
-        }
+          error: errorMessage,
+        }),
+        "failed"
+      );
+    };
+
+    function maybeSettleAfterExit() {
+      if (!exited || settled) return;
+      if (stdoutEnded && stderrEnded) {
+        settleFromExit();
       }
+    }
+
+    child.on("error", (error) => {
+      const errorMessage = `Failed to start command: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+      finalize(
+        buildResult(stdoutBuffer, {
+          state: "failed",
+          error: errorMessage,
+        }),
+        "failed"
+      );
+    });
+
+    // Settle on `exit` (process is gone) instead of `close` (waits for inherited
+    // stdio to drain). Use `close` as the fast path when streams ended cleanly.
+    child.once("exit", (code, signal) => {
+      exited = true;
+      exitCode = code;
+      exitSignal = signal ?? null;
+      if (stdoutEnded && stderrEnded) {
+        settleFromExit();
+      } else if (!postExitGrace) {
+        postExitGrace = setTimeout(() => {
+          // Inherited stdio is keeping the streams open; finalize anyway.
+          settleFromExit();
+        }, STDIO_GRACE_MS);
+      }
+    });
+
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      if (!exited) {
+        exited = true;
+        exitCode = code;
+        exitSignal = signal ?? null;
+      }
+      settleFromExit();
     });
   });
 }

@@ -5,6 +5,7 @@ import type {
   ChatOptions,
   ProviderMetadata,
 } from "./base.js";
+import { readAttachmentBase64 } from "../utils/attachments.js";
 
 export interface GeminiConfig {
   apiKey: string;
@@ -175,7 +176,6 @@ export class GeminiProvider implements Provider {
     const contents: any[] = [];
 
     for (const msg of messages) {
-      // Gemini uses 'user' and 'model' roles
       const role =
         msg.role === "assistant"
           ? "model"
@@ -183,18 +183,29 @@ export class GeminiProvider implements Provider {
           ? "user"
           : msg.role;
 
-      // Combine system messages with user messages
       if (msg.role === "system") {
         contents.push({
           role: "user",
           parts: [{ text: `[System Instructions]\n${msg.content}` }],
         });
-      } else {
-        contents.push({
-          role,
-          parts: [{ text: msg.content }],
-        });
+        continue;
       }
+
+      const parts: any[] = [];
+      if (msg.content) {
+        parts.push({ text: msg.content });
+      }
+      if (msg.role === "user" && msg.attachments?.length) {
+        for (const attachment of msg.attachments) {
+          if (attachment.kind !== "image") continue;
+          const { mimeType, data } = readAttachmentBase64(attachment);
+          parts.push({ inlineData: { mimeType, data } });
+        }
+      }
+      if (parts.length === 0) {
+        parts.push({ text: "" });
+      }
+      contents.push({ role, parts });
     }
 
     return contents;

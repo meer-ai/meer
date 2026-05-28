@@ -1,9 +1,15 @@
-import type { AgentMessage, ToolDefinition } from '../agent/core/types.js';
-export type { AgentMessage, ToolDefinition };
+import type {
+  AgentMessage,
+  MessageAttachment,
+  ToolDefinition,
+} from '../agent/core/types.js';
+export type { AgentMessage, MessageAttachment, ToolDefinition };
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** Image attachments — only meaningful on user messages. */
+  attachments?: MessageAttachment[];
 }
 
 export interface ChatOptions {

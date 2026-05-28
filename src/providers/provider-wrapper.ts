@@ -231,7 +231,11 @@ export class ProviderWrapper implements Provider {
       }
 
       if (msg.role === "user") {
-        result.push({ role: "user", content: msg.content });
+        result.push({
+          role: "user",
+          content: msg.content,
+          attachments: msg.attachments,
+        });
         i++;
         continue;
       }

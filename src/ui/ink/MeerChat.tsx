@@ -3,13 +3,14 @@ import React, {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
 } from "react";
-import { Box, Text, useInput, useApp } from "ink";
+import { Box, Static, Text, useInput, useApp } from "ink";
 import {
   getAllCommands,
   type SlashCommandListEntry,
 } from "../../slash/registry.js";
-import { getSlashCommandBadges } from "../../slash/utils.js";
+import { getSlashCommandBadges, isSlashCommandInput } from "../../slash/utils.js";
 import type { Plan } from "../../plan/types.js";
 import { type ToolCall } from "./components/tools/index.js";
 import { PlanPanel } from "./components/plan/index.js";
@@ -17,9 +18,15 @@ import { BrandMark } from "./components/core/index.js";
 import { WrappedComposerInput } from "./components/input/WrappedComposerInput.js";
 import type { WorkflowStage } from "./components/workflow/index.js";
 import { VirtualizedList, ScrollIndicator } from "./components/shared/index.js";
+import { RenderErrorBoundary } from "./components/shared/ErrorBoundary.js";
+import { recordDiagnostic } from "../../utils/diagnostics.js";
 import type { Message } from "./contexts/ChatContext.js";
 import { debounce } from "./utils/debounce.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
+import type { MessageAttachment } from "../../agent/core/types.js";
+import { readClipboardImage } from "../../utils/clipboard-image.js";
+import { saveAttachmentBytes, attachmentFromFile } from "../../utils/attachments.js";
+import { readFileSync } from "node:fs";
 import type { UITimelineEvent } from "./timelineTypes.js";
 import { getToolRenderer } from "./tool-renderers/registry.js";
 import {
@@ -36,7 +43,7 @@ import {
 // ============================================================================
 
 export interface MeerChatProps {
-  onMessage: (message: string) => void;
+  onMessage: (message: string, attachments?: MessageAttachment[]) => void;
   messages: Message[];
   draftAssistant?: Message;
   isThinking: boolean;
@@ -84,6 +91,8 @@ export interface MeerChatProps {
   onQueueModeChange?: (mode: "steer" | "followUp") => void;
   backgroundSessions?: BackgroundTerminalSession[];
   onStopBackgroundSession?: (id: string) => void;
+  /** Count of messages dropped from the front of the in-memory buffer. */
+  droppedMessageCount?: number;
 }
 
 // ============================================================================
@@ -101,6 +110,19 @@ type WorkRow = {
 };
 
 const SLASH_SUGGESTION_WINDOW = 8;
+
+/** Lightweight projection of an attachment for the composer chip row. */
+export type AttachmentPreview = {
+  name: string;
+  sizeBytes?: number;
+};
+
+function formatAttachmentSize(bytes?: number): string {
+  if (!bytes) return "";
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)}KB`;
+  return `${bytes}B`;
+}
 
 function shouldRenderTranscriptMessage(message: Message): boolean {
   if (message.role !== "tool") return true;
@@ -125,6 +147,21 @@ function getToolTarget(tool: ToolCall): string {
   const path = getFilePath(args);
   if (path) {
     return truncateLine(path, 64);
+  }
+
+  const source = getStringArg(args, ["source", "src", "from"]);
+  const destination = getStringArg(args, ["destination", "dest", "target", "to"]);
+  if (source && destination) {
+    return truncateLine(`${source} → ${destination}`, 64);
+  }
+  if (source || destination) {
+    return truncateLine(source || destination, 64);
+  }
+
+  const files = getStringArrayArg(args, ["files", "paths"]);
+  if (files.length > 0) {
+    const visible = files.slice(0, 2).join(", ");
+    return truncateLine(`${visible}${files.length > 2 ? ` +${files.length - 2}` : ""}`, 64);
   }
 
   const command = getCommand(args);
@@ -163,6 +200,89 @@ function getToolTarget(tool: ToolCall): string {
   }
 
   return "";
+}
+
+function getStringArg(args: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function getStringArrayArg(args: Record<string, unknown>, keys: string[]): string[] {
+  for (const key of keys) {
+    const value = args[key];
+    if (Array.isArray(value)) {
+      return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    }
+    if (typeof value === "string" && value.trim()) {
+      return [value.trim()];
+    }
+  }
+  return [];
+}
+
+function getToolPrimaryLabel(tool: ToolCall, maxTargetLength = 72): string {
+  const args = tool.args ?? {};
+  const lower = tool.name.toLowerCase();
+  const action = tool.name.replace(/_/g, " ");
+  const target = getToolTarget(tool);
+  const compactTarget = target ? truncateLine(target, maxTargetLength) : "";
+  const quote = (value: string, max = 48) => `"${truncateLine(value, max)}"`;
+
+  if (lower === "read_file") {
+    return compactTarget ? `read file ${compactTarget}` : "read file";
+  }
+  if (lower === "read_many_files") {
+    return compactTarget ? `read files ${compactTarget}` : "read files";
+  }
+  if (lower === "read_folder" || lower === "list_files") {
+    return `list ${compactTarget || "."}`;
+  }
+  if (lower === "find_files") {
+    const pattern = getStringArg(args, ["pattern", "includePattern", "filePattern"]);
+    return pattern ? `find files ${quote(pattern)}` : "find files";
+  }
+  if (lower === "search_text") {
+    const term = getStringArg(args, ["term", "query", "pattern"]);
+    const filePattern = getStringArg(args, ["filePattern", "includePattern", "path"]);
+    return term
+      ? `search ${quote(term)}${filePattern ? ` in ${truncateLine(filePattern, 36)}` : ""}`
+      : "search text";
+  }
+  if (lower === "grep") {
+    const pattern = getStringArg(args, ["pattern", "term", "query"]);
+    const path = getFilePath(args);
+    return pattern
+      ? `grep ${quote(pattern)}${path ? ` in ${truncateLine(path, 44)}` : ""}`
+      : compactTarget
+        ? `grep ${compactTarget}`
+        : "grep";
+  }
+  if (lower === "run_command" || lower === "package_run_script") {
+    const command = getCommand(args);
+    return command ? `$ ${truncateLine(command, maxTargetLength)}` : action;
+  }
+  if (lower === "package_install") {
+    return compactTarget ? `install ${compactTarget}` : "install packages";
+  }
+  if (lower === "write_file") {
+    return compactTarget ? `write ${compactTarget}` : "write file";
+  }
+  if (lower === "delete_file") {
+    return compactTarget ? `delete ${compactTarget}` : "delete file";
+  }
+  if (lower === "move_file") {
+    return compactTarget ? `move ${compactTarget}` : "move file";
+  }
+  if (lower.includes("edit") || lower === "propose_edit" || lower === "apply_edit") {
+    return compactTarget ? `edit ${compactTarget}` : action;
+  }
+
+  return compactTarget ? `${action} ${compactTarget}` : action;
 }
 
 function getToolProgressSummary(tool: ToolCall): string {
@@ -223,10 +343,10 @@ function getToolDetail(tool: ToolCall): string {
   }
 
   if (tool.status === "running") {
-    return getToolProgressSummary(tool) || getToolTarget(tool);
+    return getToolProgressSummary(tool);
   }
 
-  return getToolTarget(tool) || getToolProgressSummary(tool);
+  return getToolProgressSummary(tool);
 }
 
 function formatToolDuration(tool: ToolCall): string {
@@ -353,7 +473,7 @@ function buildWorkRows({
     rows.push({
       id: tool.id,
       icon,
-      label: `${tool.name.replace(/_/g, " ")}${formatToolDuration(tool) ? ` ${formatToolDuration(tool)}` : ""}`,
+      label: `${getToolPrimaryLabel(tool)}${formatToolDuration(tool) ? ` ${formatToolDuration(tool)}` : ""}`,
       detail: getToolDetail(tool) || undefined,
       tone,
     });
@@ -809,6 +929,9 @@ const InputArea: React.FC<{
   backgroundPanelOpen?: boolean;
   transcriptMode?: boolean;
   tasksExpanded?: boolean;
+  attachments?: AttachmentPreview[];
+  onPasteImage?: () => boolean | Promise<boolean>;
+  onRemoveAttachment?: (index: number) => void;
 }> = React.memo(
   ({
     value,
@@ -829,6 +952,9 @@ const InputArea: React.FC<{
     backgroundPanelOpen,
     transcriptMode,
     tasksExpanded,
+    attachments = [],
+    onPasteImage,
+    onRemoveAttachment: _onRemoveAttachment,
   }) => (
     <Box flexDirection="column" marginTop={2} paddingX={1}>
       {queuedPreview.length > 0 && (
@@ -855,6 +981,30 @@ const InputArea: React.FC<{
             badges: getSlashCommandBadges(item),
           }))}
         />
+      )}
+      {attachments.length > 0 && (
+        <Box flexDirection="row" gap={1} marginBottom={0} flexWrap="wrap">
+          {attachments.map((attachment, index) => {
+            const size = formatAttachmentSize(attachment.sizeBytes);
+            return (
+              <Box
+                key={`${attachment.name}-${index}`}
+                paddingX={1}
+                borderStyle="round"
+                borderColor="cyan"
+              >
+                <Text color="cyan">📎 </Text>
+                <Text color="white">{truncateLine(attachment.name, 40)}</Text>
+                {size ? (
+                  <Text color="dim">{" "}({size})</Text>
+                ) : null}
+              </Box>
+            );
+          })}
+          <Box paddingX={1}>
+            <Text color="dim">^X to remove last</Text>
+          </Box>
+        </Box>
       )}
       <Box
         flexDirection="column"
@@ -887,11 +1037,12 @@ const InputArea: React.FC<{
                     : placeholder || "Explain this codebase"
                 }
                 maxVisibleLines={5}
-                rightReserve={value.startsWith("/") || queuedMessages > 0 ? 18 : 0}
+                rightReserve={isSlashCommandInput(value) || queuedMessages > 0 ? 18 : 0}
+                onPasteImage={onPasteImage}
               />
             )}
           </Box>
-          {!formPrompt && !backgroundPanelOpen && value.startsWith("/") && !choicePrompt && (
+          {!formPrompt && !backgroundPanelOpen && isSlashCommandInput(value) && !choicePrompt && (
             <Box marginLeft={1}>
               <Text color="black">
                 command
@@ -944,7 +1095,10 @@ const InputArea: React.FC<{
     prev.transcriptMode === next.transcriptMode &&
     prev.tasksExpanded === next.tasksExpanded &&
     prev.choicePrompt === next.choicePrompt &&
-    prev.formPrompt === next.formPrompt
+    prev.formPrompt === next.formPrompt &&
+    prev.attachments === next.attachments &&
+    prev.onPasteImage === next.onPasteImage &&
+    prev.onRemoveAttachment === next.onRemoveAttachment
 );
 
 // ============================================================================
@@ -1158,9 +1312,11 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   onQueueModeChange,
   backgroundSessions,
   onStopBackgroundSession,
+  droppedMessageCount = 0,
 }) => {
   const [input, setInput] = useState("");
   const [messageQueue, setMessageQueue] = useState<string[]>([]);
+  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [internalMode, setInternalMode] = useState<"edit" | "plan">("edit");
   const [internalQueueMode, setInternalQueueMode] = useState<"steer" | "followUp">("steer");
   const [slashSuggestions, setSlashSuggestions] = useState<SlashCommandListEntry[]>([]);
@@ -1206,7 +1362,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const updateSlashSuggestionsImmediate = useCallback(
     (value: string) => {
       const trimmed = value.trimStart();
-      if (!trimmed.startsWith("/")) { clearSlashSuggestions(); return; }
+      if (!isSlashCommandInput(trimmed) && trimmed !== "/") {
+        clearSlashSuggestions();
+        return;
+      }
 
       const firstSpace = trimmed.indexOf(" ");
       const commandToken = firstSpace === -1 ? trimmed : trimmed.slice(0, firstSpace);
@@ -1242,18 +1401,47 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   );
 
   const sendMessage = useCallback(
-    (text: string) => {
+    (text: string, sentAttachments?: MessageAttachment[]) => {
       const trimmed = text.trim();
-      if (!trimmed) return;
+      const hasAttachments = (sentAttachments?.length ?? 0) > 0;
+      if (!trimmed && !hasAttachments) return;
       if (isThinking && externalQueuedMessages === undefined) {
+        // Queueing while thinking — attachments rebroadcast on the next turn.
+        // We currently don't have a per-queued-message attachment slot, so
+        // we attach to the next outbound message inline. Good enough for the
+        // common case: queue text now, attach image on the live send.
         setMessageQueue((prev) => [...prev, trimmed]);
       } else {
         setScrollAnchor("end");
-        onMessage(trimmed);
+        onMessage(trimmed, hasAttachments ? sentAttachments : undefined);
       }
     },
     [externalQueuedMessages, isThinking, onMessage]
   );
+
+  // Read an image off the system clipboard, save it under ~/.meer/attachments,
+  // and either insert a path token into the composer (so the user can see what
+  // they're sending) or push it onto the attachments chip row. We do both:
+  // - Chip row makes it obvious an image is queued and ready to send.
+  // - We deliberately DON'T insert a path token so the typed text stays clean.
+  const handlePasteImage = useCallback((): boolean => {
+    const clip = readClipboardImage();
+    if (!clip) {
+      return false;
+    }
+    try {
+      const bytes = readFileSync(clip.path);
+      const attachment = saveAttachmentBytes(bytes, clip.mimeType);
+      setAttachments((prev) => [...prev, attachment]);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const handleRemoveAttachment = useCallback((index: number) => {
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  }, []);
 
   const applySlashSuggestion = useCallback(
     (applyMode: "insert" | "send" = "insert") => {
@@ -1341,9 +1529,27 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     setScrollOffset(maxScrollOffset);
   }, [maxScrollOffset]);
 
+  // First press of Ctrl+C while the agent is busy aborts the turn; second
+  // press within ~2s (or any press when idle) exits. Matches the pattern
+  // users expect from Claude Code / OpenCode — Ctrl+C is reflexive "stop
+  // doing that", not "throw away my session".
+  const ctrlCArmedUntilRef = useRef(0);
+
   useInput(
     (inputKey, key) => {
-      if (key.ctrl && inputKey === "c") { onExit?.(); exit(); return; }
+      if (key.ctrl && inputKey === "c") {
+        const now = Date.now();
+        const armed = now < ctrlCArmedUntilRef.current;
+        const busy = isThinking || Boolean(draftAssistant);
+        if (busy && !armed && onInterrupt) {
+          ctrlCArmedUntilRef.current = now + 2000;
+          onInterrupt();
+          return;
+        }
+        onExit?.();
+        exit();
+        return;
+      }
       if (key.ctrl && inputKey === "p") { toggleMode(); return; }
       if (key.ctrl && inputKey === "o") {
         setShowTranscript((prev) => !prev);
@@ -1366,6 +1572,11 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         } else {
           setInternalQueueMode(nextMode);
         }
+        return;
+      }
+      if (key.ctrl && inputKey === "x") {
+        // Remove the most recently added attachment chip.
+        setAttachments((prev) => (prev.length === 0 ? prev : prev.slice(0, -1)));
         return;
       }
 
@@ -1431,11 +1642,52 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       suggestion.command.toLowerCase().startsWith(commandToken.toLowerCase());
 
     if (shouldApplySlash) { applySlashSuggestion("send"); return; }
-    if (!trimmed) return;
 
-    sendMessage(trimmed);
+    // Pull image-file paths out of the typed text. Anything that points at a
+    // real file with a known image extension becomes an attachment; the
+    // remaining text is what the user actually wrote.
+    let finalText = trimmed;
+    const inlineAttachments: MessageAttachment[] = [];
+    try {
+      // Import lazily to keep MeerChat's top-level imports minimal and avoid
+      // touching the helper from non-Node contexts.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { extractImagePathsFromText } = require("../../utils/attachments.js") as typeof import("../../utils/attachments.js");
+      const detected = extractImagePathsFromText(trimmed, cwd ?? process.cwd());
+      for (const path of detected.paths) {
+        try {
+          inlineAttachments.push(attachmentFromFile(path));
+        } catch {
+          // Couldn't read the file — leave the token in the residual text so
+          // the user notices it didn't attach.
+        }
+      }
+      if (inlineAttachments.length > 0) {
+        finalText = detected.residualText;
+      }
+    } catch {
+      // Helper not available — fall through with the original text.
+    }
+
+    const combined = [...attachments, ...inlineAttachments];
+    if (!finalText && combined.length === 0) return;
+
+    sendMessage(finalText, combined.length > 0 ? combined : undefined);
     handleInputChange("");
-  }, [applySlashSuggestion, handleInputChange, input, hasSlashSuggestions, sendMessage, selectedSuggestion, slashSuggestions]);
+    if (combined.length > 0) {
+      setAttachments([]);
+    }
+  }, [
+    applySlashSuggestion,
+    handleInputChange,
+    input,
+    hasSlashSuggestions,
+    sendMessage,
+    selectedSuggestion,
+    slashSuggestions,
+    attachments,
+    cwd,
+  ]);
 
   useEffect(() => {
     if (externalQueuedMessages !== undefined) {
@@ -1484,6 +1736,12 @@ export const MeerChat: React.FC<MeerChatProps> = ({
           backgroundPanelOpen={hasBackgroundPanel}
           transcriptMode={showTranscript}
           tasksExpanded={showTasksExpanded}
+          attachments={attachments.map((a) => ({
+            name: a.name ?? "attachment",
+            sizeBytes: a.sizeBytes,
+          }))}
+          onPasteImage={handlePasteImage}
+          onRemoveAttachment={handleRemoveAttachment}
         />
       </ScreenReaderLayout>
     );
@@ -1493,10 +1751,11 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   const transcriptMessages = showTranscript
     ? visibleMessages
     : visibleMessages.filter(shouldRenderTranscriptMessage);
-  const displayMessages =
-    draftAssistant && hasDraftContent
-      ? [...transcriptMessages, draftAssistant]
-      : transcriptMessages;
+  const liveDraftMessage =
+    draftAssistant && hasDraftContent ? draftAssistant : null;
+  const displayMessages = liveDraftMessage
+    ? [...transcriptMessages, liveDraftMessage]
+    : transcriptMessages;
 
   const displayWindowSize = Math.max(1, Math.min(displayMessages.length, terminalHeight * 3));
   const displayScrollOffset = Math.min(
@@ -1544,6 +1803,14 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                 </Text>
               </Box>
             )}
+            {droppedMessageCount > 0 && (
+              <Box marginBottom={1} marginLeft={2}>
+                <Text color="gray" dimColor>
+                  +{droppedMessageCount} earlier message
+                  {droppedMessageCount === 1 ? "" : "s"} dropped from memory
+                </Text>
+              </Box>
+            )}
             {!showTranscript && compactHiddenToolCount > 0 ? (
               <Box marginBottom={1} marginLeft={2}>
                 <Text color="gray" dimColor>
@@ -1573,29 +1840,108 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                 minHeight={0}
                 justifyContent={shouldPinConversationToBottom ? "flex-end" : "flex-start"}
               >
-                <VirtualizedList
-                  items={displayMessages}
-                  scroll={{
-                    offset: displayScrollOffset,
-                    windowSize: displayWindowSize,
-                    totalCount: displayMessages.length,
-                  }}
-                  renderGap={(position, hidden) => (
-                    <Box marginY={1} paddingLeft={2}>
-                      <Text color="dim">
-                        {position === "top"
-                          ? `${hidden} earlier message${hidden === 1 ? "" : "s"}`
-                          : `${hidden} later message${hidden === 1 ? "" : "s"}`}
-                      </Text>
-                    </Box>
-                  )}
-                  renderItem={(msg) => (
-                    <MessageView
-                      message={msg}
-                      isDraft={Boolean(draftAssistant && msg.id === draftAssistant.id)}
-                    />
-                  )}
-                />
+                {virtualizeHistory ? (
+                  <VirtualizedList
+                    items={displayMessages}
+                    scroll={{
+                      offset: displayScrollOffset,
+                      windowSize: displayWindowSize,
+                      totalCount: displayMessages.length,
+                    }}
+                    getItemKey={(msg, index) => msg.id ?? `msg-${index}`}
+                    renderGap={(position, hidden) => (
+                      <Box marginY={1} paddingLeft={2}>
+                        <Text color="dim">
+                          {position === "top"
+                            ? `${hidden} earlier message${hidden === 1 ? "" : "s"}`
+                            : `${hidden} later message${hidden === 1 ? "" : "s"}`}
+                        </Text>
+                      </Box>
+                    )}
+                    renderItem={(msg) => (
+                      <RenderErrorBoundary
+                        label={
+                          msg.role === "tool"
+                            ? `tool ${msg.toolName ?? "unknown"}`
+                            : `${msg.role} message`
+                        }
+                        onError={(error) =>
+                          recordDiagnostic("ui.MessageView", error, {
+                            messageId: msg.id,
+                            role: msg.role,
+                            toolName: msg.toolName,
+                          })
+                        }
+                      >
+                        <MessageView
+                          message={msg}
+                          isDraft={Boolean(
+                            draftAssistant && msg.id === draftAssistant.id
+                          )}
+                        />
+                      </RenderErrorBoundary>
+                    )}
+                  />
+                ) : (
+                  <>
+                    {/* Settled messages are committed to terminal scrollback
+                        exactly once via <Static>. Without this, every live
+                        re-render (running tool ticks, status updates) pushes
+                        the live region's overflow into scrollback, producing
+                        the visible stutter where the user message and tool
+                        widgets get re-printed each frame.
+                        We pass the unfiltered messages so Static's
+                        append-only contract holds even when transcript mode
+                        toggles; per-message visibility is decided inline. */}
+                    <Static items={visibleMessages}>
+                      {(msg) => {
+                        const visible =
+                          showTranscript ||
+                          shouldRenderTranscriptMessage(msg);
+                        if (!visible) {
+                          return (
+                            <Box
+                              key={msg.id ?? `msg-${msg.timestamp ?? ""}`}
+                            />
+                          );
+                        }
+                        return (
+                          <RenderErrorBoundary
+                            key={msg.id ?? `msg-${msg.timestamp ?? ""}`}
+                            label={
+                              msg.role === "tool"
+                                ? `tool ${msg.toolName ?? "unknown"}`
+                                : `${msg.role} message`
+                            }
+                            onError={(error) =>
+                              recordDiagnostic("ui.MessageView", error, {
+                                messageId: msg.id,
+                                role: msg.role,
+                                toolName: msg.toolName,
+                              })
+                            }
+                          >
+                            <MessageView message={msg} />
+                          </RenderErrorBoundary>
+                        );
+                      }}
+                    </Static>
+                    {liveDraftMessage ? (
+                      <RenderErrorBoundary
+                        label="streaming assistant"
+                        onError={(error) =>
+                          recordDiagnostic("ui.MessageView", error, {
+                            messageId: liveDraftMessage.id,
+                            role: "assistant",
+                            isDraft: true,
+                          })
+                        }
+                      >
+                        <MessageView message={liveDraftMessage} isDraft />
+                      </RenderErrorBoundary>
+                    ) : null}
+                  </>
+                )}
               </Box>
               {virtualizeHistory && displayMessages.length > 0 && (
                 <Box marginLeft={1}>
@@ -1631,7 +1977,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         status={status}
         isStreaming={hasDraftContent}
         activeTask={activePlanTask?.description}
-        activeTool={activeTool?.name}
+        activeTool={activeTool ? getToolPrimaryLabel(activeTool, 96) : undefined}
         tokens={tokens}
       />
 
@@ -1668,6 +2014,12 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         backgroundPanelOpen={hasBackgroundPanel}
         transcriptMode={showTranscript}
         tasksExpanded={showTasksExpanded}
+        attachments={attachments.map((a) => ({
+          name: a.name ?? "attachment",
+          sizeBytes: a.sizeBytes,
+        }))}
+        onPasteImage={handlePasteImage}
+        onRemoveAttachment={handleRemoveAttachment}
       />
 
       <FooterBar
@@ -1991,7 +2343,7 @@ const ScreenReaderLayout: React.FC<{
           <Text>No messages yet.</Text>
         ) : (
           messages.map((msg, i) => (
-            <Text key={i}>
+            <Text key={msg.id ?? `msg-${i}`}>
               {formatTimestamp(msg.timestamp) ? `[${formatTimestamp(msg.timestamp)}] ` : ""}
               {msg.role === "assistant" ? "Meer" : msg.role === "user" ? "You" : msg.role === "system" ? "System" : "Tool"}:{" "}
               {msg.content?.replace(/\s+/g, " ").trim() || "[empty]"}

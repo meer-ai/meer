@@ -166,6 +166,13 @@ export async function runLoop(
               await emit({ type: "text_delta", text: event.text });
             } else if (event.type === "assistant-message") {
               assistantText = event.text;
+            } else if (event.type === "tool-call-delta") {
+              await emit({
+                type: "tool_call_delta",
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                inputTextDelta: event.inputTextDelta,
+              });
             } else if (event.type === "tool-call") {
               pendingToolCalls.push(event.toolCall);
             } else if (event.type === "done") {

@@ -21,6 +21,9 @@ import type {
   RuntimeExecutionEvent,
   RuntimeProcessResult,
 } from "./agent-session.js";
+import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // Re-export the config type so cli.ts can use it
 export interface MeerAgentConfig {
@@ -40,6 +43,11 @@ export interface MeerAgentConfig {
     tool: string,
     args: unknown,
     metadata?: { toolCallId?: string }
+  ) => void;
+  onToolCallDelta?: (
+    tool: string | undefined,
+    inputTextDelta: string,
+    metadata: { toolCallId: string }
   ) => void;
   onToolUpdate?: (
     tool: string,
@@ -129,6 +137,7 @@ export class MeerAgent {
       turnId?: string;
       preparedMessages?: CoreAgentMessage[];
       systemPrompt?: string;
+      attachments?: import("./core/types.js").MessageAttachment[];
     }
   ): Promise<RuntimeProcessResult> {
     if (this.isRunning) {
@@ -153,9 +162,31 @@ export class MeerAgent {
                 {
                   role: "user",
                   content: userMessage,
+                  attachments: options?.attachments,
                   timestamp: Date.now(),
                 },
               ];
+
+        // When preparedMessages is provided (already-built history), attach
+        // images to its last user message — that's the one we're sending now.
+        if (
+          options?.preparedMessages?.length &&
+          options.attachments?.length
+        ) {
+          for (let i = inputMessages.length - 1; i >= 0; i--) {
+            const msg = inputMessages[i];
+            if (msg.role === "user") {
+              inputMessages[i] = {
+                ...msg,
+                attachments: [
+                  ...(msg.attachments ?? []),
+                  ...options.attachments,
+                ],
+              };
+              break;
+            }
+          }
+        }
 
         let finalAssistantText = "";
         let currentAssistantText = "";
@@ -220,6 +251,15 @@ export class MeerAgent {
               break;
 
             case "turn_end":
+              break;
+
+            case "tool_call_delta":
+              settleCurrentAssistantText();
+              this.config.onToolCallDelta?.(
+                event.toolName,
+                event.inputTextDelta,
+                { toolCallId: event.toolCallId }
+              );
               break;
 
             case "tool_start":
@@ -405,19 +445,39 @@ export class MeerAgent {
             conversationHistory: updatedConversationHistory,
           };
         } catch (error) {
+          // Each cleanup step is isolated. Without this, a thrown listener
+          // on (say) onStreamingEnd would prevent the turn_end emit, which
+          // is what makes the UI clear `tools`/`workflowStages` — so the
+          // chat would end up frozen with stale "Running …" widgets.
+          const safeRun = (label: string, fn: () => void) => {
+            try {
+              fn();
+            } catch (cleanupErr) {
+              // Don't import diagnostics here to avoid a cycle; the cli.ts
+              // and InkChatAdapter layers record via their own boundaries.
+              // We just swallow so cleanup continues.
+              void label;
+              void cleanupErr;
+            }
+          };
+
           if (streamStarted) {
-            this.config.onStreamingEnd?.();
+            safeRun("onStreamingEnd", () => this.config.onStreamingEnd?.());
           }
-          clearToolUi();
-          this.sessionEventSink?.({ type: "status_change", status: "" });
+          safeRun("clearToolUi", () => clearToolUi());
+          safeRun("status_change", () =>
+            this.sessionEventSink?.({ type: "status_change", status: "" })
+          );
           const message = error instanceof Error ? error.message : String(error);
-          this.sessionEventSink?.({
-            type: "turn_end",
-            success: false,
-            error: message,
-          });
+          safeRun("turn_end", () =>
+            this.sessionEventSink?.({
+              type: "turn_end",
+              success: false,
+              error: message,
+            })
+          );
           if (!(error instanceof Error && error.name === "AbortError")) {
-            this.config.onError?.(error as Error);
+            safeRun("onError", () => this.config.onError?.(error as Error));
           }
           throw error;
         }
@@ -785,10 +845,20 @@ function previewContent(value: string): string {
   return normalized.length > 1200 ? `${normalized.slice(0, 1197)}...` : normalized;
 }
 
-function formatToolTranscript(toolName: string, result: string): string {
+// Universal hard ceiling for any tool result we hand back to the model.
+// `run_command` enforces its own (matching) ceiling at exec time and writes
+// the full output to a temp file already; this is the catch-all for every
+// other tool so an unbounded blob can't be pushed into the conversation
+// history and break the context window (or crash the renderer).
+const TOOL_RESULT_HARD_LINE_CEILING = 4000;
+const TOOL_RESULT_HARD_BYTE_CEILING = 400 * 1024;
+
+export function formatToolTranscript(toolName: string, result: string): string {
   const normalized = result.trim();
   if (!normalized) return `Tool: ${toolName}\nResult: (empty)`;
 
+  // Existing per-tool preview (file-read tools) — kept because it gives the
+  // model a more useful "head" instead of a "tail" for files.
   if (["read_file", "list_files", "read_folder", "read_many_files"].includes(toolName)) {
     const lines = normalized.split("\n");
     if (normalized.length > 4000 || lines.length > 120) {
@@ -804,5 +874,47 @@ function formatToolTranscript(toolName: string, result: string): string {
     }
   }
 
-  return `Tool: ${toolName}\nResult:\n${normalized}`;
+  // Hard ceiling for everything else. Drops to a tail-with-temp-file when a
+  // tool result blows past the budget, mirroring run_command's behavior.
+  const byteSize = Buffer.byteLength(normalized, "utf8");
+  const lineCount = normalized.split("\n").length;
+  if (byteSize <= TOOL_RESULT_HARD_BYTE_CEILING && lineCount <= TOOL_RESULT_HARD_LINE_CEILING) {
+    return `Tool: ${toolName}\nResult:\n${normalized}`;
+  }
+
+  let tempPath: string | undefined;
+  try {
+    tempPath = join(
+      tmpdir(),
+      `meer-tool-${Date.now()}-${Math.random().toString(36).slice(2)}.log`
+    );
+    writeFileSync(tempPath, normalized, "utf8");
+  } catch {
+    // Couldn't write a temp file — keep the tail in-place anyway.
+    tempPath = undefined;
+  }
+
+  // Take the line tail first, then enforce the byte budget on top.
+  // Without the byte sweep, a single 500KB line would survive a line-slice
+  // (since one line ≤ 4000 lines) and we'd leak the original blob.
+  const lines = normalized.split("\n");
+  const lineTail = lines.slice(-TOOL_RESULT_HARD_LINE_CEILING).join("\n");
+  let keep = lineTail;
+  if (Buffer.byteLength(keep, "utf8") > TOOL_RESULT_HARD_BYTE_CEILING) {
+    const buf = Buffer.from(keep, "utf8");
+    const start = buf.length - TOOL_RESULT_HARD_BYTE_CEILING;
+    // Advance to next character boundary to avoid splitting a multi-byte char.
+    let safeStart = start;
+    while (safeStart < buf.length && (buf[safeStart] & 0xc0) === 0x80) {
+      safeStart++;
+    }
+    keep = buf.subarray(safeStart).toString("utf8");
+  }
+  const tailBytes = Buffer.byteLength(keep, "utf8");
+  const startLine = lineCount - Math.min(TOOL_RESULT_HARD_LINE_CEILING, lineCount) + 1;
+  const tailNote = tempPath
+    ? `[Tool output ${byteSize} bytes / ${lineCount} lines exceeded ceiling. Showing tail lines ${startLine}-${lineCount} (${tailBytes} bytes). Full output: ${tempPath}]`
+    : `[Tool output ${byteSize} bytes / ${lineCount} lines exceeded ceiling. Showing tail lines ${startLine}-${lineCount} (${tailBytes} bytes).]`;
+
+  return `Tool: ${toolName}\nResult:\n${keep}\n\n${tailNote}`;
 }

@@ -109,6 +109,10 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     description: "Summarize conversation history to free up context",
   },
   {
+    command: "/diagnose",
+    description: "Write a runtime diagnostics dump for bug reports",
+  },
+  {
     command: "/help",
     description: "Show slash command help",
     protected: true,
