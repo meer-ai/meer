@@ -5,9 +5,11 @@ import {
   SHELL_MAX_LINES,
   formatDurationMs,
   getCommand,
+  shouldRenderCompact,
   stripToolHeader,
   truncateLine,
 } from "./utils.js";
+import { CompactToolRow } from "./CompactToolRow.js";
 
 function getStringDetail(details: Record<string, unknown> | undefined, key: string): string {
   const value = details?.[key];
@@ -52,6 +54,26 @@ export const RunCommandRenderer: React.FC<ToolRendererProps> = React.memo(({
         : state === "cancelled"
           ? "cancelled"
           : "completed";
+
+  // Short successful commands collapse to a one-liner. We deliberately
+  // never compact a failed/timed_out/cancelled run — the user always
+  // wants to see what broke.
+  if (
+    shouldRenderCompact({
+      duration: durationMs,
+      isError,
+      body: shown,
+    }) &&
+    state === "completed"
+  ) {
+    return (
+      <CompactToolRow
+        toolName="run"
+        summary={command ? `$ ${command}` : ""}
+        durationMs={durationMs}
+      />
+    );
+  }
 
   return (
     <Box flexDirection="column" marginBottom={1} paddingLeft={1} borderLeft borderColor={statusColor}>

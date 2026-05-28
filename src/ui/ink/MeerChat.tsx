@@ -53,6 +53,8 @@ export interface MeerChatProps {
   cwd?: string;
   onExit?: () => void;
   onInterrupt?: () => void;
+  /** Fired by ^E: opens the most recent tool's full output in $PAGER. */
+  onExpandLastTool?: () => void;
   mode?: "edit" | "plan";
   onModeChange?: (mode: "edit" | "plan") => void;
   tools?: ToolCall[];
@@ -1013,9 +1015,15 @@ const InputArea: React.FC<{
         paddingY={1}
       >
         <Box flexDirection="row" alignItems="flex-start" minHeight={1}>
-          <Text color={isThinking ? "yellow" : "white"}>
-            ›
-          </Text>
+          {value.startsWith("!") ? (
+            <Text color="yellow" bold>
+              $
+            </Text>
+          ) : (
+            <Text color={isThinking ? "yellow" : "white"}>
+              ›
+            </Text>
+          )}
           <Text color="dim"> </Text>
           <Box flexGrow={1} flexDirection="column">
             {formPrompt || choicePrompt || backgroundPanelOpen ? (
@@ -1037,7 +1045,7 @@ const InputArea: React.FC<{
                     : placeholder || "Explain this codebase"
                 }
                 maxVisibleLines={5}
-                rightReserve={isSlashCommandInput(value) || queuedMessages > 0 ? 18 : 0}
+                rightReserve={isSlashCommandInput(value) || value.startsWith("!") || queuedMessages > 0 ? 18 : 0}
                 onPasteImage={onPasteImage}
               />
             )}
@@ -1046,6 +1054,13 @@ const InputArea: React.FC<{
             <Box marginLeft={1}>
               <Text color="black">
                 command
+              </Text>
+            </Box>
+          )}
+          {!formPrompt && !backgroundPanelOpen && value.startsWith("!") && !choicePrompt && (
+            <Box marginLeft={1}>
+              <Text color="yellow" bold>
+                bash
               </Text>
             </Box>
           )}
@@ -1078,7 +1093,7 @@ const InputArea: React.FC<{
       )}
 
       <Text color="dim">
-        Enter send · Esc stop · / commands · ^O {transcriptMode ? "compact" : "transcript"} · ^T {tasksExpanded ? "tasks-" : "tasks+"} · ^B sessions
+        Enter send · Esc stop · / commands · ! bash · ^E expand · ^O {transcriptMode ? "compact" : "transcript"} · ^T {tasksExpanded ? "tasks-" : "tasks+"} · ^B sessions
       </Text>
     </Box>
   ),
@@ -1121,6 +1136,21 @@ const FooterBar: React.FC<{
   const uptimeLabel = typeof sessionUptime === "number" ? formatDurationSeconds(sessionUptime) : null;
   const cwdLabel = basenamePath(cwd);
 
+  // Context window indicator. Only shows when we have a token count to
+  // report — once it's there, even 1% gives the user a sense of fill
+  // before /compact becomes necessary.
+  let contextFill: { pct: number; color: "green" | "yellow" | "red"; total: string } | null = null;
+  if (tokens?.used && tokens.used > 0) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ctx = require("../../utils/model-context.js") as typeof import("../../utils/model-context.js");
+    const window = ctx.getContextWindow(model);
+    contextFill = {
+      pct: ctx.contextFillPercent(tokens.used, model),
+      color: ctx.contextFillColor(ctx.contextFillPercent(tokens.used, model)),
+      total: ctx.formatTokenCount(window.tokens),
+    };
+  }
+
   return (
     <Box justifyContent="space-between" paddingX={1} marginTop={0}>
       <Box gap={1} flexShrink={1}>
@@ -1130,7 +1160,17 @@ const FooterBar: React.FC<{
         {cwdLabel ? <Text color="dim">{cwdLabel}</Text> : null}
       </Box>
       <Box gap={1} flexShrink={0}>
-        {tokenLabel && <Text color="dim">{tokenLabel}</Text>}
+        {contextFill && (
+          <Text color={contextFill.color}>
+            ctx {contextFill.pct}%
+          </Text>
+        )}
+        {tokenLabel && (
+          <Text color="dim">
+            {tokenLabel}
+            {contextFill ? `/${contextFill.total}` : ""}
+          </Text>
+        )}
         {costLabel && <Text color="dim">{costLabel}</Text>}
         {typeof messageCount === "number" && <Text color="dim">{messageCount} msgs</Text>}
         {uptimeLabel && <Text color="dim">{uptimeLabel}</Text>}
@@ -1290,6 +1330,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   cwd,
   onExit,
   onInterrupt,
+  onExpandLastTool,
   mode: externalMode,
   onModeChange,
   tools,
@@ -1579,6 +1620,17 @@ export const MeerChat: React.FC<MeerChatProps> = ({
         setAttachments((prev) => (prev.length === 0 ? prev : prev.slice(0, -1)));
         return;
       }
+      if (key.ctrl && inputKey === "e") {
+        // Open the most recent tool's full output in $PAGER. Note: the
+        // composer also binds ^E for "cursor to end of line" (a readline
+        // convention) and that handler still fires; the pager spawn
+        // dominates the UX since Ink suspends. Harmless side effect on
+        // resume — the cursor sits at end-of-line.
+        if (onExpandLastTool) {
+          onExpandLastTool();
+          return;
+        }
+      }
 
       if (key.escape) {
         if (hasBackgroundPanel) {
@@ -1643,30 +1695,54 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
     if (shouldApplySlash) { applySlashSuggestion("send"); return; }
 
-    // Pull image-file paths out of the typed text. Anything that points at a
-    // real file with a known image extension becomes an attachment; the
-    // remaining text is what the user actually wrote.
+    // Pull file-path tokens out of the typed text. Image references become
+    // attachments (multimodal content); text-file references get inlined as
+    // <file path="…">…</file> blocks appended to the message so the model
+    // sees the contents without an explicit read_file tool call. Anything
+    // we can't process is left in the residual text so the user notices.
     let finalText = trimmed;
     const inlineAttachments: MessageAttachment[] = [];
+    const inlinedFileBlocks: string[] = [];
     try {
-      // Import lazily to keep MeerChat's top-level imports minimal and avoid
-      // touching the helper from non-Node contexts.
+      // Import lazily to keep MeerChat's top-level imports minimal and
+      // avoid touching the helper from non-Node contexts.
       // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { extractImagePathsFromText } = require("../../utils/attachments.js") as typeof import("../../utils/attachments.js");
-      const detected = extractImagePathsFromText(trimmed, cwd ?? process.cwd());
-      for (const path of detected.paths) {
-        try {
-          inlineAttachments.push(attachmentFromFile(path));
-        } catch {
-          // Couldn't read the file — leave the token in the residual text so
-          // the user notices it didn't attach.
+      const attachmentsHelpers = require("../../utils/attachments.js") as typeof import("../../utils/attachments.js");
+      const detected = attachmentsHelpers.extractFileReferencesFromText(
+        trimmed,
+        cwd ?? process.cwd()
+      );
+      let bytesUsed = 0;
+      for (const ref of detected.files) {
+        if (ref.kind === "image") {
+          try {
+            inlineAttachments.push(attachmentFromFile(ref.path));
+          } catch {
+            // Skip silently — the path stays in residual text below.
+          }
+        } else if (ref.kind === "text") {
+          const inlined = attachmentsHelpers.inlineTextFile(ref, {
+            bytesUsedSoFar: bytesUsed,
+          });
+          if (inlined) {
+            inlinedFileBlocks.push(inlined.block);
+            bytesUsed += inlined.bytes;
+          }
         }
       }
-      if (inlineAttachments.length > 0) {
+      if (inlineAttachments.length > 0 || inlinedFileBlocks.length > 0) {
         finalText = detected.residualText;
       }
     } catch {
       // Helper not available — fall through with the original text.
+    }
+
+    // Append inlined file blocks AFTER the user's typed text so the prompt
+    // reads naturally ("explain this code: <file …>contents</file>").
+    if (inlinedFileBlocks.length > 0) {
+      finalText = finalText
+        ? `${finalText}\n\n${inlinedFileBlocks.join("\n\n")}`
+        : inlinedFileBlocks.join("\n\n");
     }
 
     const combined = [...attachments, ...inlineAttachments];

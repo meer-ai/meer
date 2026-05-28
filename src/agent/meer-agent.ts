@@ -24,6 +24,7 @@ import type {
 import { tmpdir } from "node:os";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { sanitizeToolOutput } from "../utils/output-sanitize.js";
 
 // Re-export the config type so cli.ts can use it
 export interface MeerAgentConfig {
@@ -99,6 +100,13 @@ export class MeerAgent {
   private skills: Skill[] = [];
   private skillDiagnostics: SkillDiagnostic[] = [];
   private editedFiles = new Set<string>();
+  /**
+   * Session-level shell cwd. Each `run_command` call lands in here by
+   * default; bare `cd <path>` commands update it instead of running. Pi
+   * has a full persistent-bash backend; this is the light approximation
+   * that covers the common "cd foo / npm test" workflow.
+   */
+  private shellCwd: string = "";
   private externalQueueAccessors:
     | {
         takeQueuedMessages: (mode: "steer" | "followUp") => CoreAgentMessage[];
@@ -115,9 +123,15 @@ export class MeerAgent {
       name: config.providerType ?? "Provider",
     });
     this.cwd = config.cwd;
+    this.shellCwd = config.cwd;
     this.enableMemory = config.enableMemory ?? true;
     this.providerType = config.providerType ?? "unknown";
     this.model = config.model ?? "unknown";
+  }
+
+  /** Current session-level shell cwd. Defaults to the project cwd. */
+  getShellCwd(): string {
+    return this.shellCwd || this.cwd;
   }
 
   async initialize(
@@ -735,6 +749,10 @@ export class MeerAgent {
             cwd: session.cwd,
           };
         },
+        getShellCwd: () => this.shellCwd || this.cwd,
+        setShellCwd: (path: string) => {
+          this.shellCwd = path;
+        },
       },
       { mcpTools: this.mcpTools }
     );
@@ -854,7 +872,11 @@ const TOOL_RESULT_HARD_LINE_CEILING = 4000;
 const TOOL_RESULT_HARD_BYTE_CEILING = 400 * 1024;
 
 export function formatToolTranscript(toolName: string, result: string): string {
-  const normalized = result.trim();
+  // Drop terminal-corrupting control characters before anything else
+  // touches the result. A tool that emits raw NUL/BS/ESC can clear the
+  // screen or reset terminal modes when this lands in Static scrollback.
+  const sanitized = sanitizeToolOutput(result);
+  const normalized = sanitized.trim();
   if (!normalized) return `Tool: ${toolName}\nResult: (empty)`;
 
   // Existing per-tool preview (file-read tools) — kept because it gives the

@@ -305,6 +305,7 @@ export async function runLoop(
             args: tc.input,
           });
 
+          const toolStartedAt = Date.now();
           let result: ToolResult;
           if (!tool) {
             result = {
@@ -320,6 +321,20 @@ export async function runLoop(
                 isError: true,
               };
             }
+          }
+          const durationMs = Date.now() - toolStartedAt;
+
+          // Surface the duration in result.details so renderers can pick
+          // between compact (sub-second) and full widget layouts without
+          // needing a separate event-bus channel. Most tools don't set
+          // their own durationMs; the ones that do (run_command) override
+          // this with a more precise measurement of just the child
+          // process, which is what we want anyway.
+          if (!result.details || typeof (result.details as Record<string, unknown>).durationMs !== "number") {
+            result.details = {
+              ...(result.details ?? {}),
+              durationMs,
+            };
           }
 
           await emit({

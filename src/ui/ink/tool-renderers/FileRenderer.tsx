@@ -3,14 +3,18 @@ import { Box, Text } from "ink";
 import type { ToolRendererProps } from "./types.js";
 import {
   FILE_MAX_LINES,
+  getDurationMs,
   getFilePath,
+  shouldRenderCompact,
   stripToolHeader,
 } from "./utils.js";
+import { CompactToolRow } from "./CompactToolRow.js";
 
 export const FileRenderer: React.FC<ToolRendererProps> = React.memo(({
   toolName,
   content,
   args,
+  details,
   isError,
 }) => {
   const lower = toolName.toLowerCase();
@@ -23,6 +27,15 @@ export const FileRenderer: React.FC<ToolRendererProps> = React.memo(({
         : "read";
   const filePath = getFilePath(args);
   const body = stripToolHeader(content);
+  const duration = getDurationMs(details);
+  if (shouldRenderCompact({ duration, isError, body })) {
+    return (
+      <CompactToolRow
+        toolName={`${verb} ${filePath || toolName}`}
+        durationMs={duration}
+      />
+    );
+  }
   const lines = body.split("\n");
   const shown = lines.slice(0, FILE_MAX_LINES).join("\n");
   const extra = lines.length - FILE_MAX_LINES;

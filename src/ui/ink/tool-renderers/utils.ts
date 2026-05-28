@@ -56,6 +56,36 @@ export function formatDurationMs(ms: number): string {
   return `${Math.floor(ms / 60000)}m ${Math.floor((ms % 60000) / 1000)}s`;
 }
 
+/** Threshold below which a tool is treated as "fast" and gets a compact one-line render. */
+export const FAST_TOOL_DURATION_MS = 1000;
+
+/** Above this many lines, even a fast tool gets the full widget (its output is too big to compact). */
+export const FAST_TOOL_MAX_LINES = 4;
+
+export function getDurationMs(details?: Record<string, unknown>): number | undefined {
+  const raw = details?.durationMs;
+  return typeof raw === "number" ? raw : undefined;
+}
+
+/**
+ * Decide whether a completed tool result should render compact (a single
+ * dim line: `→ tool args (12ms)`) or as a full widget. Keeps the chat
+ * uncluttered when the agent fires many fast tools (read_file, grep, etc.)
+ * but never hides a slow or error result.
+ */
+export function shouldRenderCompact(args: {
+  duration?: number;
+  isError?: boolean;
+  body: string;
+}): boolean {
+  if (args.isError) return false;
+  if (typeof args.duration !== "number") return false;
+  if (args.duration >= FAST_TOOL_DURATION_MS) return false;
+  const lineCount = args.body.split("\n").filter((l) => l.trim()).length;
+  if (lineCount > FAST_TOOL_MAX_LINES) return false;
+  return true;
+}
+
 export function extractDiffPreview(content: string): string | null {
   if (!content.includes("@@ ")) return null;
   const start = content.indexOf("@@ ");

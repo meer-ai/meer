@@ -41,6 +41,7 @@ import { loadSkillsForCwd } from "../skills/index.js";
 import type { SkillDiagnostic } from "../skills/index.js";
 import { getDiagnostics } from "../utils/diagnostics.js";
 import { spawnSync } from "child_process";
+import { writeClipboardText } from "../utils/clipboard-write.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -332,6 +333,24 @@ async function handleSkillsCommand(tui?: InkChatAdapter | null): Promise<void> {
 // ─── Inline command implementations ──────────────────────────────────────────
 
 /**
+ * Parse a token-budget input like "100k", "1.5M", or "250000" into an
+ * integer count. Returns null for malformed input so the caller can print
+ * usage. Negative or zero values also return null (use /budget unset
+ * to disable).
+ */
+export function parseTokenBudget(input: string): number | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)([kKmM])?$/);
+  if (!match) return null;
+  const value = Number.parseFloat(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const suffix = (match[2] ?? "").toLowerCase();
+  const multiplier = suffix === "m" ? 1_000_000 : suffix === "k" ? 1_000 : 1;
+  return Math.round(value * multiplier);
+}
+
+/**
  * Build a self-contained diagnostics dump for bug reports. Writes JSON to
  * ~/.meer/diagnostics-<timestamp>.json with runtime info, recent recorded
  * errors, and environment capabilities. Also tries to copy the path to the
@@ -400,27 +419,7 @@ async function writeDiagnosticsDump(args: {
 
   // Best-effort: copy the path (not the contents) to clipboard so the user
   // has it ready to paste into a bug report. Failures are silent.
-  let copied = false;
-  try {
-    const platform = process.platform;
-    if (platform === "darwin") {
-      copied = spawnSync("pbcopy", [], { input: dumpPath, timeout: 1000 }).status === 0;
-    } else if (platform === "linux") {
-      if (process.env.WAYLAND_DISPLAY) {
-        copied = spawnSync("wl-copy", [], { input: dumpPath, timeout: 1000 }).status === 0;
-      } else {
-        copied =
-          spawnSync("xclip", ["-selection", "clipboard"], {
-            input: dumpPath,
-            timeout: 1000,
-          }).status === 0;
-      }
-    } else if (platform === "win32") {
-      copied = spawnSync("clip", [], { input: dumpPath, timeout: 1000 }).status === 0;
-    }
-  } catch {
-    copied = false;
-  }
+  const copied = writeClipboardText(dumpPath);
 
   return { path: dumpPath, copied };
 }
@@ -1324,6 +1323,90 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
         chalk.gray(
           `Compacted ${result.summarizedMessageCount} messages into a session summary; ${kept}.`
         )
+      );
+    }
+    return continueResult();
+  },
+
+  "/budget": async ({ tui, sessionTracker, args }) => {
+    const reportLine = (msg: string) => {
+      if (tui) tui.appendSystemMessage(msg);
+      else console.log(chalk.gray(msg));
+    };
+
+    if (!sessionTracker) {
+      reportLine("Session tracker not available — /budget is a no-op.");
+      return continueResult();
+    }
+
+    const sub = (args[0] ?? "").toLowerCase();
+
+    if (sub === "set") {
+      const raw = (args[1] ?? "").trim();
+      const parsed = parseTokenBudget(raw);
+      if (parsed === null) {
+        reportLine(
+          `Usage: /budget set <N>[k|M]   (e.g. "/budget set 100k", "/budget set 1.5M", or a raw integer)`
+        );
+        return continueResult();
+      }
+      sessionTracker.setMaxTokens(parsed);
+      reportLine(
+        `💰 Budget set to ${parsed.toLocaleString()} tokens. Current usage: ${sessionTracker
+          .getTokenUsage()
+          .total.toLocaleString()}.`
+      );
+      return continueResult();
+    }
+
+    if (sub === "unset" || sub === "clear" || sub === "off") {
+      sessionTracker.setMaxTokens(undefined);
+      reportLine("💰 Budget cleared. Token usage is now uncapped.");
+      return continueResult();
+    }
+
+    // No args (or unknown) → show status.
+    const usage = sessionTracker.getTokenUsage();
+    const cap = sessionTracker.getMaxTokens();
+    if (!cap) {
+      reportLine(
+        `💰 No budget set. Used ${usage.total.toLocaleString()} tokens this session. Run "/budget set 100k" to enable a cap.`
+      );
+    } else {
+      const remaining = sessionTracker.getRemainingBudget();
+      const pct = Math.round((usage.total / cap) * 100);
+      reportLine(
+        `💰 Budget: ${usage.total.toLocaleString()} / ${cap.toLocaleString()} tokens (${pct}%) — ${remaining.toLocaleString()} remaining.`
+      );
+    }
+    return continueResult();
+  },
+
+  "/copy": async ({ tui }) => {
+    if (!tui) {
+      console.log(
+        chalk.yellow(
+          "/copy needs the interactive TUI to find the last assistant message."
+        )
+      );
+      return continueResult();
+    }
+    const content = tui.getLastAssistantContent();
+    if (!content) {
+      tui.appendSystemMessage("Nothing to copy yet — no assistant message in this session.");
+      return continueResult();
+    }
+    const ok = writeClipboardText(content);
+    if (ok) {
+      const preview = content.replace(/\s+/g, " ").trim();
+      const summary =
+        preview.length > 60 ? `${preview.slice(0, 57)}…` : preview;
+      tui.appendSystemMessage(
+        `Copied last assistant message to clipboard (${content.length} chars): ${summary}`
+      );
+    } else {
+      tui.appendSystemMessage(
+        `Couldn't write to clipboard. On Linux install \`wl-clipboard\` or \`xclip\`; on macOS \`pbcopy\` is built in.`
       );
     }
     return continueResult();

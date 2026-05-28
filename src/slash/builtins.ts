@@ -113,6 +113,14 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     description: "Write a runtime diagnostics dump for bug reports",
   },
   {
+    command: "/copy",
+    description: "Copy the last assistant message to the clipboard",
+  },
+  {
+    command: "/budget",
+    description: "View or set a per-session token budget",
+  },
+  {
     command: "/help",
     description: "Show slash command help",
     protected: true,

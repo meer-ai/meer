@@ -91,6 +91,45 @@ function emitQueueChanges(
   }
 }
 
+/**
+ * Bash mode: run a shell command directly without invoking the LLM.
+ * Triggered by the `!` prefix on composer input. Echoes the command and
+ * its output as system messages so the user sees both. Errors come back
+ * formatted but never throw out to the input loop.
+ *
+ * Deliberately does NOT add the command/output to the conversation
+ * history — the LLM doesn't see it unless the user explicitly asks
+ * about it in a follow-up. Same convention as pi's bash mode.
+ */
+async function runBashModeCommand(
+  command: string,
+  chatUI: import("./ui/ink/InkChatAdapter.js").InkChatAdapter | null
+): Promise<void> {
+  const { runCommand } = await import("./tools/index.js");
+  chatUI?.appendSystemMessage(`$ ${command}`);
+  try {
+    const result = await runCommand(command, process.cwd(), {
+      silent: chatUI !== null,
+    });
+    if (chatUI) {
+      const trimmed = (result.result ?? "").trim();
+      const body = result.error
+        ? trimmed
+          ? `${trimmed}\n\n❌ ${result.error}`
+          : `❌ ${result.error}`
+        : trimmed || "(no output)";
+      chatUI.appendSystemMessage(body);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (chatUI) {
+      chatUI.appendSystemMessage(`❌ ${message}`);
+    } else {
+      console.log(chalk.red(`\n❌ ${message}\n`));
+    }
+  }
+}
+
 export function createCLI(): Command {
   const program = new Command();
 
@@ -333,6 +372,19 @@ export function createCLI(): Command {
                 chatUI?.appendSystemMessage(`❌ ${message}`);
               }
             })();
+            return;
+          }
+          // Bash mode: a leading `!` runs the rest as a shell command,
+          // skipping the LLM entirely. Saves tokens on trivial peeks
+          // (`!ls`, `!git status`). The output is shown as a system
+          // message and is NOT added to the conversation history, so the
+          // model doesn't see it unless the user follows up with a real
+          // chat turn.
+          if (!hasAttachments && trimmed.startsWith("!") && trimmed !== "!") {
+            const command = trimmed.slice(1).trim();
+            if (command) {
+              void runBashModeCommand(command, chatUI ?? null);
+            }
             return;
           }
           // Queueing mid-turn currently only carries text (the queue is text-only
@@ -695,6 +747,22 @@ export function createCLI(): Command {
             eventBus,
             chatUI ? undefined : new WorkflowTimeline()
           );
+
+          // Pre-turn budget check. If the user set a token cap via /budget
+          // and we're already over, refuse the turn with a clear message
+          // rather than firing the LLM call. Protects runaway autonomous
+          // loops from incurring further spend after the user said "stop."
+          if (sessionTracker.isOverBudget()) {
+            const usage = sessionTracker.getTokenUsage();
+            const cap = sessionTracker.getMaxTokens();
+            const msg = `Session token budget reached (${usage.total.toLocaleString()} / ${cap?.toLocaleString() ?? "?"}). Use /budget set N to raise the cap or /budget unset to remove it.`;
+            if (chatUI) {
+              chatUI.appendSystemMessage(`💰 ${msg}`);
+            } else {
+              console.log(chalk.yellow(`\n💰 ${msg}\n`));
+            }
+            continue;
+          }
 
           try {
             const start = Date.now();

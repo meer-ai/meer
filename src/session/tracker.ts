@@ -32,6 +32,12 @@ export class SessionTracker {
   private isActive: boolean = false;
   private apiUrl: string;
   private lastCommandName: string = 'interactive';
+  /**
+   * Per-session token budget. When set, the agent's pre-turn check aborts
+   * any new turn that would push total usage past the cap, protecting users
+   * from accidental runaway autonomous loops. 0/undefined = unlimited.
+   */
+  private maxTokens: number | undefined;
 
   constructor(provider: string, model: string, apiUrl?: string) {
     this.apiUrl = apiUrl || process.env.MEERAI_API_URL || 'https://api.meerai.dev';
@@ -242,6 +248,34 @@ export class SessionTracker {
       completion: this.stats.completionTokens,
       total: this.stats.promptTokens + this.stats.completionTokens
     };
+  }
+
+  /**
+   * Set or clear the per-session token cap. Pass 0/undefined to disable.
+   * Caps apply to lifetime prompt+completion tokens, not per turn.
+   */
+  setMaxTokens(max: number | undefined): void {
+    this.maxTokens = max && max > 0 ? max : undefined;
+  }
+
+  getMaxTokens(): number | undefined {
+    return this.maxTokens;
+  }
+
+  /**
+   * True if a new turn would (more than likely) push past the cap. The
+   * pre-turn check that calls this is conservative — we don't know the
+   * exact cost of the upcoming turn, only the current spend.
+   */
+  isOverBudget(): boolean {
+    if (!this.maxTokens) return false;
+    return this.getTokenUsage().total >= this.maxTokens;
+  }
+
+  /** Remaining tokens in the budget, or `Infinity` when no cap is set. */
+  getRemainingBudget(): number {
+    if (!this.maxTokens) return Number.POSITIVE_INFINITY;
+    return Math.max(0, this.maxTokens - this.getTokenUsage().total);
   }
 
   getCostUsage(): {

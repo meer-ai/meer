@@ -46,6 +46,20 @@ export interface MeerAgentToolContext {
     command: string;
     cwd: string;
   }>;
+  /**
+   * Read the session-level "current shell directory." `cd` commands from
+   * the agent persist here so a follow-up `run_command` lands in the
+   * expected directory even though each invocation spawns a fresh shell.
+   * Falls back to `context.cwd` when no `cd` has happened yet.
+   */
+  getShellCwd?: () => string;
+  /**
+   * Persist a new shell cwd. Called by the run_command path after parsing
+   * `cd` prefixes out of the agent's commands. Implementations should
+   * resolve relative paths and validate the directory exists before
+   * accepting the change.
+   */
+  setShellCwd?: (path: string) => void;
 }
 
 export interface MeerAgentToolOptions {
@@ -358,9 +372,45 @@ async function callMeerTool(
       if (!(await ensureCommandApproval(context, command))) {
         return `⚠️ Command cancelled: ${command}`;
       }
+
+      // Peel leading `cd …` segments off the command. The agent's "cd foo"
+      // then a follow-up "npm test" would otherwise run in two different
+      // shells because each invocation spawns fresh. We:
+      //   - resolve `cd <path>` against the session shell cwd
+      //   - persist the new cwd via context.setShellCwd
+      //   - execute whatever's left after the cd's (often empty for a
+      //     bare `cd /path`, in which case we report success without
+      //     spawning a shell at all)
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { extractLeadingCd } = require("../../utils/shell-cd.js") as typeof import("../../utils/shell-cd.js");
+      const sessionCwd = context.getShellCwd?.() ?? context.cwd;
+      const cdParse = extractLeadingCd(command, sessionCwd);
+      if (cdParse.error) {
+        return {
+          content: cdParse.error,
+          isError: true,
+        };
+      }
+      const effectiveCwd = cdParse.newCwd ?? sessionCwd;
+      const remaining = cdParse.remainingCommand;
+
+      // Commit the new cwd BEFORE running anything so that even if the
+      // tail command throws, the cd's the model intended still stick.
+      if (cdParse.newCwd && context.setShellCwd) {
+        context.setShellCwd(cdParse.newCwd);
+      }
+
+      // Bare `cd /path` (no tail) — short-circuit, no shell spawn.
+      if (!remaining) {
+        return {
+          content: `Changed directory to ${effectiveCwd}`,
+          details: { shellCwd: effectiveCwd },
+        };
+      }
+
       const timeoutMs =
         input.timeoutMs !== undefined ? Number(input.timeoutMs) : undefined;
-      const result = await tools.runCommand(command, context.cwd, {
+      const result = await tools.runCommand(remaining, effectiveCwd, {
         timeoutMs,
         onUpdate,
         signal,
@@ -371,6 +421,7 @@ async function callMeerTool(
         details: {
           ...(result.details ?? {}),
           timeoutMs,
+          shellCwd: effectiveCwd,
         },
       };
     }

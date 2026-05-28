@@ -1,6 +1,6 @@
 {
   "name": "meerai",
-  "version": "0.6.30",
+  "version": "0.6.31",
   "description": "MeerAI - Dive deep into your code. An open-source, local-first AI CLI for developers.",
   "type": "module",
   "bin": {
@@ -18,7 +18,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/index.ts",
     "prepublishOnly": "npm run build",
-    "test": "tsx scripts/verify-agent-tools.ts && tsx scripts/verify-slash-commands.ts && tsx scripts/verify-slash-detection.ts && tsx scripts/verify-agent-queue.ts && tsx scripts/verify-agent-session.ts && tsx scripts/verify-session-branches.ts && tsx scripts/verify-session-compaction.ts && tsx scripts/verify-skills.ts && tsx scripts/verify-plan-panel.ts && tsx scripts/verify-composer-wrap.ts && tsx scripts/verify-composer-burst.ts && tsx scripts/verify-attachments.ts && tsx scripts/verify-message-multimodal.ts && tsx scripts/verify-error-boundary.ts && tsx scripts/verify-work-state-cleanup.ts && tsx scripts/verify-memory-bounds.ts && tsx scripts/verify-tool-output-ceiling.ts && tsx scripts/verify-agent-loop-limits.ts && tsx scripts/verify-error-context.ts",
+    "test": "tsx scripts/verify-agent-tools.ts && tsx scripts/verify-slash-commands.ts && tsx scripts/verify-slash-detection.ts && tsx scripts/verify-agent-queue.ts && tsx scripts/verify-agent-session.ts && tsx scripts/verify-session-branches.ts && tsx scripts/verify-session-compaction.ts && tsx scripts/verify-skills.ts && tsx scripts/verify-plan-panel.ts && tsx scripts/verify-composer-wrap.ts && tsx scripts/verify-composer-burst.ts && tsx scripts/verify-attachments.ts && tsx scripts/verify-message-multimodal.ts && tsx scripts/verify-error-boundary.ts && tsx scripts/verify-work-state-cleanup.ts && tsx scripts/verify-memory-bounds.ts && tsx scripts/verify-tool-output-ceiling.ts && tsx scripts/verify-copy-last-assistant.ts && tsx scripts/verify-bash-mode.ts && tsx scripts/verify-file-expansion.ts && tsx scripts/verify-output-sanitize.ts && tsx scripts/verify-fast-tool-render.ts && tsx scripts/verify-expand-last-tool.ts && tsx scripts/verify-context-window.ts && tsx scripts/verify-budget.ts && tsx scripts/verify-shell-cd.ts && tsx scripts/verify-agent-loop-limits.ts && tsx scripts/verify-error-context.ts",
     "release": "./scripts/release.sh"
   },
   "keywords": [

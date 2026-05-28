@@ -491,6 +491,9 @@ export class InkChatAdapter {
         onMessage: handleMessage,
         onExit: () => this.destroy(),
         onInterrupt: handleInterrupt,
+        onExpandLastTool: () => {
+          void this.openLastToolOutputInPager();
+        },
         mode: this.mode,
         onModeChange: handleModeChange,
         tools: this.tools.length > 0 ? this.tools : undefined,
@@ -601,6 +604,9 @@ export class InkChatAdapter {
         onMessage: handleMessage,
         onExit: () => this.destroy(),
         onInterrupt: handleInterrupt,
+        onExpandLastTool: () => {
+          void this.openLastToolOutputInPager();
+        },
         mode: this.mode,
         onModeChange: handleModeChange,
         tools: this.tools.length > 0 ? this.tools : undefined,
@@ -1098,6 +1104,112 @@ export class InkChatAdapter {
   /** Exposed for the chat surface so it can show "+N earlier dropped" hints. */
   getDroppedMessageCount(): number {
     return this.droppedMessageCount;
+  }
+
+  /**
+   * Return the most recent settled assistant message (excludes the live
+   * streaming draft, since draft content can be incomplete). Used by /copy
+   * to put the latest model output on the clipboard.
+   */
+  getLastAssistantContent(): string | null {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role === "assistant" && !msg.isCot && msg.content.trim()) {
+        return msg.content;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Locate the most recent tool result and return the best-available
+   * full content for it. We check two sources:
+   *
+   *  - `this.tools` — the live widget list. Includes run_command,
+   *    read_file, grep, etc., even when they're filtered out of the
+   *    chat transcript by `shouldRenderToolTranscript`.
+   *  - `this.messages` — committed tool transcript blocks (mutations,
+   *    errors, anything that survived the filter).
+   *
+   * Whichever has a more recent `endTime` (or, for messages, timestamp)
+   * wins. If the tool wrote a temp file (run_command + the universal
+   * tool-output ceiling), we prefer that path so the pager mmaps the
+   * full file instead of getting the truncated tail.
+   */
+  getLastToolOutput(): {
+    toolName: string;
+    filePath?: string;
+    content: string;
+  } | null {
+    let bestToolTime = -1;
+    let bestTool: { toolName: string; filePath?: string; content: string } | null = null;
+
+    for (let i = this.tools.length - 1; i >= 0; i--) {
+      const tool = this.tools[i];
+      if (tool.status !== "success" && tool.status !== "error") continue;
+      const when = tool.endTime ?? tool.startTime ?? 0;
+      if (when <= bestToolTime) continue;
+      const details = tool.details as Record<string, unknown> | undefined;
+      const filePath =
+        details && typeof details.fullOutputPath === "string"
+          ? details.fullOutputPath
+          : undefined;
+      bestToolTime = when;
+      bestTool = {
+        toolName: tool.name,
+        filePath,
+        content: tool.result ?? tool.error ?? "",
+      };
+      break;
+    }
+
+    let bestMessageTime = -1;
+    let bestMessage: { toolName: string; filePath?: string; content: string } | null = null;
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const msg = this.messages[i];
+      if (msg.role !== "tool") continue;
+      const when = msg.timestamp ?? 0;
+      if (when <= bestMessageTime) continue;
+      const details = (msg as { toolDetails?: Record<string, unknown> }).toolDetails;
+      const filePath =
+        details && typeof details.fullOutputPath === "string"
+          ? details.fullOutputPath
+          : undefined;
+      bestMessageTime = when;
+      bestMessage = {
+        toolName: (msg as { toolName?: string }).toolName ?? "tool",
+        filePath,
+        content: msg.content ?? "",
+      };
+      break;
+    }
+
+    if (!bestTool && !bestMessage) return null;
+    if (!bestTool) return bestMessage;
+    if (!bestMessage) return bestTool;
+    return bestToolTime >= bestMessageTime ? bestTool : bestMessage;
+  }
+
+  /**
+   * Suspend Ink, open the most recent tool's full output in the user's
+   * $PAGER (falling back to `less -R`), then resume the UI. Called from
+   * MeerChat's ^E keybind. Quietly appends a system message if there's
+   * nothing to view yet.
+   */
+  async openLastToolOutputInPager(): Promise<void> {
+    const target = this.getLastToolOutput();
+    if (!target) {
+      this.appendSystemMessage("No tool output to view yet.");
+      return;
+    }
+    const { openInPager } = await import("../../utils/pager.js");
+    await this.runWithTerminal(async () => {
+      await openInPager({
+        filePath: target.filePath,
+        content: target.filePath ? undefined : target.content,
+        header: `# ${target.toolName} — full output`,
+      });
+    });
   }
 
   clearMessages(): void {

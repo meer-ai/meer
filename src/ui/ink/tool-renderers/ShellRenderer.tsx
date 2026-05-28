@@ -5,11 +5,15 @@ import {
   SHELL_MAX_LINES,
   formatDurationMs,
   getCommand,
+  getDurationMs,
+  shouldRenderCompact,
   stripToolHeader,
   truncateLine,
 } from "./utils.js";
+import { CompactToolRow } from "./CompactToolRow.js";
 
 export const ShellRenderer: React.FC<ToolRendererProps> = React.memo(({
+  toolName,
   content,
   args,
   details,
@@ -18,6 +22,16 @@ export const ShellRenderer: React.FC<ToolRendererProps> = React.memo(({
   const command =
     typeof details?.command === "string" ? details.command : getCommand(args);
   const body = stripToolHeader(content);
+  const compactDuration = getDurationMs(details);
+  if (shouldRenderCompact({ duration: compactDuration, isError, body })) {
+    return (
+      <CompactToolRow
+        toolName={toolName}
+        summary={command ? `$ ${command}` : ""}
+        durationMs={compactDuration}
+      />
+    );
+  }
   const structuredTail =
     typeof details?.outputTail === "string" && details.outputTail.trim()
       ? details.outputTail
