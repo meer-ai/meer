@@ -32,6 +32,18 @@ interface MeerChatSuccessResponse {
   };
   error?: string;
   message?: string;
+  exceeded_window?: "5h" | "weekly" | "monthly";
+}
+
+type MeerLimitWindow = "5h" | "weekly" | "monthly";
+
+interface MeerUsageLimit {
+  window: MeerLimitWindow;
+  limit_usd: number | null;
+  used_usd: number;
+  remaining_usd: number | null;
+  percentage: number | null;
+  resets_at: string | null;
 }
 
 interface MeerModelsResponse {
@@ -51,7 +63,13 @@ interface MeerSubscriptionResponse {
     plan: {
       name: string;
       display_name: string;
+      price_monthly?: number;
+      display_price_monthly?: number | null;
+      compare_at_price_monthly?: number | null;
       requests_per_month: number;
+      usage_limit_5h_usd?: number | null;
+      usage_limit_weekly_usd?: number | null;
+      usage_limit_monthly_usd?: number | null;
       allowed_tiers: string[];
     };
     usage?: {
@@ -59,6 +77,7 @@ interface MeerSubscriptionResponse {
       quota: number;
       remaining: number;
     };
+    limits?: Record<MeerLimitWindow, MeerUsageLimit>;
   };
 }
 
@@ -139,7 +158,8 @@ export class MeerProvider implements Provider {
 
     const planName =
       subscription?.subscription?.plan.display_name || "Unknown Plan";
-    const quota = subscription?.subscription?.usage?.quota;
+    const limits = subscription?.subscription?.limits;
+    const plan = subscription?.subscription?.plan;
 
     return {
       name: "Meer Managed Provider",
@@ -153,7 +173,17 @@ export class MeerProvider implements Provider {
       })),
       currentModel: this.currentModel,
       plan: planName,
-      quota,
+      planDetails: plan
+        ? {
+            name: plan.name,
+            displayName: plan.display_name,
+            priceMonthly:
+              plan.display_price_monthly ?? plan.price_monthly ?? null,
+            compareAtPriceMonthly: plan.compare_at_price_monthly ?? null,
+            allowedTiers: plan.allowed_tiers,
+          }
+        : undefined,
+      limits,
     };
   }
 
@@ -171,7 +201,7 @@ export class MeerProvider implements Provider {
   ): Promise<MeerChatSuccessResponse> {
     const body = {
       messages: this.expandUserMessages(messages),
-      model: this.config.model !== "auto" ? this.config.model : undefined,
+      model: this.currentModel !== "auto" ? this.currentModel : undefined,
       options: {
         temperature: options?.temperature ?? this.config.temperature,
         maxTokens: options?.maxTokens,
@@ -227,10 +257,29 @@ export class MeerProvider implements Provider {
 
     if (!response.ok) {
       const errorText = await response.text();
+      let errorMessage = errorText || response.statusText;
+
+      if (errorText) {
+        try {
+          const payload = JSON.parse(errorText) as {
+            message?: string;
+            error?: string;
+            exceeded_window?: MeerLimitWindow;
+          };
+          errorMessage =
+            payload.message ||
+            payload.error ||
+            errorMessage;
+          if (payload.exceeded_window) {
+            errorMessage = `${errorMessage} (${payload.exceeded_window} limit)`;
+          }
+        } catch {
+          // Keep the raw response text when the backend returns non-JSON.
+        }
+      }
+
       throw new Error(
-        `Meer provider request failed (${response.status}): ${
-          errorText || response.statusText
-        }`
+        `Meer provider request failed (${response.status}): ${errorMessage}`
       );
     }
 

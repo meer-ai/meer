@@ -233,7 +233,7 @@ export async function runSetupWizard(): Promise<void> {
       message: 'Which AI provider would you like to use?',
       choices: [
         {
-          name: chalk.cyan('🌊 Meer Managed Provider') + chalk.gray(' - Use Meer subscription (requires Meer login)'),
+          name: chalk.cyan('🌊 Meer Managed Provider') + chalk.gray(' - Use Meer Starter/Pro hosted plans (requires Meer login)'),
           value: 'meer'
         },
         {
@@ -459,7 +459,7 @@ export async function runSetupWizard(): Promise<void> {
       }
 
       console.log(chalk.gray('   Authentication: API Key'));
-      console.log(chalk.gray('   Requests will use your Meer subscription and quota.'));
+      console.log(chalk.gray('   Requests will use your Meer plan and rolling cost limits.'));
       console.log(chalk.blue('\n🔐 Your API key is stored securely in ~/.meer/config.yaml\n'));
     } else {
       // Login flow (existing behavior - user will use `meer login` command)

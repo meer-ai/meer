@@ -427,6 +427,9 @@ async function writeDiagnosticsDump(args: {
 
 async function handleAccountCommand(): Promise<void> {
   const { AuthStorage } = await import("../auth/storage.js");
+  const { fetchCurrentSubscription, formatUsd } = await import(
+    "../auth/subscription.js"
+  );
   const authStorage = new AuthStorage();
 
   if (!authStorage.isAuthenticated()) {
@@ -446,6 +449,10 @@ async function handleAccountCommand(): Promise<void> {
     return;
   }
 
+  const subscription = await fetchCurrentSubscription();
+  const planName =
+    subscription?.plan.display_name || user.subscription_tier.toUpperCase();
+
   console.log(chalk.bold.blue("\n👤 Account Information\n"));
   console.log(chalk.white("   Name:") + "          " + chalk.cyan(user.name));
   console.log(
@@ -453,10 +460,21 @@ async function handleAccountCommand(): Promise<void> {
   );
   console.log(chalk.white("   ID:") + "            " + chalk.dim(user.id));
   console.log(
-    chalk.white("   Subscription:") +
+    chalk.white("   Plan:") +
       "  " +
-      chalk.yellow(user.subscription_tier.toUpperCase())
+      chalk.yellow(planName)
   );
+  if (subscription?.limits) {
+    console.log(
+      chalk.white("   Limits:") +
+        "        " +
+        chalk.gray(
+          `${formatUsd(subscription.limits["5h"]?.limit_usd)} / 5h, ` +
+            `${formatUsd(subscription.limits.weekly?.limit_usd)} / week, ` +
+            `${formatUsd(subscription.limits.monthly?.limit_usd)} / month`
+        )
+    );
+  }
   if (user.avatar_url) {
     console.log(
       chalk.white("   Avatar:") + "        " + chalk.blue(user.avatar_url)
@@ -474,7 +492,17 @@ async function handleAccountCommand(): Promise<void> {
 
   console.log("");
   console.log(chalk.bold.white("   Benefits:"));
-  if (user.subscription_tier === "free") {
+  if (subscription?.plan.name === "starter") {
+    console.log(chalk.green("   ✓ Starter hosted coding models"));
+    console.log(chalk.green("   ✓ GLM, Kimi, MiniMax, Qwen, DeepSeek, MiMo"));
+    console.log(chalk.green("   ✓ Rolling 5-hour, weekly, and monthly limits"));
+    console.log(chalk.green("   ✓ Usage analytics"));
+  } else if (subscription?.plan.name === "pro") {
+    console.log(chalk.green("   ✓ Pro hosted coding models"));
+    console.log(chalk.green("   ✓ Claude, GPT, Gemini, and Starter models"));
+    console.log(chalk.green("   ✓ Higher rolling cost limits"));
+    console.log(chalk.green("   ✓ Usage analytics"));
+  } else if (user.subscription_tier === "free") {
     console.log(chalk.gray("   • Basic features"));
     console.log(chalk.gray("   • Local model support"));
     console.log(chalk.gray("   • Session history"));
