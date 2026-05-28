@@ -1,4 +1,8 @@
 import { fetch } from "undici";
+import { existsSync, readFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
+import { parse } from "yaml";
 import { AuthStorage } from "./storage.js";
 
 export type UsageLimitWindow = "5h" | "weekly" | "monthly";
@@ -25,13 +29,41 @@ export interface CurrentSubscription {
   limits?: Record<UsageLimitWindow, UsageLimitStatus>;
 }
 
+export interface MeerCredential {
+  token: string;
+  source: "api-key" | "login";
+}
+
+export async function resolveMeerCredential(): Promise<MeerCredential | null> {
+  const envKey = process.env.MEER_API_KEY?.trim();
+  if (envKey) {
+    return { token: envKey, source: "api-key" };
+  }
+
+  const configKey = readConfiguredMeerApiKey();
+  if (configKey) {
+    return { token: configKey, source: "api-key" };
+  }
+
+  const authStorage = new AuthStorage();
+  const accessToken = authStorage.getAccessToken();
+  if (accessToken) {
+    return { token: accessToken, source: "login" };
+  }
+
+  return null;
+}
+
+export async function hasMeerCredentials(): Promise<boolean> {
+  return (await resolveMeerCredential()) !== null;
+}
+
 export async function fetchCurrentSubscription(
   apiUrl: string = process.env.MEERAI_API_URL || "https://api.meerai.dev"
 ): Promise<CurrentSubscription | null> {
-  const authStorage = new AuthStorage();
-  const token = authStorage.getAccessToken();
+  const credential = await resolveMeerCredential();
 
-  if (!token) {
+  if (!credential) {
     return null;
   }
 
@@ -39,7 +71,7 @@ export async function fetchCurrentSubscription(
     `${apiUrl.replace(/\/$/, "")}/api/subscription/current`,
     {
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${credential.token}`,
       },
     }
   );
@@ -53,6 +85,23 @@ export async function fetchCurrentSubscription(
   };
 
   return payload.subscription ?? null;
+}
+
+function readConfiguredMeerApiKey(): string | null {
+  const configPath = join(homedir(), ".meer", "config.yaml");
+  if (!existsSync(configPath)) {
+    return null;
+  }
+
+  try {
+    const parsed = parse(readFileSync(configPath, "utf8")) as {
+      meer?: { apiKey?: unknown };
+    } | null;
+    const apiKey = parsed?.meer?.apiKey;
+    return typeof apiKey === "string" && apiKey.trim() ? apiKey.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export function formatUsd(value: number | null | undefined): string {

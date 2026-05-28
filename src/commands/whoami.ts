@@ -5,7 +5,11 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { AuthStorage } from '../auth/storage.js';
-import { fetchCurrentSubscription, formatUsd } from '../auth/subscription.js';
+import {
+  fetchCurrentSubscription,
+  formatUsd,
+  hasMeerCredentials,
+} from '../auth/subscription.js';
 
 export function createWhoamiCommand(): Command {
   const command = new Command('whoami');
@@ -14,32 +18,38 @@ export function createWhoamiCommand(): Command {
     .description('Display current user information')
     .action(async () => {
       const authStorage = new AuthStorage();
+      const user = authStorage.getUser();
+      const hasCredentials = await hasMeerCredentials();
 
-      if (!authStorage.isAuthenticated()) {
+      if (!authStorage.isAuthenticated() && !hasCredentials) {
         console.log(chalk.yellow('\n⚠️  Not logged in'));
-        console.log(chalk.gray('   Run "meer login" to authenticate\n'));
+        console.log(chalk.gray('   Run "meer login" to authenticate, or configure a Meer API key with "meer setup"\n'));
         return;
       }
 
       try {
-        const user = authStorage.getUser();
+        const subscription = await fetchCurrentSubscription();
 
-        if (!user) {
-          console.log(chalk.yellow('\n⚠️  No user information found\n'));
+        if (!user && !subscription) {
+          console.log(chalk.yellow('\n⚠️  No account information found'));
+          console.log(chalk.gray('   Check your Meer API key or run "meer login"\n'));
           return;
         }
 
-        const subscription = await fetchCurrentSubscription();
-
-        console.log(chalk.bold.blue('\n👤 Current User\n'));
-        console.log(chalk.white('   Name: ') + chalk.cyan(user.name));
-        console.log(chalk.white('   Email: ') + chalk.gray(user.email));
-        console.log(chalk.white('   ID: ') + chalk.gray(user.id));
+        console.log(chalk.bold.blue(user ? '\n👤 Current User\n' : '\n👤 Current Meer Account\n'));
+        if (user) {
+          console.log(chalk.white('   Name: ') + chalk.cyan(user.name));
+          console.log(chalk.white('   Email: ') + chalk.gray(user.email));
+          console.log(chalk.white('   ID: ') + chalk.gray(user.id));
+        } else {
+          console.log(chalk.white('   Auth: ') + chalk.gray('Meer API key'));
+        }
         console.log(
           chalk.white('   Plan: ') +
             chalk.yellow(
               subscription?.plan.display_name ||
-                user.subscription_tier.toUpperCase()
+                user?.subscription_tier.toUpperCase() ||
+                'Unknown'
             )
         );
         if (subscription?.limits) {
@@ -53,11 +63,13 @@ export function createWhoamiCommand(): Command {
           );
         }
 
-        if (user.avatar_url) {
+        if (user?.avatar_url) {
           console.log(chalk.white('   Avatar: ') + chalk.blue.underline(user.avatar_url));
         }
 
-        console.log(chalk.white('   Member since: ') + chalk.gray(new Date(user.created_at).toLocaleDateString()));
+        if (user?.created_at) {
+          console.log(chalk.white('   Member since: ') + chalk.gray(new Date(user.created_at).toLocaleDateString()));
+        }
         console.log('');
 
       } catch (error) {

@@ -427,38 +427,44 @@ async function writeDiagnosticsDump(args: {
 
 async function handleAccountCommand(): Promise<void> {
   const { AuthStorage } = await import("../auth/storage.js");
-  const { fetchCurrentSubscription, formatUsd } = await import(
-    "../auth/subscription.js"
-  );
+  const { fetchCurrentSubscription, formatUsd, hasMeerCredentials } =
+    await import("../auth/subscription.js");
   const authStorage = new AuthStorage();
+  const user = authStorage.getUser();
+  const hasCredentials = await hasMeerCredentials();
 
-  if (!authStorage.isAuthenticated()) {
+  if (!authStorage.isAuthenticated() && !hasCredentials) {
     console.log(chalk.yellow("\n⚠️  Not logged in"));
     console.log(
       chalk.gray("   Run ") +
         chalk.cyan("meer login") +
-        chalk.gray(" to authenticate")
+        chalk.gray(" to authenticate, or configure a Meer API key with ") +
+        chalk.cyan("meer setup")
     );
     console.log("");
     return;
   }
 
-  const user = authStorage.getUser();
-  if (!user) {
-    console.log(chalk.yellow("\n⚠️  No user information found\n"));
+  const subscription = await fetchCurrentSubscription();
+  if (!user && !subscription) {
+    console.log(chalk.yellow("\n⚠️  No account information found"));
+    console.log(chalk.gray('   Check your Meer API key or run "meer login"\n'));
     return;
   }
 
-  const subscription = await fetchCurrentSubscription();
   const planName =
-    subscription?.plan.display_name || user.subscription_tier.toUpperCase();
+    subscription?.plan.display_name || user?.subscription_tier.toUpperCase() || "Unknown";
 
   console.log(chalk.bold.blue("\n👤 Account Information\n"));
-  console.log(chalk.white("   Name:") + "          " + chalk.cyan(user.name));
-  console.log(
-    chalk.white("   Email:") + "         " + chalk.gray(user.email)
-  );
-  console.log(chalk.white("   ID:") + "            " + chalk.dim(user.id));
+  if (user) {
+    console.log(chalk.white("   Name:") + "          " + chalk.cyan(user.name));
+    console.log(
+      chalk.white("   Email:") + "         " + chalk.gray(user.email)
+    );
+    console.log(chalk.white("   ID:") + "            " + chalk.dim(user.id));
+  } else {
+    console.log(chalk.white("   Auth:") + "          " + chalk.gray("Meer API key"));
+  }
   console.log(
     chalk.white("   Plan:") +
       "  " +
@@ -475,20 +481,22 @@ async function handleAccountCommand(): Promise<void> {
         )
     );
   }
-  if (user.avatar_url) {
+  if (user?.avatar_url) {
     console.log(
       chalk.white("   Avatar:") + "        " + chalk.blue(user.avatar_url)
     );
   }
 
-  const memberSince = new Date(user.created_at).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
-  console.log(
-    chalk.white("   Member since:") + "  " + chalk.gray(memberSince)
-  );
+  if (user?.created_at) {
+    const memberSince = new Date(user.created_at).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+    console.log(
+      chalk.white("   Member since:") + "  " + chalk.gray(memberSince)
+    );
+  }
 
   console.log("");
   console.log(chalk.bold.white("   Benefits:"));
@@ -502,7 +510,7 @@ async function handleAccountCommand(): Promise<void> {
     console.log(chalk.green("   ✓ Claude, GPT, Gemini, and Starter models"));
     console.log(chalk.green("   ✓ Higher rolling cost limits"));
     console.log(chalk.green("   ✓ Usage analytics"));
-  } else if (user.subscription_tier === "free") {
+  } else if (user?.subscription_tier === "free") {
     console.log(chalk.gray("   • Basic features"));
     console.log(chalk.gray("   • Local model support"));
     console.log(chalk.gray("   • Session history"));
@@ -511,12 +519,12 @@ async function handleAccountCommand(): Promise<void> {
     console.log(chalk.gray("   • Cloud sync across devices"));
     console.log(chalk.gray("   • Priority support"));
     console.log(chalk.gray("   • Advanced features"));
-  } else if (user.subscription_tier === "pro") {
+  } else if (user?.subscription_tier === "pro") {
     console.log(chalk.green("   ✓ All basic features"));
     console.log(chalk.green("   ✓ Cloud sync"));
     console.log(chalk.green("   ✓ Priority support"));
     console.log(chalk.green("   ✓ Advanced features"));
-  } else if (user.subscription_tier === "enterprise") {
+  } else if (user?.subscription_tier === "enterprise") {
     console.log(chalk.cyan("   ✓ All Pro features"));
     console.log(chalk.cyan("   ✓ Team collaboration"));
     console.log(chalk.cyan("   ✓ Custom integrations"));

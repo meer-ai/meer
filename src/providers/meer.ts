@@ -150,7 +150,7 @@ export class MeerProvider implements Provider {
 
   async metadata(): Promise<ProviderMetadata> {
     const [models, subscription] = await Promise.all([
-      this.fetchWithAuth<MeerModelsResponse>("/api/usage/models"),
+      this.listModels(),
       this.fetchWithAuth<MeerSubscriptionResponse>(
         "/api/subscription/current"
       ).catch(() => null),
@@ -165,12 +165,7 @@ export class MeerProvider implements Provider {
       name: "Meer Managed Provider",
       version: "1.0.0",
       capabilities: ["chat", "stream"],
-      models: models.models.map((model) => ({
-        id: model.id,
-        name: model.name,
-        tier: model.tier,
-        provider: model.provider,
-      })),
+      models,
       currentModel: this.currentModel,
       plan: planName,
       planDetails: plan
@@ -185,6 +180,26 @@ export class MeerProvider implements Provider {
         : undefined,
       limits,
     };
+  }
+
+  async listModels(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      tier: string;
+      provider: string;
+    }>
+  > {
+    const response = await this.fetchWithAuth<MeerModelsResponse>(
+      "/api/usage/models"
+    );
+
+    return response.models.map((model) => ({
+      id: model.id,
+      name: model.name,
+      tier: model.tier,
+      provider: model.provider,
+    }));
   }
 
   getCurrentModel(): string {
