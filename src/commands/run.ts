@@ -62,6 +62,7 @@ export function createRunCommand(): Command {
       "Also print chain-of-thought / reasoning lines",
       false
     )
+    .option("--json", "Emit newline-delimited JSON events on stdout", false)
     .action(async (promptParts: string[], options: RunOptions) => {
       try {
         const exitCode = await runAgent(promptParts, options);
@@ -69,6 +70,10 @@ export function createRunCommand(): Command {
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
+        if (options.json) {
+          emitJson({ type: "run.error", message });
+          emitJson({ type: "run.completed", exitCode: 1 });
+        }
         process.stderr.write(`! error: ${message}\n`);
         process.exit(1);
       }
@@ -84,6 +89,7 @@ interface RunOptions {
   model?: string;
   cwd?: string;
   verbose?: boolean;
+  json?: boolean;
 }
 
 async function runAgent(
@@ -92,6 +98,13 @@ async function runAgent(
 ): Promise<number> {
   const prompt = resolvePrompt(promptParts, options.file);
   if (!prompt) {
+    if (options.json) {
+      emitJson({
+        type: "run.error",
+        message: "No prompt provided. Pass it as arguments or use --file <path>.",
+      });
+      emitJson({ type: "run.completed", exitCode: 1 });
+    }
     process.stderr.write(
       "! error: no prompt provided. Pass it as arguments or use --file <path>.\n"
     );
@@ -99,6 +112,14 @@ async function runAgent(
   }
 
   if (!options.yes) {
+    if (options.json) {
+      emitJson({
+        type: "run.error",
+        message:
+          "meer run requires --yes (auto-approval) for now. Interactive approval is not yet supported in headless mode.",
+      });
+      emitJson({ type: "run.completed", exitCode: 1 });
+    }
     process.stderr.write(
       "! error: meer run requires --yes (auto-approval) for now. Interactive\n" +
         "  approval is not yet supported in headless mode.\n"
@@ -118,18 +139,28 @@ async function runAgent(
     config.model = options.model;
   }
 
-  process.stdout.write(
-    `[run] provider=${config.providerType} model=${config.model} cwd=${
-      options.cwd ?? process.cwd()
-    }\n`
-  );
-  process.stdout.write(`[run] max-steps=${options.maxSteps}\n`);
+  const cwd = options.cwd ?? process.cwd();
+  const isJson = options.json === true;
+  if (isJson) {
+    emitJson({
+      type: "run.started",
+      provider: config.providerType,
+      model: config.model,
+      cwd,
+      maxSteps: options.maxSteps,
+    });
+  } else {
+    process.stdout.write(
+      `[run] provider=${config.providerType} model=${config.model} cwd=${cwd}\n`
+    );
+    process.stdout.write(`[run] max-steps=${options.maxSteps}\n`);
+  }
 
   const { MeerAgent } = await import("../agent/meer-agent.js");
 
   const agent = new MeerAgent({
     provider: config.provider,
-    cwd: options.cwd ?? process.cwd(),
+    cwd,
     maxIterations: options.maxSteps,
     enableMemory: false,
     autoCollectContext: true,
@@ -138,29 +169,61 @@ async function runAgent(
 
     // Plain stdout streaming. No Ink, no fancy UI.
     onStreamingStart: () => {
+      if (isJson) {
+        emitJson({ type: "assistant.started" });
+        return;
+      }
       process.stdout.write(`\n${chalk.bold("assistant:")} `);
     },
     onStreamingChunk: (chunk) => {
+      if (isJson) {
+        emitJson({ type: "assistant.delta", delta: chunk });
+        return;
+      }
       process.stdout.write(chunk);
     },
     onStreamingEnd: () => {
+      if (isJson) {
+        emitJson({ type: "assistant.completed" });
+        return;
+      }
       process.stdout.write("\n");
     },
     onAssistantMessage: (content) => {
+      if (isJson) {
+        if (content?.trim()) {
+          emitJson({ type: "assistant.message", content });
+        }
+        return;
+      }
       if (content?.trim()) {
         process.stdout.write(`\n${chalk.bold("assistant:")} ${content}\n`);
       }
     },
     onCotMessage: (content) => {
+      if (isJson) {
+        if (options.verbose && content?.trim()) {
+          emitJson({ type: "reasoning.message", content });
+        }
+        return;
+      }
       if (options.verbose && content?.trim()) {
         process.stdout.write(chalk.gray(`[thinking] ${content}\n`));
       }
     },
     onToolStart: (tool, args) => {
+      if (isJson) {
+        emitJson({ type: "tool.started", tool, args });
+        return;
+      }
       const preview = previewArgs(args);
       process.stdout.write(`→ ${chalk.cyan(tool)}${preview}\n`);
     },
     onToolMessage: (tool, result, metadata) => {
+      if (isJson) {
+        emitJson({ type: "tool.message", tool, result, metadata });
+        return;
+      }
       const trimmed = (result ?? "").trim();
       if (!trimmed) return;
       const head = trimmed.slice(0, 240);
@@ -173,6 +236,9 @@ async function runAgent(
       }
     },
     onError: (error) => {
+      if (isJson) {
+        emitJson({ type: "run.error", message: error.message });
+      }
       process.stderr.write(`! agent error: ${error.message}\n`);
     },
 
@@ -184,6 +250,9 @@ async function runAgent(
   const onSigint = () => {
     if (interrupted) return;
     interrupted = true;
+    if (isJson) {
+      emitJson({ type: "run.error", message: "Interrupted, aborting agent." });
+    }
     process.stderr.write("\n! interrupted, aborting agent…\n");
     agent.abort();
   };
@@ -192,10 +261,23 @@ async function runAgent(
   try {
     await agent.initialize();
     await agent.processMessage(prompt, { persistUserMessage: false });
-    return interrupted ? 130 : 0;
+    const exitCode = interrupted ? 130 : 0;
+    if (isJson) {
+      emitJson({ type: "run.completed", exitCode });
+    }
+    return exitCode;
   } finally {
     process.off("SIGINT", onSigint);
   }
+}
+
+function emitJson(event: Record<string, unknown>): void {
+  process.stdout.write(
+    `${JSON.stringify({
+      timestamp: new Date().toISOString(),
+      ...event,
+    })}\n`
+  );
 }
 
 function resolvePrompt(
