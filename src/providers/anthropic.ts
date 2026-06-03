@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import type {
   Provider,
   ChatMessage,
@@ -83,7 +83,7 @@ export class AnthropicProvider implements Provider {
     messages: ChatMessage[],
     options?: ChatOptions
   ): AsyncIterable<string> {
-    const response = await fetch(`${this.config.baseURL}/v1/messages`, {
+    const response = await fetchWithTimeout(`${this.config.baseURL}/v1/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -97,7 +97,7 @@ export class AnthropicProvider implements Provider {
         temperature: options?.temperature ?? this.config.temperature,
         stream: true,
       }),
-    });
+    }, STREAM_TIMEOUT_MS);
 
     if (!response.ok) {
       throw new Error(
@@ -255,7 +255,7 @@ export class AnthropicProvider implements Provider {
       }));
     }
 
-    const response = await fetch(`${this.config.baseURL}/v1/messages`, {
+    const response = await fetchWithTimeout(`${this.config.baseURL}/v1/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -263,8 +263,8 @@ export class AnthropicProvider implements Provider {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
-      signal: signal as any,
-    });
+      signal,
+    }, STREAM_TIMEOUT_MS);
 
     if (!response.ok) {
       const errText = await response.text();
@@ -506,9 +506,10 @@ export class AnthropicProvider implements Provider {
       requestOptions.body = JSON.stringify(data);
     }
 
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `${this.config.baseURL}${endpoint}`,
-      requestOptions
+      requestOptions,
+      REQUEST_TIMEOUT_MS
     );
 
     if (!response.ok) {

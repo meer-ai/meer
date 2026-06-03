@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { getTheme } from "../../theme.js";
 import type { ToolRendererProps } from "./types.js";
+const t = getTheme();
 import {
   GENERIC_MAX_CHARS,
   getDurationMs,
@@ -35,14 +37,12 @@ export const GenericRenderer: React.FC<ToolRendererProps> = React.memo(({
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Box gap={1}>
-        <Text color="magenta" dimColor>
-          ▸
-        </Text>
-        <Text color="magenta">{label}</Text>
+        <Text color={t.accent}>▸</Text>
+        <Text color={isError ? t.danger : t.accent}>{label}</Text>
       </Box>
       {truncated.trim() ? (
         <Box paddingLeft={2}>
-          <Text color={isError ? "red" : "gray"} dimColor={!isError}>
+          <Text color={isError ? t.danger : t.muted} dimColor={!isError}>
             {truncated}
           </Text>
         </Box>

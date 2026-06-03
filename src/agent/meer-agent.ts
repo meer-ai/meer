@@ -204,6 +204,11 @@ export class MeerAgent {
 
         let finalAssistantText = "";
         let currentAssistantText = "";
+        // Text the model streamed before its first tool call in a given turn.
+        // Not committed immediately — held until the turn's final assistant
+        // message arrives so we can prepend it, avoiding orphaned one-liners
+        // like "## List" appearing as stranded standalone fragments mid-turn.
+        let preToolPreamble = "";
         const settledAssistantMessages = new Set<string>();
         let streamStarted = false;
         let turnCount = 0;
@@ -223,20 +228,37 @@ export class MeerAgent {
           this.config.onToolEnd?.();
         };
 
-        const settleCurrentAssistantText = () => {
+        // Stops the streaming animation and optionally commits text to the
+        // permanent message history.
+        // toolInterrupt=true: called because a tool call is starting — stop
+        //   the animation but save the text as a preamble to prepend to the
+        //   final response rather than committing it as a standalone message.
+        // toolInterrupt=false (default): normal settle between turns — commit.
+        const settleCurrentAssistantText = (toolInterrupt = false) => {
           if (streamStarted) {
             this.config.onStreamingEnd?.();
             streamStarted = false;
           }
 
           const text = currentAssistantText.trim();
-          if (text && !settledAssistantMessages.has(text)) {
+          currentAssistantText = "";
+
+          if (!text) return;
+
+          if (toolInterrupt) {
+            // Keep the preamble visible in the draft while tools run;
+            // it will be merged into the final committed message later.
+            if (!preToolPreamble) {
+              preToolPreamble = text;
+            }
+            return;
+          }
+
+          if (!settledAssistantMessages.has(text)) {
             this.config.onAssistantMessage?.(text);
             settledAssistantMessages.add(text);
             this.saveAssistantToMemory(text, turnId);
           }
-
-          currentAssistantText = "";
         };
 
         const emit = async (event: AgentEvent): Promise<void> => {
@@ -259,7 +281,8 @@ export class MeerAgent {
                 max: this.config.maxIterations,
               });
               if (turnCount > 1) {
-                settleCurrentAssistantText();
+                settleCurrentAssistantText(); // commit, not a tool interrupt
+                preToolPreamble = "";         // new turn — preamble no longer relevant
                 finalAssistantText = "";
               }
               break;
@@ -268,7 +291,7 @@ export class MeerAgent {
               break;
 
             case "tool_call_delta":
-              settleCurrentAssistantText();
+              settleCurrentAssistantText(true); // stop stream, hold as preamble
               this.config.onToolCallDelta?.(
                 event.toolName,
                 event.inputTextDelta,
@@ -277,7 +300,7 @@ export class MeerAgent {
               break;
 
             case "tool_start":
-              settleCurrentAssistantText();
+              settleCurrentAssistantText(true); // stop stream, hold as preamble
               this.executionEventSink?.({
                 type: "tool_start",
                 toolCallId: event.toolCallId,
@@ -433,6 +456,18 @@ export class MeerAgent {
             this.config.onStreamingStart?.();
             this.config.onStreamingChunk?.(finalAssistantText);
             this.config.onStreamingEnd?.();
+          }
+
+          // If the model opened with text before calling tools (e.g. "## List"),
+          // that text was held as preToolPreamble rather than committed.
+          // Prepend it to the final assistant message so it appears as one
+          // coherent block rather than a stranded fragment.
+          if (preToolPreamble && !settledAssistantMessages.has(preToolPreamble)) {
+            if (finalAssistantText && !finalAssistantText.startsWith(preToolPreamble)) {
+              finalAssistantText = `${preToolPreamble}\n\n${finalAssistantText}`;
+            } else if (!finalAssistantText) {
+              finalAssistantText = preToolPreamble;
+            }
           }
 
           if (finalAssistantText) {

@@ -21,6 +21,8 @@ import {
   DEFAULT_OPENCODE_ZEN_MODEL,
   DEFAULT_OPENCODE_GO_MODEL,
 } from "./providers/opencode.js";
+import { ChatGPTProvider } from "./providers/chatgpt.js";
+import { AuthStorage } from "./auth/storage.js";
 import type { Provider } from "./providers/base.js";
 import { wrapProvider } from "./providers/provider-wrapper.js";
 import {
@@ -41,6 +43,7 @@ const ConfigSchema = z.object({
     "zaiCredit",
     "opencodeZen",
     "opencodeGo",
+    "chatgpt",
   ]),
   model: z.string().optional(),
   temperature: z.number().optional(),
@@ -283,6 +286,16 @@ export function loadConfig(): LoadedConfig {
     };
   }
 
+  function requireApiKey(value: string | undefined, envVar: string, providerName: string): string {
+    const key = value?.trim();
+    if (!key) {
+      throw new Error(
+        `${providerName} API key is missing. Set the ${envVar} environment variable or run \`meer setup\`.`
+      );
+    }
+    return key;
+  }
+
   let provider: Provider;
   let defaultModel: string;
   let providerKey = config.provider === 'zai' ? 'zaiCodingPlan' : config.provider;
@@ -301,7 +314,7 @@ export function loadConfig(): LoadedConfig {
     case 'openai':
       defaultModel = config.model || 'gpt-4o';
       provider = new OpenAIProvider({
-        apiKey: config.openai?.apiKey || process.env.OPENAI_API_KEY || '',
+        apiKey: requireApiKey(config.openai?.apiKey || process.env.OPENAI_API_KEY, 'OPENAI_API_KEY', 'OpenAI'),
         baseURL: config.openai?.baseURL,
         model: defaultModel,
         temperature: config.temperature,
@@ -313,7 +326,7 @@ export function loadConfig(): LoadedConfig {
     case 'gemini':
       defaultModel = config.model || 'gemini-2.0-flash-exp';
       provider = new GeminiProvider({
-        apiKey: config.gemini?.apiKey || process.env.GEMINI_API_KEY || '',
+        apiKey: requireApiKey(config.gemini?.apiKey || process.env.GEMINI_API_KEY, 'GEMINI_API_KEY', 'Gemini'),
         model: defaultModel,
         temperature: config.temperature
       });
@@ -322,7 +335,7 @@ export function loadConfig(): LoadedConfig {
     case 'anthropic':
       defaultModel = config.model || 'claude-3-5-sonnet-20241022';
       provider = new AnthropicProvider({
-        apiKey: config.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY || '',
+        apiKey: requireApiKey(config.anthropic?.apiKey || process.env.ANTHROPIC_API_KEY, 'ANTHROPIC_API_KEY', 'Anthropic'),
         baseURL: config.anthropic?.baseURL,
         model: defaultModel,
         temperature: config.temperature,
@@ -333,7 +346,7 @@ export function loadConfig(): LoadedConfig {
     case 'openrouter':
       defaultModel = config.model || 'anthropic/claude-3.5-sonnet';
       provider = new OpenRouterProvider({
-        apiKey: config.openrouter?.apiKey || process.env.OPENROUTER_API_KEY || '',
+        apiKey: requireApiKey(config.openrouter?.apiKey || process.env.OPENROUTER_API_KEY, 'OPENROUTER_API_KEY', 'OpenRouter'),
         baseURL: config.openrouter?.baseURL,
         model: defaultModel,
         temperature: config.temperature,
@@ -404,6 +417,18 @@ export function loadConfig(): LoadedConfig {
         maxTokens: config.opencodeGo?.maxTokens,
       });
       break;
+
+    case 'chatgpt': {
+      defaultModel = config.model || 'gpt-5.3-codex-spark';
+      const authStorage = new AuthStorage();
+      provider = new ChatGPTProvider({
+        model: defaultModel,
+        temperature: config.temperature,
+        getCredentials: () => authStorage.getChatGPTCredentials(),
+        saveCredentials: (creds) => authStorage.saveChatGPTCredentials(creds),
+      });
+      break;
+    }
 
     default:
       throw new Error(`Unsupported provider: ${config.provider}`);

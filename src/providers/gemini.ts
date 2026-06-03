@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import type {
   Provider,
   ChatMessage,
@@ -34,7 +34,7 @@ export class GeminiProvider implements Provider {
   async chat(messages: ChatMessage[], options?: ChatOptions): Promise<string> {
     const contents = this.convertMessages(messages);
 
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `${this.baseURL}/models/${this.config.model}:generateContent?key=${this.config.apiKey}`,
       {
         method: "POST",
@@ -47,7 +47,8 @@ export class GeminiProvider implements Provider {
             topP: options?.topP,
           },
         }),
-      }
+      },
+      REQUEST_TIMEOUT_MS
     );
 
     if (!response.ok) {
@@ -65,7 +66,7 @@ export class GeminiProvider implements Provider {
   ): AsyncIterable<string> {
     const contents = this.convertMessages(messages);
 
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `${this.baseURL}/models/${this.config.model}:streamGenerateContent?key=${this.config.apiKey}`,
       {
         method: "POST",
@@ -78,7 +79,8 @@ export class GeminiProvider implements Provider {
             topP: options?.topP,
           },
         }),
-      }
+      },
+      STREAM_TIMEOUT_MS
     );
 
     if (!response.ok) {
@@ -134,8 +136,10 @@ export class GeminiProvider implements Provider {
 
   async listModels(): Promise<Array<{ name: string; id: string }>> {
     try {
-      const response = await fetch(
-        `${this.baseURL}/models?key=${this.config.apiKey}`
+      const response = await fetchWithTimeout(
+        `${this.baseURL}/models?key=${this.config.apiKey}`,
+        {},
+        REQUEST_TIMEOUT_MS
       );
 
       if (!response.ok) {

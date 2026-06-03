@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
+import ora from 'ora';
 import inquirer from 'inquirer';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
@@ -271,6 +272,10 @@ export async function runSetupWizard(): Promise<void> {
         {
           name: chalk.cyan('⚡ OpenCode Go') + chalk.gray(' - Go plan: DeepSeek, Kimi, Qwen, GLM & more (OPENCODE_API_KEY)'),
           value: 'opencodeGo'
+        },
+        {
+          name: chalk.cyan('💬 ChatGPT') + chalk.gray(' - Use your ChatGPT Plus/Pro account (no API key, OAuth login)'),
+          value: 'chatgpt'
         }
       ]
     }
@@ -816,6 +821,117 @@ export async function runSetupWizard(): Promise<void> {
     } else {
       console.log(chalk.blue('\n⚡ OpenCode Go: Fast, affordable models — DeepSeek, Kimi, Qwen, GLM & more!'));
     }
+  } else if (provider === 'chatgpt') {
+    console.log(chalk.cyan('\n💬 ChatGPT Setup\n'));
+    console.log(chalk.gray('Meer will authenticate with your ChatGPT account using OAuth.'));
+    console.log(chalk.gray('No API key needed — just your ChatGPT Plus or Pro subscription.\n'));
+
+    const { AuthStorage } = await import('../auth/storage.js');
+    const authStorage = new AuthStorage();
+
+    if (authStorage.isChatGPTAuthenticated()) {
+      const creds = authStorage.getChatGPTCredentials()!;
+      console.log(chalk.green('✅ Already logged in to ChatGPT.'));
+      console.log(chalk.dim(`   Account ID: ${creds.accountId}\n`));
+    } else {
+      const { loginMethod } = await inquirer.prompt([
+        {
+          type: 'list',
+          name: 'loginMethod',
+          message: 'Choose login method:',
+          choices: [
+            {
+              name: chalk.cyan('🌐 Browser') + chalk.gray(' - Opens chatgpt.com in your browser (recommended)'),
+              value: 'browser'
+            },
+            {
+              name: chalk.cyan('📟 Device code') + chalk.gray(' - Enter a code on chatgpt.com (for SSH/headless)'),
+              value: 'device'
+            }
+          ]
+        }
+      ]);
+
+      try {
+        const { loginChatGPTBrowser, loginChatGPTDeviceCode } = await import('../auth/chatgpt/oauth.js');
+        const readline = await import('readline');
+
+        let creds;
+        if (loginMethod === 'device') {
+          const spinner = ora('Requesting device code...').start();
+          creds = await loginChatGPTDeviceCode({
+            onCode: ({ userCode, verificationUri }) => {
+              spinner.stop();
+              console.log(chalk.bold.cyan('\n  ╔' + '═'.repeat(54) + '╗'));
+              console.log(chalk.bold.cyan('  ║') + chalk.bold.white('  Authorize Meer at ChatGPT'.padEnd(53)) + chalk.bold.cyan('║'));
+              console.log(chalk.bold.cyan('  ║'.padEnd(56) + '║'));
+              console.log(chalk.bold.cyan('  ║') + `  1. Visit: ${chalk.blue.underline(verificationUri)}`.padEnd(54) + chalk.bold.cyan('║'));
+              console.log(chalk.bold.cyan('  ║') + `  2. Enter code: ${chalk.bold.yellow(userCode)}`.padEnd(54) + chalk.bold.cyan('║'));
+              console.log(chalk.bold.cyan('  ╚' + '═'.repeat(54) + '╝\n'));
+              ora('Waiting for authorization (15 min timeout)...').start().stopAndPersist({ symbol: chalk.cyan('⋯') });
+            },
+          });
+        } else {
+          creds = await loginChatGPTBrowser({
+            onUrl: async (url) => {
+              console.log(chalk.dim('Opening browser for ChatGPT authorization...\n'));
+              try {
+                const open = (await import('open')).default;
+                await open(url);
+                console.log(chalk.green('✓ Browser opened'));
+              } catch {
+                console.log(chalk.yellow('⚠  Could not open browser automatically'));
+              }
+              console.log(chalk.dim(`\n  If it didn't open, visit:\n  ${chalk.blue.underline(url)}\n`));
+            },
+            onManualPrompt: () => new Promise((resolve) => {
+              const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+              rl.question(chalk.dim('\nBrowser timed out. Paste the redirect URL or code: '), (ans) => {
+                rl.close();
+                resolve(ans);
+              });
+            }),
+          });
+        }
+
+        authStorage.saveChatGPTCredentials(creds);
+        console.log(chalk.green('\n✅ Logged in to ChatGPT successfully!'));
+        console.log(chalk.dim(`   Account ID: ${creds.accountId}\n`));
+      } catch (err) {
+        console.log(chalk.red(`\n❌ Login failed: ${err instanceof Error ? err.message : String(err)}`));
+        console.log(chalk.yellow('\nYou can retry anytime with: ') + chalk.cyan('meer login chatgpt\n'));
+      }
+    }
+
+    const modelChoices = [
+      { name: 'gpt-5.3-codex-spark (recommended — ChatGPT Plus+)', value: 'gpt-5.3-codex-spark' },
+      { name: 'gpt-5.4-mini (faster, lighter)', value: 'gpt-5.4-mini' },
+      { name: 'gpt-5.4', value: 'gpt-5.4' },
+      { name: 'gpt-5.5 (flagship — ChatGPT Pro)', value: 'gpt-5.5' },
+      { name: 'Custom model...', value: 'custom' },
+    ];
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices,
+      }
+    ]);
+
+    if (model === 'custom') {
+      const { customModel } = await inquirer.prompt([
+        { type: 'input', name: 'customModel', message: 'Enter model name (e.g., gpt-4o):' }
+      ]);
+      config.model = customModel || 'gpt-4o';
+    } else {
+      config.model = model;
+    }
+
+    console.log(chalk.green('\n✅ ChatGPT configured!'));
+    console.log(chalk.gray(`   Model: ${config.model}`));
+    console.log(chalk.blue('\n💬 Your ChatGPT Plus/Pro account will be used — no API costs.\n'));
   }
 
   // Step 3: Additional preferences

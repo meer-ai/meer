@@ -25,7 +25,7 @@ import {
 } from "fs";
 import * as fs from "fs";
 import { join, relative, dirname } from "path";
-import { tmpdir } from "os";
+import { tmpdir, homedir } from "os";
 import * as pathLib from "path";
 import chalk from "chalk";
 import { spawn, execSync } from "child_process";
@@ -35,6 +35,7 @@ import { diffLines } from "diff";
 import type { Plan } from "../plan/types.js";
 import { planStore } from "../plan/store.js";
 import { formatErrorWithContext } from "../utils/errors.js";
+import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const BRAVE_SEARCH_PORTAL_URL = "https://search.brave.com/search";
@@ -127,8 +128,6 @@ function resolvePath(path: string, cwd: string): string {
   if (!path || path === ".") {
     return cwd;
   } else if (path.startsWith("~")) {
-    // Expand home directory
-    const { homedir } = require("os");
     return path.replace(/^~/, homedir());
   } else if (path.startsWith("/")) {
     // Absolute path - use as is
@@ -2182,13 +2181,13 @@ export async function googleSearch(
     requestUrl.searchParams.set("q", searchTerm);
     requestUrl.searchParams.set("count", String(count));
 
-    const response = await fetch(requestUrl, {
+    const response = await fetchWithTimeout(requestUrl, {
       headers: {
         Accept: "application/json",
         "X-Subscription-Token": apiKey,
         "User-Agent": "MeerAI CLI",
       },
-    });
+    }, REQUEST_TIMEOUT_MS);
 
     if (!response.ok) {
       const errorBody = await response.text();
@@ -2203,10 +2202,10 @@ export async function googleSearch(
       };
     }
 
-    const data: {
+    const data = (await response.json()) as {
       web?: { results?: Array<{ title?: string; url?: string; description?: string }> };
       query?: { original?: string; corrected?: string };
-    } = await response.json();
+    };
 
     const results = data.web?.results ?? [];
 
@@ -3432,14 +3431,11 @@ export async function httpRequest(
   try {
     console.log(chalk.gray(`  🌐 Making ${options.method || "GET"} request to: ${url}`));
 
-    const { fetch } = await import("undici");
-
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method: options.method || "GET",
-      headers: options.headers,
+      headers: options.headers as Record<string, string>,
       body: options.body,
-      signal: options.timeout ? AbortSignal.timeout(options.timeout) : undefined,
-    });
+    }, options.timeout ?? REQUEST_TIMEOUT_MS);
 
     const contentType = response.headers.get("content-type") || "";
     let result = "";

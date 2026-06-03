@@ -2,7 +2,7 @@
  * Auth API client for communicating with meer-api backend
  */
 
-import { fetch } from 'undici';
+import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from '../utils/fetch.js';
 import type { Response } from 'undici';
 import type { DeviceCodeResponse, TokenResponse } from './types.js';
 
@@ -17,7 +17,7 @@ export class AuthClient {
    * Initialize device code flow
    */
   async initializeDeviceCode(): Promise<DeviceCodeResponse> {
-    const response = await fetch(`${this.apiUrl}/auth/device/code`, {
+    const response = await fetchWithTimeout(`${this.apiUrl}/auth/device/code`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -37,7 +37,7 @@ export class AuthClient {
    * Poll device code status
    */
   async pollDeviceCode(deviceCode: string): Promise<TokenResponse | null> {
-    const response = await fetch(`${this.apiUrl}/auth/device/poll`, {
+    const response = await fetchWithTimeout(`${this.apiUrl}/auth/device/poll`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -65,7 +65,7 @@ export class AuthClient {
    * Refresh access token
    */
   async refreshToken(refreshToken: string): Promise<TokenResponse> {
-    const response = await fetch(`${this.apiUrl}/auth/refresh`, {
+    const response = await fetchWithTimeout(`${this.apiUrl}/auth/refresh`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

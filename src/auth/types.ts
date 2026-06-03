@@ -33,4 +33,10 @@ export interface AuthConfig {
   refresh_token?: string;
   user?: User;
   expires_at?: string;
+  chatgpt?: {
+    access: string;
+    refresh: string;
+    expires: number;
+    accountId: string;
+  };
 }

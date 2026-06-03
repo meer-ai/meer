@@ -1,5 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { getTheme } from "../../theme.js";
+const t = getTheme();
 import type { ToolRendererProps } from "./types.js";
 import {
   SHELL_MAX_LINES,
@@ -45,7 +47,6 @@ export const RunCommandRenderer: React.FC<ToolRendererProps> = React.memo(({
   const outputBytes = getNumberDetail(details, "outputBytes");
   const fullOutputPath = getStringDetail(details, "fullOutputPath");
   const commandError = getStringDetail(details, "error");
-  const statusColor = isError ? "red" : state === "timed_out" || state === "cancelled" ? "yellow" : "green";
   const statusLabel =
     isError
       ? "failed"
@@ -75,44 +76,47 @@ export const RunCommandRenderer: React.FC<ToolRendererProps> = React.memo(({
     );
   }
 
+  const borderColor = isError ? t.danger : state === "timed_out" || state === "cancelled" ? t.warning : t.success;
+  const statusTextColor = isError ? t.danger : state === "timed_out" || state === "cancelled" ? t.warning : t.success;
+
   return (
-    <Box flexDirection="column" marginBottom={1} paddingLeft={1} borderLeft borderColor={statusColor}>
+    <Box flexDirection="column" marginBottom={1} paddingLeft={1} borderLeft borderColor={borderColor}>
       <Box justifyContent="space-between">
         <Box gap={1}>
-          <Text color={statusColor}>run</Text>
-          <Text color={statusColor}>{statusLabel}</Text>
+          <Text color={statusTextColor}>run</Text>
+          <Text color={statusTextColor}>{statusLabel}</Text>
           {typeof durationMs === "number" ? (
-            <Text color="dim">{formatDurationMs(durationMs)}</Text>
+            <Text color={t.muted}>{formatDurationMs(durationMs)}</Text>
           ) : null}
           {typeof exitCode === "number" ? (
-            <Text color={isError ? "red" : "dim"}>exit {exitCode}</Text>
+            <Text color={isError ? t.danger : t.muted}>exit {exitCode}</Text>
           ) : null}
         </Box>
         {typeof timeoutMs === "number" ? (
-          <Text color="dim">timeout {formatDurationMs(timeoutMs)}</Text>
+          <Text color={t.muted}>timeout {formatDurationMs(timeoutMs)}</Text>
         ) : null}
       </Box>
-      {command ? <Text color="cyan">$ {truncateLine(command, 180)}</Text> : null}
+      {command ? <Text color={t.accent}>$ {truncateLine(command, 180)}</Text> : null}
       {cwd ? (
-        <Text color="gray" dimColor>
+        <Text color={t.muted} dimColor>
           {truncateLine(cwd, 180)}
         </Text>
       ) : null}
-      {commandError ? <Text color="red">{truncateLine(commandError, 180)}</Text> : null}
+      {commandError ? <Text color={t.danger}>{truncateLine(commandError, 180)}</Text> : null}
       {shown.trim() ? (
         <Box flexDirection="column" marginTop={1}>
-          <Text color="gray" dimColor>
+          <Text color={t.muted} dimColor>
             {shown}
           </Text>
         </Box>
       ) : null}
       <Box gap={1} marginTop={shown.trim() ? 0 : 1}>
-        {typeof outputLines === "number" ? <Text color="dim">{outputLines} lines</Text> : null}
-        {typeof outputBytes === "number" ? <Text color="dim">{formatBytes(outputBytes)}</Text> : null}
-        {hidden > 0 ? <Text color="dim">+{hidden} hidden</Text> : null}
+        {typeof outputLines === "number" ? <Text color={t.muted}>{outputLines} lines</Text> : null}
+        {typeof outputBytes === "number" ? <Text color={t.muted}>{formatBytes(outputBytes)}</Text> : null}
+        {hidden > 0 ? <Text color={t.muted}>+{hidden} hidden</Text> : null}
       </Box>
       {fullOutputPath ? (
-        <Text color="gray" dimColor>
+        <Text color={t.muted} dimColor>
           full output: {fullOutputPath}
         </Text>
       ) : null}

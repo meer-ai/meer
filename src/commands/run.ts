@@ -46,7 +46,13 @@ export function createRunCommand(): Command {
     .option(
       "--max-steps <n>",
       "Maximum agent loop iterations",
-      (value) => parseInt(value, 10),
+      (value) => {
+        const n = parseInt(value, 10);
+        if (!Number.isFinite(n) || n < 1) {
+          throw new Error(`--max-steps must be a positive integer, got: ${value}`);
+        }
+        return n;
+      },
       50
     )
     .option(

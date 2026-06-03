@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -67,7 +67,7 @@ export async function fetchCurrentSubscription(
     return null;
   }
 
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `${apiUrl.replace(/\/$/, "")}/api/subscription/current`,
     {
       headers: {

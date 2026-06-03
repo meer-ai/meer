@@ -6,6 +6,7 @@ import React, {
   useRef,
 } from "react";
 import { Box, Static, Text, useInput, useApp } from "ink";
+import { getTheme } from "../theme.js";
 import {
   getAllCommands,
   type SlashCommandListEntry,
@@ -103,11 +104,36 @@ export interface MeerChatProps {
 
 const SLASH_DEBOUNCE_MS = 150;
 const BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const t = getTheme();
+
+const COMPOSER_PLACEHOLDERS = [
+  "Explain this codebase",
+  "Find bugs in this file",
+  "Refactor this to be more readable",
+  "Write tests for this module",
+  "What does this function do?",
+  "Add error handling here",
+  "Optimize this for performance",
+  "How can I improve this code?",
+  "Add TypeScript types to this file",
+  "Review this PR and suggest improvements",
+  "Help me understand this architecture",
+  "Fix the failing tests",
+  "Add logging to this service",
+  "Document this API",
+  "What's the best way to implement this?",
+];
+
+// Picked once per session so it doesn't change during typing.
+const SESSION_PLACEHOLDER = COMPOSER_PLACEHOLDERS[
+  Math.floor(Math.random() * COMPOSER_PLACEHOLDERS.length)
+]!;
 type WorkRow = {
   id: string;
   icon: string;
   label: string;
   detail?: string;
+  durationText?: string;
   tone?: "default" | "success" | "error" | "dim" | "active";
 };
 
@@ -417,11 +443,11 @@ const TurnActivityIndicator: React.FC<{
 
   return (
     <Box paddingX={1} marginTop={0}>
-      <Text color="#67E8F9">{BRAILLE_FRAMES[frame]} </Text>
-      <Text color="#67E8F9">{label}</Text>
-      {elapsed ? <Text color="dim"> · {elapsed}</Text> : null}
-      {tokenText ? <Text color="dim"> · {tokenText}</Text> : null}
-      <Text color="dim"> · Esc stop</Text>
+      <Text color={t.info}>{BRAILLE_FRAMES[frame]} </Text>
+      <Text color={t.info}>{label}</Text>
+      {elapsed ? <Text color={t.muted}> · {elapsed}</Text> : null}
+      {tokenText ? <Text color={t.muted}> · {tokenText}</Text> : null}
+      <Text color={t.muted}> · Esc stop</Text>
     </Box>
   );
 });
@@ -475,7 +501,8 @@ function buildWorkRows({
     rows.push({
       id: tool.id,
       icon,
-      label: `${getToolPrimaryLabel(tool)}${formatToolDuration(tool) ? ` ${formatToolDuration(tool)}` : ""}`,
+      label: getToolPrimaryLabel(tool),
+      durationText: formatToolDuration(tool) || undefined,
       detail: getToolDetail(tool) || undefined,
       tone,
     });
@@ -506,14 +533,11 @@ function buildWorkRows({
       continue;
     }
     if (event.type === "log") {
-      if (rows.length > 0 && event.level !== "error") {
-        continue;
-      }
       rows.push({
         id: `timeline-log-${event.id}`,
-        icon: "•",
+        icon: event.level === "error" ? "✕" : event.level === "warn" ? "!" : "·",
         label: event.message,
-        tone: event.level === "error" ? "error" : "dim",
+        tone: event.level === "error" ? "error" : event.level === "warn" ? "default" : "dim",
       });
     }
   }
@@ -695,19 +719,15 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
         );
       }
 
-      // Streaming draft: render as the real assistant message, not a transient
-      // status line. This keeps live output readable and prevents it from
-      // looking like trimmed "thinking" text while tools are running.
+      // Streaming draft — same visual as a settled assistant message.
+      // "streaming" label removed: TurnActivityIndicator already shows state.
       if (isDraft && message.role === "assistant") {
         const parts = parseContent(message.content);
         return (
-          <Box flexDirection="column" marginBottom={1}>
+          <Box flexDirection="column" marginBottom={1} marginTop={1}>
             <Box gap={1}>
-              <Text color="green" bold>
+              <Text color={t.success} bold>
                 Meer
-              </Text>
-              <Text color="dim" dimColor>
-                streaming
               </Text>
               {message.timestamp ? (
                 <Text color="dim" dimColor>
@@ -715,9 +735,9 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
                 </Text>
               ) : null}
             </Box>
-            <Box flexDirection="column" paddingLeft={1}>
+            <Box flexDirection="column" paddingLeft={2}>
               {message.content.trim().length === 0 ? (
-                <Text color="dim">...</Text>
+                <Text color="dim">…</Text>
               ) : (
                 parts.map((part, idx) =>
                   part.type === "code" ? (
@@ -739,42 +759,40 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
         );
       }
 
-      const getColor = () => {
-        switch (message.role) {
-          case "user": return "cyan";
-          case "assistant": return "green";
-          case "system": return "dim";
-          default: return "white";
-        }
-      };
-
-      const getName = () => {
-        switch (message.role) {
-          case "user": return "You";
-          case "assistant": return "Meer";
-          case "system": return "System";
-          default: return message.role;
-        }
-      };
-
       const parts = useMemo(() => parseContent(message.content), [message.content]);
       const normalizedContent = message.content.trim();
 
+      // System messages: single dim line with bullet prefix, no extra chrome.
+      if (message.role === "system") {
+        if (!normalizedContent) return null;
+        return (
+          <Box flexDirection="column" marginBottom={0} paddingLeft={1}>
+            {normalizedContent.split("\n").filter(Boolean).map((line, idx) => (
+              <Text key={idx} color={t.muted} dimColor>· {line}</Text>
+            ))}
+          </Box>
+        );
+      }
+
+      const isUser = message.role === "user";
+      const roleColor = isUser ? t.accent : t.success;
+      const roleName = isUser ? "You" : "Meer";
+
       return (
-        <Box flexDirection="column" marginBottom={message.role === "system" ? 0 : 1}>
+        <Box flexDirection="column" marginBottom={1} marginTop={1}>
           <Box gap={1}>
-            <Text color={getColor()} bold={message.role !== "system"}>
-              {getName()}
+            <Text color={roleColor} bold>
+              {roleName}
             </Text>
             {message.timestamp && (
-              <Text color="dim" dimColor>
+              <Text color={t.muted} dimColor>
                 {formatTimestamp(message.timestamp)}
               </Text>
             )}
           </Box>
-          <Box flexDirection="column" paddingLeft={message.role === "system" ? 0 : 1}>
+          <Box flexDirection="column" paddingLeft={2}>
             {normalizedContent.length === 0 && (
-              <Text color="dim">...</Text>
+              <Text color={t.muted}>…</Text>
             )}
             {parts.map((part, idx) =>
               part.type === "code" ? (
@@ -786,10 +804,7 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
                 </Box>
               ) : part.content.trim().length > 0 ? (
                 <Box key={idx}>
-                  <RichTextBlock
-                    text={part.content.trim()}
-                    tone={message.role === "system" ? "dim" : "default"}
-                  />
+                  <RichTextBlock text={part.content.trim()} />
                 </Box>
               ) : null
             )}
@@ -1042,7 +1057,7 @@ const InputArea: React.FC<{
                 placeholder={
                   mode === "plan"
                     ? "Ask for analysis and planning"
-                    : placeholder || "Explain this codebase"
+                    : placeholder || SESSION_PLACEHOLDER
                 }
                 maxVisibleLines={5}
                 rightReserve={isSlashCommandInput(value) || value.startsWith("!") || queuedMessages > 0 ? 18 : 0}
@@ -1154,10 +1169,10 @@ const FooterBar: React.FC<{
   return (
     <Box justifyContent="space-between" paddingX={1} marginTop={0}>
       <Box gap={1} flexShrink={1}>
-        <Text color="cyan">Meer</Text>
-        <Text color="dim">{provider || "unknown"}/{model || "unknown"}</Text>
-        <Text color={mode === "plan" ? "blue" : "green"}>{modeLabel}</Text>
-        {cwdLabel ? <Text color="dim">{cwdLabel}</Text> : null}
+        <Text color={t.primary} bold>Meer</Text>
+        <Text color={t.muted}>{provider || "unknown"}/{model || "unknown"}</Text>
+        <Text color={mode === "plan" ? t.info : t.success}>{modeLabel}</Text>
+        {cwdLabel ? <Text color={t.muted}>{cwdLabel}</Text> : null}
       </Box>
       <Box gap={1} flexShrink={0}>
         {contextFill && (
@@ -1166,14 +1181,14 @@ const FooterBar: React.FC<{
           </Text>
         )}
         {tokenLabel && (
-          <Text color="dim">
+          <Text color={t.muted}>
             {tokenLabel}
             {contextFill ? `/${contextFill.total}` : ""}
           </Text>
         )}
-        {costLabel && <Text color="dim">{costLabel}</Text>}
-        {typeof messageCount === "number" && <Text color="dim">{messageCount} msgs</Text>}
-        {uptimeLabel && <Text color="dim">{uptimeLabel}</Text>}
+        {costLabel && <Text color={t.muted}>{costLabel}</Text>}
+        {typeof messageCount === "number" && <Text color={t.muted}>{messageCount} msgs</Text>}
+        {uptimeLabel && <Text color={t.muted}>{uptimeLabel}</Text>}
       </Box>
     </Box>
   );
@@ -1205,10 +1220,10 @@ const WorkLogSection: React.FC<{
     <Box flexDirection="column" marginTop={0} paddingX={1}>
       {activeBackground ? (
         <Box flexDirection="column" marginTop={0} marginBottom={0}>
-          <Text color="dim">
+          <Text color={t.muted}>
             {backgroundSessions.filter((session) => session.status === "running").length} background terminal running
           </Text>
-          <Text color="cyan">$ {truncateLine(activeBackground.command, 120)}</Text>
+          <Text color={t.accent}>$ {truncateLine(activeBackground.command, 120)}</Text>
           <Text color="dim">
             {truncateLine(
               activeBackground.output
@@ -1223,23 +1238,34 @@ const WorkLogSection: React.FC<{
       {rows
         .filter((row) => row.id !== "working")
         .slice(0, 5)
-        .map((row) => (
-        <Box key={row.id} flexDirection="column" paddingLeft={1}>
-          <Box gap={1}>
-            <Text color={row.tone === "error" ? "red" : row.tone === "success" ? "green" : row.tone === "active" ? "yellow" : "dim"}>
-              {row.icon}
-            </Text>
-            <Text color={row.tone === "error" ? "red" : row.tone === "success" ? "white" : "dim"}>
-              {row.label}
-            </Text>
-          </Box>
-          {row.detail ? (
-            <Box paddingLeft={2}>
-              <Text color="dim">{row.detail}</Text>
+        .map((row) => {
+          const iconColor =
+            row.tone === "error" ? t.danger :
+            row.tone === "success" ? t.success :
+            row.tone === "active" ? t.info :
+            row.tone === "default" ? t.warning :
+            t.muted;
+          const labelColor =
+            row.tone === "error" ? t.danger :
+            row.tone === "active" ? t.text :
+            t.muted;
+          return (
+            <Box key={row.id} flexDirection="column" paddingLeft={1}>
+              <Box gap={1}>
+                <Text color={iconColor}>{row.icon}</Text>
+                <Text color={labelColor}>{row.label}</Text>
+                {row.durationText ? (
+                  <Text color="gray" dimColor>{row.durationText}</Text>
+                ) : null}
+              </Box>
+              {row.detail ? (
+                <Box paddingLeft={2}>
+                  <Text color="gray" dimColor>{row.detail}</Text>
+                </Box>
+              ) : null}
             </Box>
-          ) : null}
-        </Box>
-      ))}
+          );
+        })}
     </Box>
   );
 });
@@ -1531,8 +1557,22 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     };
   }, [messages, virtualizeHistory, maxVisibleMessages]);
 
-  const scrollWindowSize = Math.max(1, Math.min(visibleMessages.length, terminalHeight * 3));
-  const maxScrollOffset = Math.max(0, visibleMessages.length - scrollWindowSize);
+  // Compute the actual rendered list here — before scroll state — so that
+  // scrollWindowSize / maxScrollOffset are derived from the real display list,
+  // not the raw visibleMessages list (which includes filtered-out tool results
+  // and omits the streaming draft). Mismatched lengths were the root cause of
+  // scroll bounds being wrong and the draft falling outside the auto-scroll end.
+  const liveDraftMessage = hasDraftContent ? draftAssistant : null;
+
+  const displayMessages = useMemo(() => {
+    const transcript = showTranscript
+      ? visibleMessages
+      : visibleMessages.filter(shouldRenderTranscriptMessage);
+    return liveDraftMessage ? [...transcript, liveDraftMessage] : transcript;
+  }, [visibleMessages, showTranscript, liveDraftMessage]);
+
+  const scrollWindowSize = Math.max(1, Math.min(displayMessages.length, terminalHeight * 3));
+  const maxScrollOffset = Math.max(0, displayMessages.length - scrollWindowSize);
 
   useEffect(() => {
     if (!virtualizeHistory || scrollAnchor === "end") {
@@ -1540,7 +1580,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
       return;
     }
     setScrollOffset((prev) => Math.max(0, Math.min(prev, maxScrollOffset)));
-  }, [virtualizeHistory, scrollAnchor, maxScrollOffset, visibleMessages.length]);
+  }, [virtualizeHistory, scrollAnchor, maxScrollOffset, displayMessages.length]);
 
   useEffect(() => {
     if (!virtualizeHistory) {
@@ -1824,20 +1864,6 @@ export const MeerChat: React.FC<MeerChatProps> = ({
   }
 
   const compactHiddenToolCount = getCompactHiddenToolCount(visibleMessages);
-  const transcriptMessages = showTranscript
-    ? visibleMessages
-    : visibleMessages.filter(shouldRenderTranscriptMessage);
-  const liveDraftMessage =
-    draftAssistant && hasDraftContent ? draftAssistant : null;
-  const displayMessages = liveDraftMessage
-    ? [...transcriptMessages, liveDraftMessage]
-    : transcriptMessages;
-
-  const displayWindowSize = Math.max(1, Math.min(displayMessages.length, terminalHeight * 3));
-  const displayScrollOffset = Math.min(
-    scrollOffset,
-    Math.max(0, displayMessages.length - displayWindowSize)
-  );
   const activePlanTask =
     plan?.tasks.find((task) => task.status === "in_progress") ??
     plan?.tasks.find((task) => task.status === "pending");
@@ -1920,8 +1946,8 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                   <VirtualizedList
                     items={displayMessages}
                     scroll={{
-                      offset: displayScrollOffset,
-                      windowSize: displayWindowSize,
+                      offset: scrollOffset,
+                      windowSize: scrollWindowSize,
                       totalCount: displayMessages.length,
                     }}
                     getItemKey={(msg, index) => msg.id ?? `msg-${index}`}
@@ -2022,8 +2048,8 @@ export const MeerChat: React.FC<MeerChatProps> = ({
               {virtualizeHistory && displayMessages.length > 0 && (
                 <Box marginLeft={1}>
                   <ScrollIndicator
-                    offset={displayScrollOffset}
-                    windowSize={displayWindowSize}
+                    offset={scrollOffset}
+                    windowSize={scrollWindowSize}
                     totalCount={displayMessages.length}
                   />
                 </Box>

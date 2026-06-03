@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import type {
   Provider,
   ChatMessage,
@@ -73,14 +73,10 @@ export class OllamaProvider implements Provider {
     messages: ChatMessage[],
     options?: ChatOptions
   ): AsyncIterable<string> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minute timeout
-
     try {
-      const response = await fetch(`${this.config.host}/api/chat`, {
+      const response = await fetchWithTimeout(`${this.config.host}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
         body: JSON.stringify({
           model: this.config.model,
           messages: this.expandUserMessages(messages),
@@ -94,7 +90,7 @@ export class OllamaProvider implements Provider {
             ...options,
           },
         }),
-      });
+      }, STREAM_TIMEOUT_MS);
       
       if (!response.ok) {
         throw new Error(
@@ -140,10 +136,6 @@ export class OllamaProvider implements Provider {
         reader.releaseLock();
       }
     } catch (error) {
-      clearTimeout(timeoutId);
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Ollama stream request timed out after 300000ms`);
-      }
       throw error;
     }
   }
@@ -209,7 +201,7 @@ export class OllamaProvider implements Provider {
     Array<{ name: string; size: number; modified: string }>
   > {
     try {
-      const response = await fetch(`${this.config.host}/api/tags`);
+      const response = await fetchWithTimeout(`${this.config.host}/api/tags`, {}, REQUEST_TIMEOUT_MS);
       if (!response.ok) {
         throw new Error(`Failed to fetch models: ${response.status}`);
       }
@@ -241,13 +233,9 @@ export class OllamaProvider implements Provider {
 
   private async makeRequest(endpoint: string, data: any): Promise<any> {
     const method = endpoint === "/api/tags" ? "GET" : "POST";
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 300000);
-    
-    const requestOptions: any = {
+    const requestOptions: RequestInit = {
       method,
       headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
     };
 
     if (method === "POST") {
@@ -255,12 +243,11 @@ export class OllamaProvider implements Provider {
     }
 
     try {
-      const response = await fetch(
+      const response = await fetchWithTimeout(
         `${this.config.host}${endpoint}`,
-        requestOptions
+        requestOptions,
+        REQUEST_TIMEOUT_MS
       );
-      
-      clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(
@@ -270,10 +257,6 @@ export class OllamaProvider implements Provider {
 
       return await response.json();
     } catch (error) {
-      clearTimeout(timeoutId);
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new Error(`Ollama request timed out after 300000ms`);
-      }
       throw error;
     }
   }

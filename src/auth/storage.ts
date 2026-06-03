@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from '
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import type { AuthConfig } from './types.js';
+import type { ChatGPTCredentials } from './chatgpt/oauth.js';
 
 export class AuthStorage {
   private authFilePath: string;
@@ -103,5 +104,32 @@ export class AuthStorage {
   getUser(): AuthConfig['user'] | null {
     const config = this.load();
     return config?.user || null;
+  }
+
+  // ── ChatGPT OAuth credentials ──────────────────────────────────────────
+
+  getChatGPTCredentials(): ChatGPTCredentials | null {
+    const config = this.load();
+    const c = config?.chatgpt;
+    if (!c?.access || !c?.refresh || !c?.accountId) return null;
+    return c as ChatGPTCredentials;
+  }
+
+  saveChatGPTCredentials(creds: ChatGPTCredentials): void {
+    const config = this.load() ?? {};
+    this.save({ ...config, chatgpt: creds });
+  }
+
+  clearChatGPTCredentials(): void {
+    const config = this.load();
+    if (!config) return;
+    const { chatgpt: _removed, ...rest } = config;
+    this.save(rest);
+  }
+
+  isChatGPTAuthenticated(): boolean {
+    const creds = this.getChatGPTCredentials();
+    if (!creds) return false;
+    return Date.now() < creds.expires;
   }
 }

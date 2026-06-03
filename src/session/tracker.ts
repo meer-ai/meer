@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { fetch } from 'undici';
+import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from '../utils/fetch.js';
 import { calculateCost, formatCost } from '../pricing/config.js';
 
 export interface SessionStats {
@@ -192,7 +192,7 @@ export class SessionTracker {
       const tokenUsage = this.getTokenUsage();
 
       // Send usage log to backend
-      const response = await fetch(`${this.apiUrl}/api/usage/log`, {
+      const response = await fetchWithTimeout(`${this.apiUrl}/api/usage/log`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import type {
   Provider,
   ChatMessage,
@@ -259,10 +259,10 @@ export class MeerProvider implements Provider {
       Authorization: `Bearer ${token}`,
     };
 
-    const response = await fetch(`${this.config.apiUrl}${path}`, {
-      ...(init as any),
+    const response = await fetchWithTimeout(`${this.config.apiUrl}${path}`, {
+      ...init,
       headers,
-    });
+    }, STREAM_TIMEOUT_MS);
 
     if (response.status === 401) {
       throw new Error(

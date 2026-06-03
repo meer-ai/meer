@@ -623,7 +623,12 @@ export function createCLI(): Command {
           : null;
 
         // ── Exit handler ──────────────────────────────────────────────────────
+        let isExiting = false;
         const handleExit = async () => {
+          if (isExiting) return;
+          isExiting = true;
+          process.off("SIGINT", handleSigint);
+          process.off("SIGTERM", handleExit);
           if (backgroundSessionTimer) {
             clearInterval(backgroundSessionTimer);
           }

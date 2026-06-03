@@ -1,6 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { getTheme } from "../../theme.js";
 import { formatDurationMs, truncateLine } from "./utils.js";
+const t = getTheme();
 
 interface CompactToolRowProps {
   toolName: string;
@@ -23,8 +25,8 @@ export const CompactToolRow: React.FC<CompactToolRowProps> = React.memo(
     const summaryText = summary ? truncateLine(summary, 80) : "";
     return (
       <Box marginBottom={0}>
-        <Text color="gray" dimColor>
-          → {label}
+        <Text color={t.muted} dimColor>
+          · {label}
           {summaryText ? ` ${summaryText}` : ""}
           {typeof durationMs === "number" ? ` (${formatDurationMs(durationMs)})` : ""}
         </Text>

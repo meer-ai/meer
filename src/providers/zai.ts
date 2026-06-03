@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import type {
   Provider,
   ChatMessage,
@@ -171,7 +171,7 @@ class ZaiProviderBase implements Provider {
         Authorization: `Bearer ${this.config.apiKey}`,
       };
 
-      const res = await fetch(`${this.config.baseURL}/chat/completions`, {
+      const res = await fetchWithTimeout(`${this.config.baseURL}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -182,7 +182,7 @@ class ZaiProviderBase implements Provider {
           max_tokens: options?.maxTokens,
           top_p: options?.topP,
         }),
-      });
+      }, STREAM_TIMEOUT_MS);
 
       if (!res.ok || !res.body) {
         const error = await res.text();
@@ -473,7 +473,7 @@ class ZaiProviderBase implements Provider {
     }
 
     const baseURL = baseOverride || this.config.baseURL;
-    const response = await fetch(`${baseURL}${endpoint}`, options);
+    const response = await fetchWithTimeout(`${baseURL}${endpoint}`, options, REQUEST_TIMEOUT_MS);
 
     if (!response.ok) {
       const error = await response.text();

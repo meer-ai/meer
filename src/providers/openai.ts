@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import type {
   Provider,
   ChatMessage,
@@ -132,7 +132,7 @@ export class OpenAIProvider implements Provider {
       headers["OpenAI-Organization"] = this.config.organization;
     }
 
-    const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+    const response = await fetchWithTimeout(`${this.config.baseURL}/chat/completions`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -142,7 +142,7 @@ export class OpenAIProvider implements Provider {
         ...this.tokenParam(options?.maxTokens),
         stream: true,
       }),
-    });
+    }, STREAM_TIMEOUT_MS);
 
     if (!response.ok) {
       const error = await response.text();
@@ -240,12 +240,12 @@ export class OpenAIProvider implements Provider {
       headers["OpenAI-Organization"] = this.config.organization;
     }
 
-    const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+    const response = await fetchWithTimeout(`${this.config.baseURL}/chat/completions`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),
-      signal: signal as any,
-    });
+      signal,
+    }, STREAM_TIMEOUT_MS);
 
     if (!response.ok) {
       const errText = await response.text();
@@ -560,7 +560,7 @@ export class OpenAIProvider implements Provider {
       options.body = JSON.stringify(data);
     }
 
-    const response = await fetch(`${this.config.baseURL}${endpoint}`, options);
+    const response = await fetchWithTimeout(`${this.config.baseURL}${endpoint}`, options, REQUEST_TIMEOUT_MS);
 
     if (!response.ok) {
       const error = await response.text();

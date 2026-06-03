@@ -8,17 +8,17 @@ export interface TimelinePanelProps {
 }
 
 const TASK_ICONS: Record<string, { icon: string; color: string; label: string }> = {
-  started: { icon: "⏳", color: "cyan", label: "Started" },
-  updated: { icon: "…", color: "cyan", label: "Updated" },
-  succeeded: { icon: "✔", color: "green", label: "Done" },
-  failed: { icon: "✖", color: "red", label: "Failed" },
+  started: { icon: "·", color: "cyan", label: "Starting" },
+  updated: { icon: "·", color: "cyan", label: "Running" },
+  succeeded: { icon: "✓", color: "green", label: "Done" },
+  failed: { icon: "✕", color: "red", label: "Failed" },
 };
 
 const LOG_ICONS: Record<string, { icon: string; color: string }> = {
-  info: { icon: "ℹ", color: "cyan" },
-  note: { icon: "📝", color: "magenta" },
-  warn: { icon: "⚠", color: "yellow" },
-  error: { icon: "✖", color: "red" },
+  info: { icon: "·", color: "cyan" },
+  note: { icon: "·", color: "gray" },
+  warn: { icon: "!", color: "yellow" },
+  error: { icon: "✕", color: "red" },
 };
 
 const formatTime = (timestamp: number): string => {
@@ -61,23 +61,18 @@ const TimelineRow: React.FC<{ event: UITimelineEvent }> = React.memo(({ event })
 
   if (event.type === "task") {
     const meta = TASK_ICONS[event.status] ?? TASK_ICONS.started;
-    const detail =
-      event.detail && event.detail.trim().length > 0
-        ? ` — ${event.detail.trim()}`
-        : "";
+    const detail = event.detail?.trim();
     return (
       <Box gap={1}>
         <Text color="gray">{time}</Text>
         <Text color={meta.color}>{meta.icon}</Text>
         <Box flexDirection="column">
-          <Text color={meta.color}>
-            {meta.label}: {event.label}
+          <Text color={event.status === "failed" ? "red" : event.status === "succeeded" ? "white" : "gray"}>
+            {event.label}
           </Text>
-          {detail && (
-            <Text color="gray" dimColor>
-              {detail.slice(3)}
-            </Text>
-          )}
+          {detail ? (
+            <Text color="gray" dimColor>{detail}</Text>
+          ) : null}
         </Box>
       </Box>
     );

@@ -5,11 +5,84 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
+import * as readline from 'readline';
 import { AuthClient } from '../auth/client.js';
 import { AuthStorage } from '../auth/storage.js';
+import { loginChatGPTBrowser, loginChatGPTDeviceCode } from '../auth/chatgpt/oauth.js';
+
+async function promptLine(question: string): Promise<string> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => rl.question(question, (ans) => { rl.close(); resolve(ans); }));
+}
+
+function createChatGPTLoginCommand(): Command {
+  const cmd = new Command('chatgpt');
+  cmd
+    .description('Log in with your ChatGPT Plus/Pro account (no API key needed)')
+    .option('--device', 'Use device code flow instead of browser (for headless/remote)')
+    .action(async (opts: { device?: boolean }) => {
+      const authStorage = new AuthStorage();
+
+      if (authStorage.isChatGPTAuthenticated()) {
+        console.log(chalk.yellow('Already logged in to ChatGPT. Run `meer logout` to remove credentials.'));
+        return;
+      }
+
+      try {
+        let creds;
+
+        if (opts.device) {
+          console.log(chalk.bold('\n🔐 ChatGPT Device Code Login\n'));
+          const spinner = ora('Requesting device code...').start();
+          creds = await loginChatGPTDeviceCode({
+            onCode: ({ userCode, verificationUri }) => {
+              spinner.stop();
+              console.log(chalk.bold.cyan('\n  ╔' + '═'.repeat(54) + '╗'));
+              console.log(chalk.bold.cyan('  ║') + chalk.bold.white('  Authorize Meer at ChatGPT'.padEnd(53)) + chalk.bold.cyan('║'));
+              console.log(chalk.bold.cyan('  ║'.padEnd(56) + '║'));
+              console.log(chalk.bold.cyan('  ║') + `  1. Visit: ${chalk.blue.underline(verificationUri)}`.padEnd(54) + chalk.bold.cyan('║'));
+              console.log(chalk.bold.cyan('  ║') + `  2. Enter code: ${chalk.bold.yellow(userCode)}`.padEnd(54) + chalk.bold.cyan('║'));
+              console.log(chalk.bold.cyan('  ╚' + '═'.repeat(54) + '╝\n'));
+              ora('Waiting for authorization (15 min timeout)...').start().stopAndPersist({ symbol: chalk.cyan('⋯') });
+            },
+          });
+        } else {
+          console.log(chalk.bold('\n🔐 ChatGPT Browser Login\n'));
+          creds = await loginChatGPTBrowser({
+            onUrl: async (url) => {
+              console.log(chalk.dim('Opening browser for ChatGPT authorization...\n'));
+              try {
+                const open = (await import('open')).default;
+                await open(url);
+                console.log(chalk.green('✓ Browser opened'));
+              } catch {
+                console.log(chalk.yellow('⚠  Could not open browser automatically'));
+              }
+              console.log(chalk.dim(`\n  If the browser did not open, visit:\n  ${chalk.blue.underline(url)}\n`));
+            },
+            onManualPrompt: () => promptLine(
+              chalk.dim('\nBrowser timed out. Paste the redirect URL or authorization code: ')
+            ),
+          });
+        }
+
+        authStorage.saveChatGPTCredentials(creds);
+        console.log(chalk.green('\n✅ Logged in to ChatGPT successfully!'));
+        console.log(chalk.dim(`   Account ID: ${creds.accountId}`));
+        console.log(chalk.dim('\n   Set ChatGPT as your provider:'));
+        console.log(chalk.white('   meer setup  (choose "chatgpt" as provider)\n'));
+
+      } catch (err) {
+        console.log(chalk.red(`\n❌ Login failed: ${err instanceof Error ? err.message : String(err)}\n`));
+        process.exit(1);
+      }
+    });
+  return cmd;
+}
 
 export function createLoginCommand(): Command {
   const command = new Command('login');
+  command.addCommand(createChatGPTLoginCommand());
 
   command
     .description('Authenticate with MeerAI backend')

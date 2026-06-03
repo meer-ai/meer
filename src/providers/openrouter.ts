@@ -1,4 +1,4 @@
-import { fetch } from "undici";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
 import type {
   Provider,
   ChatMessage,
@@ -91,7 +91,7 @@ export class OpenRouterProvider implements Provider {
       body.response_format = responseFormat;
     }
 
-    const response = await fetch(`${this.config.baseURL}/v1/chat/completions`, {
+    const response = await fetchWithTimeout(`${this.config.baseURL}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -100,8 +100,8 @@ export class OpenRouterProvider implements Provider {
         "X-Title": this.config.siteName || "",
       },
       body: JSON.stringify(body),
-      signal: signal as any,
-    });
+      signal,
+    }, STREAM_TIMEOUT_MS);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -192,7 +192,7 @@ export class OpenRouterProvider implements Provider {
       body.tool_choice = "auto";
     }
 
-    const response = await fetch(`${this.config.baseURL}/v1/chat/completions`, {
+    const response = await fetchWithTimeout(`${this.config.baseURL}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -201,8 +201,8 @@ export class OpenRouterProvider implements Provider {
         "X-Title": this.config.siteName || "",
       },
       body: JSON.stringify(body),
-      signal: signal as any,
-    });
+      signal,
+    }, STREAM_TIMEOUT_MS);
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -573,12 +573,10 @@ export class OpenRouterProvider implements Provider {
       requestOptions.body = JSON.stringify(data);
     }
 
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `${this.config.baseURL}${endpoint}`,
-      {
-        ...requestOptions,
-        signal: signal as any,
-      }
+      { ...requestOptions, signal },
+      REQUEST_TIMEOUT_MS
     );
 
     if (!response.ok) {

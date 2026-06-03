@@ -1,5 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { getTheme } from "../../theme.js";
+const t = getTheme();
 import { DiffViewer, parseDiff } from "../components/tools/index.js";
 import type { ToolRendererProps } from "./types.js";
 import {
@@ -53,17 +55,17 @@ export const MutationRenderer: React.FC<ToolRendererProps> = React.memo(({
       marginBottom={1}
       paddingLeft={1}
       borderLeft
-      borderColor={isError ? "red" : "green"}
+      borderColor={isError ? t.danger : t.success}
     >
       <Box justifyContent="space-between">
         <Box gap={1}>
-          <Text color={isError ? "red" : "green"}>{reviewLabel}</Text>
-          <Text color="white">{filePath}</Text>
+          <Text color={isError ? t.danger : t.success}>{reviewLabel}</Text>
+          <Text color={t.text}>{filePath}</Text>
         </Box>
         {!isError && hunks.length > 0 ? (
           <Box gap={1}>
-            <Text color="green">+{additions}</Text>
-            <Text color="red">-{removals}</Text>
+            <Text color={t.success}>+{additions}</Text>
+            <Text color={t.danger}>-{removals}</Text>
             {typeof details?.firstChangedLine === "number" ? (
               <Text color="dim">L{details.firstChangedLine}</Text>
             ) : null}
@@ -73,17 +75,17 @@ export const MutationRenderer: React.FC<ToolRendererProps> = React.memo(({
         ) : null}
       </Box>
       {summary ? (
-        <Text color={isError ? "red" : "dim"} dimColor={!isError}>
+        <Text color={isError ? t.danger : t.muted} dimColor={!isError}>
           {truncateLine(summary, 140)}
         </Text>
       ) : null}
       {!isError && hunks.length > 0 ? (
         <Box marginTop={1} flexDirection="column">
           <Box gap={1}>
-            <Text color="dim">diff</Text>
-            <Text color="green">+{additions}</Text>
-            <Text color="red">-{removals}</Text>
-            <Text color="dim">{hunks.length} hunk{hunks.length === 1 ? "" : "s"}</Text>
+            <Text color={t.muted}>diff</Text>
+            <Text color={t.success}>+{additions}</Text>
+            <Text color={t.danger}>-{removals}</Text>
+            <Text color={t.muted}>{hunks.length} hunk{hunks.length === 1 ? "" : "s"}</Text>
           </Box>
           <DiffViewer filePath={filePath} hunks={hunks.slice(0, 2)} showActions={false} />
           {hunks.length > 2 ? (
