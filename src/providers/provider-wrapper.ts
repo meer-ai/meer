@@ -20,6 +20,7 @@ import type {
   ToolDefinition,
 } from './base.js';
 import { retryWithBackoff, RetryPredicates } from '../utils/retry.js';
+import { isContextOverflowError } from '../utils/provider-errors.js';
 import { parseStructuredTurn, textStreamToStructuredEvents } from './structured.js';
 import chalk from 'chalk';
 import { contextualError } from '../utils/errors.js';
@@ -374,6 +375,12 @@ export class ProviderWrapper implements Provider {
    */
   private shouldRetryError(error: Error): boolean {
     const message = error.message.toLowerCase();
+
+    // Context overflow can never succeed on retry — the request is too big.
+    // Recovery happens via session compaction at the agent-session level.
+    if (isContextOverflowError(error)) {
+      return false;
+    }
 
     // Always retry on network errors
     if (RetryPredicates.networkErrors(error)) {

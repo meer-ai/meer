@@ -25,6 +25,7 @@ const expectedNames = [
   "suggest_setup",
   "read_file",
   "list_files",
+  "edit_file",
   "propose_edit",
   "run_command",
   "find_files",

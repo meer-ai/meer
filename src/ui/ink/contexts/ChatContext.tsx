@@ -20,6 +20,18 @@ export interface Message {
   isCot?: boolean;
   timestamp?: number;
   id: string;
+  /**
+   * Set on assistant messages that are one piece of a progressively
+   * committed streaming response. All pieces of one response share an id.
+   */
+  streamGroupId?: string;
+  /** True for stream pieces after the first — suppresses the role header. */
+  isContinuation?: boolean;
+  /**
+   * Stamped on the final piece of a stream group at settle time: the full
+   * reconciled response text (used by /copy and history readers).
+   */
+  streamGroupFull?: string;
 }
 
 export interface ToolCall {

@@ -30,20 +30,15 @@ import { getAllCommands } from "../../slash/registry.js";
 import { isSlashCommandInput } from "../../slash/utils.js";
 import { recordDiagnostic } from "../../utils/diagnostics.js";
 import { clearLiveWorkState } from "./workState.js";
+import {
+  collapseWhitespace,
+  planFinishCommit,
+  planStreamCommit,
+} from "./streamCommit.js";
+import { setToolConsoleQuiet } from "../../tools/index.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
 
-interface Message {
-  id: string;
-  role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
-  toolName?: string;
-  toolCallId?: string;
-  toolArgs?: Record<string, unknown>;
-  toolDetails?: Record<string, unknown>;
-  isError?: boolean;
-  isCot?: boolean;
-  timestamp?: number;
-}
+import type { Message } from "./contexts/ChatContext.js";
 
 type CanonicalUIEvent =
   | {
@@ -134,40 +129,25 @@ function isActionTool(toolName: string): boolean {
   );
 }
 
-function shouldRenderToolTranscript(toolName: string, isError?: boolean): boolean {
+function shouldRenderToolTranscript(toolName: string, _isError?: boolean): boolean {
   const lower = toolName.toLowerCase();
-  if (isActionTool(lower)) {
-    return true;
-  }
 
-  // Keep non-mutating/internal tools in the work panel. These are useful as
-  // progress state, but noisy and confusing when mixed into the chat transcript.
+  // Plan tools are fully represented by the PlanPanel — a transcript row
+  // would duplicate it.
   if (
     lower.includes("set_plan") ||
     lower.includes("update_plan_task") ||
     lower.includes("show_plan") ||
-    lower.includes("read") ||
-    lower.includes("list") ||
-    lower.includes("find") ||
-    lower.includes("search") ||
-    lower.includes("analyze")
+    lower.includes("clear_plan")
   ) {
     return false;
   }
 
-  // Shell/package failures should be visible as work state, but not as giant
-  // transcript blocks unless the assistant chooses to summarize them.
-  if (
-    lower.includes("run_command") ||
-    lower.includes("bash") ||
-    lower.includes("package_") ||
-    lower.includes("scaffold_project") ||
-    lower.includes("start_background_command")
-  ) {
-    return false;
-  }
-
-  return Boolean(isError);
+  // Everything else leaves a durable trail: mutations and failures render
+  // full widgets, successful reads/searches/commands render as one-line
+  // compact rows (decided in MessageView). This is what lets the user see
+  // what the agent actually did after the live work panel clears.
+  return true;
 }
 
 function buildToolNarration(
@@ -349,10 +329,22 @@ export class InkChatAdapter {
   private readonly assistantChunkFlushMs = 24;
   private readonly assistantChunkFrameChars = 96;
 
+  // Progressive-commit streaming state. Completed paragraphs are committed
+  // to scrollback as "stream part" messages while the response streams; the
+  // live draft only ever holds the in-progress tail (see streamCommit.ts).
+  private streamLiveSource = "";
+  private streamOpenFence: string | null = null;
+  private streamGroupId: string | null = null;
+  private streamPartCount = 0;
+  private streamCommittedCollapsed = "";
+
   constructor(config: InkChatConfig) {
     this.config = config;
     this.uiSettings = resolveUISettings(config.uiSettings);
     this.eventBus = config.eventBus;
+    // The work log renders tool progress; raw console lines from tool
+    // functions would duplicate it through Ink's console patch.
+    setToolConsoleQuiet(true);
     this.attachEventBus();
     this.renderUI();
   }
@@ -768,6 +760,7 @@ export class InkChatAdapter {
     this.recordUIEvent({ id: `turn-${Date.now()}`, type: "turn", phase: "begin" });
     this.turnActive = true;
     this.draftAssistant = null;
+    this.resetStreamGroup();
     this.isThinking = true;
     this.statusMessage = null;
     this.tools = [];
@@ -819,6 +812,12 @@ export class InkChatAdapter {
     clearLiveWorkState(this as unknown as Parameters<typeof clearLiveWorkState>[0], {
       keepDraft: options?.keepDraft,
     });
+    // Close any open stream group. Already-committed pieces stay in
+    // scrollback (matching what the user saw stream), but state resets so
+    // the next response starts a fresh block.
+    if (!options?.keepDraft) {
+      this.resetStreamGroup();
+    }
     this.timelineTaskMetadata.clear();
 
     if (!options?.skipRender) {
@@ -828,11 +827,26 @@ export class InkChatAdapter {
 
   startAssistantMessage(): void {
     this.isThinking = true;
+    // When a stream group is already open (parts committed to scrollback but
+    // not yet settled — e.g. text resuming after a tool batch), the new draft
+    // is a continuation of the same response block: no fresh header.
+    const continuing =
+      this.streamGroupId !== null || this.streamLiveSource.trim().length > 0;
+    if (!continuing) {
+      this.resetStreamGroup();
+    } else if (this.streamLiveSource.trim()) {
+      // A held fragment from before the tool batch. Join with a single
+      // newline (not a paragraph break) so the paragraph committer keeps the
+      // fragment glued to the text that follows — a blank line here would
+      // immediately strand it as its own piece in scrollback.
+      this.streamLiveSource = `${this.streamLiveSource.replace(/\s+$/, "")}\n`;
+    }
     this.draftAssistant = {
       id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       role: 'assistant',
-      content: '',
+      content: this.streamLiveDisplay(),
       timestamp: Date.now(),
+      isContinuation: (continuing && this.streamGroupId !== null) || undefined,
     };
     this.recordUIEvent({
       id: this.draftAssistant.id,
@@ -842,6 +856,80 @@ export class InkChatAdapter {
       timestamp: this.draftAssistant.timestamp,
     });
     this.updateUI();
+  }
+
+  private resetStreamGroup(): void {
+    this.streamLiveSource = "";
+    this.streamOpenFence = null;
+    this.streamGroupId = null;
+    this.streamPartCount = 0;
+    this.streamCommittedCollapsed = "";
+  }
+
+  /** Display form of the live tail (re-opens a fence split by a commit). */
+  private streamLiveDisplay(): string {
+    return this.streamOpenFence
+      ? `${this.streamOpenFence}\n${this.streamLiveSource}`
+      : this.streamLiveSource;
+  }
+
+  /** Push one committed piece of the streaming response into scrollback. */
+  private pushStreamPart(displayText: string): void {
+    const trimmed = displayText.replace(/\s+$/, "");
+    if (!trimmed.trim()) {
+      return;
+    }
+    const isFirst = this.streamGroupId === null;
+    if (isFirst) {
+      this.streamGroupId =
+        this.draftAssistant?.id ??
+        `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    }
+    this.messages.push({
+      id: `${this.streamGroupId}-part-${++this.streamPartCount}`,
+      role: "assistant",
+      content: trimmed,
+      timestamp:
+        isFirst && this.draftAssistant
+          ? this.draftAssistant.timestamp
+          : Date.now(),
+      streamGroupId: this.streamGroupId ?? undefined,
+      isContinuation: !isFirst || undefined,
+    });
+    this.trimMessages();
+    if (this.draftAssistant) {
+      this.draftAssistant.isContinuation = true;
+    }
+  }
+
+  /** Commit completed paragraphs out of the live tail into scrollback. */
+  private maybeCommitStreamParts(): void {
+    const plan = planStreamCommit(this.streamLiveSource, this.streamOpenFence);
+    if (plan.consumed === 0) {
+      return;
+    }
+    const consumedRaw = this.streamLiveSource.slice(0, plan.consumed);
+    this.pushStreamPart(plan.commitText);
+    this.streamCommittedCollapsed = `${this.streamCommittedCollapsed} ${collapseWhitespace(consumedRaw)}`.trim();
+    this.streamLiveSource = this.streamLiveSource.slice(plan.consumed);
+    this.streamOpenFence = plan.openFenceAfter;
+  }
+
+  /**
+   * Commit whatever is left in the live tail. Called when streaming stops
+   * (tool batch starting, or response complete) so the text lands in
+   * scrollback BEFORE tool widgets print — keeping reading order correct.
+   */
+  private commitStreamRemainder(): void {
+    if (!this.streamLiveSource.trim()) {
+      this.streamLiveSource = "";
+      return;
+    }
+    const display = this.streamLiveDisplay();
+    this.streamCommittedCollapsed = `${this.streamCommittedCollapsed} ${collapseWhitespace(this.streamLiveSource)}`.trim();
+    this.pushStreamPart(display);
+    this.streamLiveSource = "";
+    this.streamOpenFence = null;
   }
 
   appendAssistantChunk(chunk: string): void {
@@ -883,7 +971,9 @@ export class InkChatAdapter {
     if (!chunk || !this.draftAssistant) {
       return;
     }
-    this.draftAssistant.content += chunk;
+    this.streamLiveSource += chunk;
+    this.maybeCommitStreamParts();
+    this.draftAssistant.content = this.streamLiveDisplay();
     this.recordUIEvent({
       id: `delta-${this.draftAssistant.id}-${this.uiEventSequence + 1}`,
       type: "assistant_delta",
@@ -911,6 +1001,30 @@ export class InkChatAdapter {
 
   finishAssistantMessage(): void {
     this.flushAssistantChunks();
+    // Streaming stopped (tool batch starting or response complete). Flush
+    // completed text to scrollback now so any tool widgets that follow print
+    // AFTER the text that preceded them. Dangling fragments the model emits
+    // right before a tool call ("#", "Now I'll") stay in the live draft —
+    // committing them would strand a half-line in scrollback.
+    if (this.streamLiveSource.trim() || this.streamGroupId !== null) {
+      const plan = planFinishCommit(this.streamLiveSource, this.streamOpenFence);
+      if (plan.consumed > 0) {
+        const consumedRaw = this.streamLiveSource.slice(0, plan.consumed);
+        this.pushStreamPart(plan.commitText);
+        this.streamCommittedCollapsed =
+          `${this.streamCommittedCollapsed} ${collapseWhitespace(consumedRaw)}`.trim();
+        this.streamLiveSource = this.streamLiveSource.slice(plan.consumed);
+        this.streamOpenFence = plan.openFenceAfter;
+      }
+      if (!this.streamLiveSource.trim()) {
+        this.streamLiveSource = "";
+        this.streamOpenFence = null;
+        this.draftAssistant = null;
+      } else if (this.draftAssistant) {
+        // Held fragment stays visible in the live region.
+        this.draftAssistant.content = this.streamLiveDisplay();
+      }
+    }
     this.isThinking = this.turnActive;
     // Cancel any pending debounced updates and render final state immediately
     this.debouncedUpdateUI.cancel();
@@ -919,6 +1033,15 @@ export class InkChatAdapter {
 
   settleAssistantMessage(content: string): void {
     this.flushAssistantChunks();
+
+    const groupActive =
+      this.streamGroupId !== null || this.streamLiveSource.trim().length > 0;
+
+    if (groupActive) {
+      this.settleStreamGroup(content);
+      return;
+    }
+
     const normalized = content.trim() || this.draftAssistant?.content.trim() || "";
     if (!normalized) {
       return;
@@ -952,6 +1075,54 @@ export class InkChatAdapter {
       content: normalized,
       timestamp: message.timestamp,
     });
+    this.draftAssistant = null;
+    this.isThinking = this.turnActive;
+    this.updateUI();
+  }
+
+  /**
+   * Close an open stream group: commit the live tail, verify the settled
+   * content was covered by what streamed, and stamp the final piece with the
+   * full reconciled text (for /copy and history readers).
+   */
+  private settleStreamGroup(content: string): void {
+    this.commitStreamRemainder();
+
+    const normalized = content.trim();
+    const want = collapseWhitespace(normalized);
+    const covered = this.streamCommittedCollapsed;
+
+    // The settled content normally equals (or is contained in) what streamed
+    // — possibly with extra whitespace from preamble merging. If the settle
+    // carries text that never streamed (rare), push it so nothing is lost.
+    if (want && !covered.includes(want) && !want.includes(covered)) {
+      this.pushStreamPart(normalized);
+      recordDiagnostic(
+        "ui.settleStreamGroup.mismatch",
+        new Error("settled content not covered by streamed parts"),
+        { wantChars: want.length, coveredChars: covered.length }
+      );
+    }
+
+    // Stamp the last piece with the full response text.
+    if (this.streamGroupId !== null) {
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        const msg = this.messages[i];
+        if (msg.streamGroupId === this.streamGroupId) {
+          msg.streamGroupFull = normalized || undefined;
+          this.recordUIEvent({
+            id: msg.id,
+            type: "message",
+            role: "assistant",
+            content: normalized || msg.content,
+            timestamp: msg.timestamp,
+          });
+          break;
+        }
+      }
+    }
+
+    this.resetStreamGroup();
     this.draftAssistant = null;
     this.isThinking = this.turnActive;
     this.updateUI();
@@ -1114,9 +1285,24 @@ export class InkChatAdapter {
   getLastAssistantContent(): string | null {
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const msg = this.messages[i];
-      if (msg.role === "assistant" && !msg.isCot && msg.content.trim()) {
-        return msg.content;
+      if (msg.role !== "assistant" || msg.isCot || !msg.content.trim()) {
+        continue;
       }
+      // Progressively committed responses are split into pieces; the settle
+      // stamp on the final piece holds the full reconciled text.
+      if (msg.streamGroupFull?.trim()) {
+        return msg.streamGroupFull;
+      }
+      if (msg.streamGroupId) {
+        const parts = this.messages
+          .filter((m) => m.streamGroupId === msg.streamGroupId)
+          .map((m) => m.content.trim())
+          .filter(Boolean);
+        if (parts.length > 0) {
+          return parts.join("\n\n");
+        }
+      }
+      return msg.content;
     }
     return null;
   }

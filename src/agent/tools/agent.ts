@@ -251,6 +251,55 @@ async function ensureEditApproval(
   return context.reviewFileEdit(edit);
 }
 
+/**
+ * Normalize edit_file input into a clean TextEdit[].
+ * Handles model quirks observed in the wild (ported from pi):
+ * - `edits` sent as a JSON string instead of an array
+ * - legacy single `oldText`/`newText` pair instead of an `edits` array
+ */
+function normalizeEditFileEdits(
+  input: Record<string, unknown>
+): Array<{ oldText: string; newText: string }> {
+  let rawEdits = input.edits;
+
+  if (typeof rawEdits === "string") {
+    try {
+      const parsed = JSON.parse(rawEdits);
+      if (Array.isArray(parsed)) rawEdits = parsed;
+    } catch {
+      // fall through to validation error below
+    }
+  }
+
+  const edits: Array<{ oldText: string; newText: string }> = [];
+  if (Array.isArray(rawEdits)) {
+    for (const entry of rawEdits) {
+      if (
+        entry &&
+        typeof entry === "object" &&
+        typeof (entry as Record<string, unknown>).oldText === "string" &&
+        typeof (entry as Record<string, unknown>).newText === "string"
+      ) {
+        edits.push({
+          oldText: (entry as Record<string, string>).oldText,
+          newText: (entry as Record<string, string>).newText,
+        });
+      }
+    }
+  }
+
+  if (typeof input.oldText === "string" && typeof input.newText === "string") {
+    edits.push({ oldText: input.oldText, newText: input.newText });
+  }
+
+  if (edits.length === 0) {
+    throw new Error(
+      "edit_file requires an edits array of { oldText, newText } replacements."
+    );
+  }
+  return edits;
+}
+
 async function ensureCommandApproval(
   context: MeerAgentToolContext,
   command: string
@@ -340,7 +389,12 @@ async function callMeerTool(
       return unwrap(tools.analyzeProject(context.cwd));
     }
     case "read_file": {
-      return unwrap(tools.readFile(String(input.path), context.cwd));
+      const offset =
+        input.offset !== undefined ? Number(input.offset) : undefined;
+      const limit = input.limit !== undefined ? Number(input.limit) : undefined;
+      return unwrap(
+        tools.readFile(String(input.path), context.cwd, { offset, limit })
+      );
     }
     case "list_files": {
       const rawPath = input.path;
@@ -358,6 +412,15 @@ async function callMeerTool(
           ? input.description
           : "Edit file";
       const edit = tools.proposeEdit(path, contents, description, context.cwd);
+      if (!(await ensureEditApproval(context, edit))) {
+        return `⏭️ Edit skipped for ${edit.path}`;
+      }
+      return unwrapStructured(tools.applyEdit(edit, context.cwd));
+    }
+    case "edit_file": {
+      const path = String(input.path);
+      const edits = normalizeEditFileEdits(input);
+      const edit = tools.editFileSections(path, edits, context.cwd);
       if (!(await ensureEditApproval(context, edit))) {
         return `⏭️ Edit skipped for ${edit.path}`;
       }
@@ -1096,9 +1159,12 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "read_file",
-    description: "Read the contents of a file in the workspace.",
+    description:
+      "Read the contents of a file in the workspace. Large files are truncated; use offset (1-indexed start line) and limit (max lines) to read specific ranges.",
     schema: z.object({
       path: z.string().min(1, "path is required"),
+      offset: z.coerce.number().int().positive().optional(),
+      limit: z.coerce.number().int().positive().optional(),
     }),
     execute: (input, context) => {
       const normalized =
@@ -1127,9 +1193,39 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     },
   },
   {
+    name: "edit_file",
+    description:
+      "Make targeted text replacements in an existing file. Preferred over propose_edit for modifying existing files. Each edit replaces one unique occurrence of oldText with newText; oldText must match the file exactly (whitespace included) and be unique — include surrounding lines for context. Multiple edits are matched against the original file and must not overlap.",
+    schema: z.object({
+      path: z.string().min(1, "path is required"),
+      // Lenient on purpose: some models send `edits` as a JSON string, or a
+      // legacy top-level oldText/newText pair. normalizeEditFileEdits()
+      // coerces these and produces actionable errors.
+      edits: z
+        .union([
+          z.array(
+            z.object({
+              oldText: z
+                .string()
+                .describe(
+                  "Exact text to replace. Must be unique in the file; include surrounding lines to disambiguate."
+                ),
+              newText: z.string().describe("Replacement text."),
+            })
+          ),
+          z.string(),
+        ])
+        .optional(),
+      oldText: z.string().optional(),
+      newText: z.string().optional(),
+    }),
+    execute: (input, context) =>
+      callMeerTool("edit_file", input as Record<string, unknown>, context),
+  },
+  {
     name: "propose_edit",
     description:
-      "Propose full-file content for creation or modification. Content must include the entire file.",
+      "Propose full-file content for creation or modification. Content must include the entire file. Use for NEW files or full rewrites only — for changes to existing files, prefer edit_file.",
     schema: z.object({
       path: z.string().min(1, "path is required"),
       contents: z.string().min(1, "contents must include the full file"),

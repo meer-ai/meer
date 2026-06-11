@@ -13,6 +13,10 @@ import {
 } from "./session-heuristics.js";
 import { buildNativeSystemPrompt } from "./prompts/nativeSystemPrompt.js";
 import { generateCompactionSummaryWithProvider } from "./session-compaction.js";
+import {
+  isContextOverflowError,
+  isRetryableProviderError,
+} from "../utils/provider-errors.js";
 import type { MCPTool } from "../mcp/types.js";
 import type { Skill } from "../skills/index.js";
 
@@ -154,23 +158,7 @@ function isRetryableError(error: Error): boolean {
   if (error.name === "AbortError") {
     return false;
   }
-
-  const message = error.message.toLowerCase();
-  return (
-    message.includes("timeout") ||
-    message.includes("timed out") ||
-    message.includes("network") ||
-    message.includes("econnreset") ||
-    message.includes("connection reset") ||
-    message.includes("connection closed") ||
-    message.includes("temporarily unavailable") ||
-    message.includes("rate limit") ||
-    message.includes("429") ||
-    message.includes("500") ||
-    message.includes("502") ||
-    message.includes("503") ||
-    message.includes("504")
-  );
+  return isRetryableProviderError(error);
 }
 
 export class AgentSession {
@@ -305,6 +293,8 @@ export class AgentSession {
 
     let attempt = 0;
     let lastError: Error | null = null;
+    let hasPersistedUserMessage = false;
+    let overflowRecoveryAttempted = false;
     this.activeUserMessage = userMessage;
     this.activeWorkflowStageName = null;
     const turnId = randomUUID();
@@ -333,8 +323,10 @@ export class AgentSession {
                 skills: promptContext.skills,
               })
             : undefined;
+          const persistUserMessage = !hasPersistedUserMessage;
+          hasPersistedUserMessage = true;
           const result = await this.runtime.processMessage(userMessage, {
-            persistUserMessage: attempt === 0,
+            persistUserMessage,
             turnId,
             preparedMessages,
             systemPrompt,
@@ -360,6 +352,28 @@ export class AgentSession {
           const normalized =
             error instanceof Error ? error : new Error(String(error));
           lastError = normalized;
+
+          // Context overflow: compact the session and retry once instead of
+          // failing (or blindly retrying the same oversized request).
+          if (
+            normalized.name !== "AbortError" &&
+            !overflowRecoveryAttempted &&
+            isContextOverflowError(normalized)
+          ) {
+            overflowRecoveryAttempted = true;
+            this.emit({
+              type: "status_change",
+              status: "Context overflow — compacting session…",
+            });
+            const compacted = await this.forceCompactSession();
+            if (compacted) {
+              this.emit({
+                type: "status_change",
+                status: "Retrying after compaction…",
+              });
+              continue; // does not consume a retry attempt
+            }
+          }
 
           if (
             attempt >= retries ||
@@ -470,19 +484,26 @@ export class AgentSession {
       return;
     }
 
+    await this.forceCompactSession();
+  }
+
+  /**
+   * Compact the session unconditionally (used by post-turn threshold checks
+   * and by context-overflow recovery). Returns whether compaction happened.
+   */
+  private async forceCompactSession(): Promise<boolean> {
+    const keepRecentMessages = this.compaction?.keepRecentMessages ?? 10;
     this.emit({
       type: "status_change",
       status: "Compacting session…",
     });
     const compacted =
       (await this.runtime.compactSession?.({
-        keepRecentMessages: this.compaction.keepRecentMessages,
+        keepRecentMessages,
         summaryGenerator: this.buildCompactionSummaryGenerator(),
       })) ?? false;
     if (compacted) {
-      this.reloadConversationHistoryFromMemory(
-        this.compaction.keepRecentMessages + 6
-      );
+      this.reloadConversationHistoryFromMemory(keepRecentMessages + 6);
       const compactedStats = this.runtime.getContextStats?.();
       if (compactedStats) {
         this.sessionTracker?.trackContextUsage(
@@ -490,6 +511,7 @@ export class AgentSession {
         );
       }
     }
+    return compacted;
   }
 
   private buildCompactionSummaryGenerator():

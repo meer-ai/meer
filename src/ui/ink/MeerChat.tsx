@@ -38,6 +38,12 @@ import {
   isMutationTool,
   stripToolHeader,
 } from "./tool-renderers/utils.js";
+import {
+  classifyMarkdownLine,
+  parseMarkdownBlocks,
+  tokenizeInline,
+} from "./markdown.js";
+import { CompactToolRow } from "./tool-renderers/CompactToolRow.js";
 
 // ============================================================================
 // Types
@@ -152,22 +158,42 @@ function formatAttachmentSize(bytes?: number): string {
   return `${bytes}B`;
 }
 
-function shouldRenderTranscriptMessage(message: Message): boolean {
-  if (message.role !== "tool") return true;
-  const toolName = message.toolName || "";
-  const kind = classifyTool(toolName);
-
-  // Keep reviewable edits and failures in the transcript. Everything else is
-  // represented by the live work panel to avoid log-style duplication.
-  if (kind === "mutation") return true;
-  return Boolean(message.isError);
+/**
+ * Every message stays in the transcript — tool calls leave a durable trail.
+ * Reviewable edits and failures keep their full widgets; everything else
+ * renders as a one-line compact row (see MessageView) so the history reads
+ * like a work log instead of a raw dump.
+ */
+function shouldRenderTranscriptMessage(_message: Message): boolean {
+  return true;
 }
 
-function getCompactHiddenToolCount(messages: Message[]): number {
-  return messages.reduce(
-    (count, message) => count + (shouldRenderTranscriptMessage(message) ? 0 : 1),
-    0
-  );
+/** Whether a tool message earns a full widget (vs a one-line compact row). */
+function toolMessageNeedsFullWidget(message: Message): boolean {
+  if (message.role !== "tool") return true;
+  if (message.isError) return true;
+  return classifyTool(message.toolName || "") === "mutation";
+}
+
+/** Short semantic summary of a tool message for compact rows. */
+function getToolMessageSummary(
+  toolName: string,
+  args?: Record<string, unknown>
+): string {
+  const lower = toolName.toLowerCase();
+  if (/run_command|bash|exec|package_run_script/.test(lower)) {
+    const command = getCommand(args);
+    return command ? `$ ${command}` : "";
+  }
+  const path = getFilePath(args);
+  if (path) return path;
+  const pattern =
+    args &&
+    ["pattern", "term", "query", "includePattern"]
+      .map((key) => args[key])
+      .find((value): value is string => typeof value === "string" && value.length > 0);
+  if (pattern) return `"${pattern}"`;
+  return "";
 }
 
 function getToolTarget(tool: ToolCall): string {
@@ -456,11 +482,14 @@ function buildWorkRows({
   timelineEvents = [],
   tools = [],
   backgroundSessions = [],
+  spinnerFrame = "•",
 }: {
   timelineEvents?: UITimelineEvent[];
   tools?: ToolCall[];
   status?: string;
   backgroundSessions?: BackgroundTerminalSession[];
+  /** Icon for running rows — animated braille frame from the caller's ticker. */
+  spinnerFrame?: string;
 }): WorkRow[] {
   const rows: WorkRow[] = [];
 
@@ -496,7 +525,7 @@ function buildWorkRows({
         : tool.status === "success"
         ? "✓"
         : tool.status === "running"
-        ? "•"
+        ? spinnerFrame
         : "◦";
     rows.push({
       id: tool.id,
@@ -594,66 +623,101 @@ const CodeBlock: React.FC<{ code: string; language?: string }> = React.memo(
   (prev, next) => prev.code === next.code && prev.language === next.language
 );
 
+/** Render one line's inline markdown (bold/italic/`code`/links) as Text spans. */
+const InlineSpans: React.FC<{ text: string; dim?: boolean }> = ({ text, dim }) => (
+  <>
+    {tokenizeInline(text).map((token, idx) => {
+      if (token.code) {
+        return (
+          <Text key={idx} color={dim ? "dim" : t.accent} dimColor={dim}>
+            {token.text}
+          </Text>
+        );
+      }
+      if (token.url) {
+        return (
+          <Text key={idx} color={dim ? "dim" : t.info} underline dimColor={dim}>
+            {token.text}
+          </Text>
+        );
+      }
+      return (
+        <Text
+          key={idx}
+          bold={token.bold}
+          italic={token.italic}
+          strikethrough={token.strike}
+          dimColor={dim}
+        >
+          {token.text}
+        </Text>
+      );
+    })}
+  </>
+);
+
 const RichTextBlock: React.FC<{
   text: string;
   tone?: "default" | "dim";
 }> = React.memo(({ text, tone = "default" }) => {
+  const dim = tone === "dim";
   const lines = text.split("\n");
 
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => {
-        const trimmed = line.trim();
-        if (!trimmed) {
-          return <Box key={index} height={0} />;
-        }
+        const md = classifyMarkdownLine(line);
 
-        if (/^###\s+/.test(trimmed) || /^##\s+/.test(trimmed) || /^#\s+/.test(trimmed)) {
-          const level = trimmed.startsWith("###") ? 3 : trimmed.startsWith("##") ? 2 : 1;
-          return (
-            <Text
-              key={index}
-              color={tone === "dim" ? "dim" : "white"}
-              bold={tone !== "dim"}
-              dimColor={tone === "dim"}
-            >
-              {`${"#".repeat(level)} ${trimmed.replace(/^#+\s+/, "")}`}
-            </Text>
-          );
-        }
+        switch (md.kind) {
+          case "blank":
+            return <Text key={index}> </Text>;
 
-        if (/^[-*]\s+/.test(trimmed)) {
-          return (
-            <Box key={index} gap={1}>
-              <Text color={tone === "dim" ? "dim" : "cyan"} dimColor={tone === "dim"}>
-                •
+          case "heading":
+            return (
+              <Text
+                key={index}
+                bold={!dim}
+                underline={md.level === 1 && !dim}
+                color={dim ? "dim" : "white"}
+                dimColor={dim || md.level === 3}
+              >
+                <InlineSpans text={md.text} dim={dim} />
               </Text>
-              <Text color={tone === "dim" ? "dim" : "white"} dimColor={tone === "dim"}>
-                {trimmed.replace(/^[-*]\s+/, "")}
-              </Text>
-            </Box>
-          );
-        }
+            );
 
-        if (/^\d+\.\s+/.test(trimmed)) {
-          const match = trimmed.match(/^(\d+\.)\s+(.*)$/);
-          return (
-            <Box key={index} gap={1}>
-              <Text color={tone === "dim" ? "dim" : "cyan"} dimColor={tone === "dim"}>
-                {match?.[1] ?? ""}
+          case "hr":
+            return (
+              <Text key={index} color={t.muted} dimColor>
+                {"─".repeat(32)}
               </Text>
-              <Text color={tone === "dim" ? "dim" : "white"} dimColor={tone === "dim"}>
-                {match?.[2] ?? trimmed}
-              </Text>
-            </Box>
-          );
-        }
+            );
 
-        return (
-          <Text key={index} color={tone === "dim" ? "dim" : "white"} dimColor={tone === "dim"}>
-            {trimmed}
-          </Text>
-        );
+          case "quote":
+            return (
+              <Text key={index} color={t.muted} italic dimColor>
+                │ <InlineSpans text={md.text} dim />
+              </Text>
+            );
+
+          case "bullet":
+          case "ordered":
+            return (
+              <Text key={index} color={dim ? "dim" : "white"} dimColor={dim}>
+                {md.indent}
+                <Text color={dim ? "dim" : "cyan"} dimColor={dim}>
+                  {md.kind === "bullet" ? "•" : md.marker}
+                </Text>{" "}
+                <InlineSpans text={md.text} dim={dim} />
+              </Text>
+            );
+
+          default:
+            return (
+              <Text key={index} color={dim ? "dim" : "white"} dimColor={dim}>
+                <InlineSpans text={md.text} dim={dim} />
+              </Text>
+            );
+        }
       })}
     </Box>
   );
@@ -663,37 +727,36 @@ const RichTextBlock: React.FC<{
 // Message View
 // ============================================================================
 
-const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
+const MessageView: React.FC<{
+  message: Message;
+  isDraft?: boolean;
+  /** Transcript mode (^O): render every tool with its full widget. */
+  fullToolWidgets?: boolean;
+}> =
   React.memo(
-    ({ message, isDraft = false }) => {
-      const parseContent = (content: string) => {
-        const codeBlockRegex = /```(\w+)?\n([\s\S]*?)```/g;
-        const parts: Array<{
-          type: "text" | "code";
-          content: string;
-          language?: string;
-        }> = [];
-        let lastIndex = 0;
-        let match;
+    ({ message, isDraft = false, fullToolWidgets = false }) => {
+      // parseMarkdownBlocks renders a trailing unclosed ``` fence as code, so
+      // streaming code appears as a code block immediately instead of
+      // flashing as raw text until the closing fence arrives.
+      const parseContent = parseMarkdownBlocks;
 
-        while ((match = codeBlockRegex.exec(content)) !== null) {
-          if (match.index > lastIndex) {
-            parts.push({ type: "text", content: content.slice(lastIndex, match.index) });
-          }
-          parts.push({ type: "code", content: match[2], language: match[1] });
-          lastIndex = codeBlockRegex.lastIndex;
-        }
-
-        if (lastIndex < content.length) {
-          parts.push({ type: "text", content: content.slice(lastIndex) });
-        }
-
-        return parts.length > 0 ? parts : [{ type: "text" as const, content }];
-      };
-
-      // Tool result blocks
+      // Tool result blocks. Successful reads/searches/commands leave a quiet
+      // one-line trail; edits and failures keep their full widgets.
       if (message.role === "tool") {
         const toolName = message.toolName || "unknown";
+        if (!fullToolWidgets && !toolMessageNeedsFullWidget(message)) {
+          const durationMs =
+            typeof message.toolDetails?.durationMs === "number"
+              ? (message.toolDetails.durationMs as number)
+              : undefined;
+          return (
+            <CompactToolRow
+              toolName={toolName}
+              summary={getToolMessageSummary(toolName, message.toolArgs)}
+              durationMs={durationMs}
+            />
+          );
+        }
         const ToolRendererComponent = getToolRenderer(toolName);
         return (
           <ToolRendererComponent
@@ -720,21 +783,30 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
       }
 
       // Streaming draft — same visual as a settled assistant message.
-      // "streaming" label removed: TurnActivityIndicator already shows state.
+      // Continuation drafts (tail of a progressively committed response, or
+      // text resuming after tools) skip the header: it was already printed
+      // by the first committed piece.
       if (isDraft && message.role === "assistant") {
         const parts = parseContent(message.content);
+        const continuation = Boolean(message.isContinuation);
         return (
-          <Box flexDirection="column" marginBottom={1} marginTop={1}>
-            <Box gap={1}>
-              <Text color={t.success} bold>
-                Meer
-              </Text>
-              {message.timestamp ? (
-                <Text color="dim" dimColor>
-                  {formatTimestamp(message.timestamp)}
+          <Box
+            flexDirection="column"
+            marginBottom={1}
+            marginTop={continuation ? 0 : 1}
+          >
+            {!continuation && (
+              <Box gap={1}>
+                <Text color={t.success} bold>
+                  Meer
                 </Text>
-              ) : null}
-            </Box>
+                {message.timestamp ? (
+                  <Text color="dim" dimColor>
+                    {formatTimestamp(message.timestamp)}
+                  </Text>
+                ) : null}
+              </Box>
+            )}
             <Box flexDirection="column" paddingLeft={2}>
               {message.content.trim().length === 0 ? (
                 <Text color="dim">…</Text>
@@ -777,19 +849,26 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
       const isUser = message.role === "user";
       const roleColor = isUser ? t.accent : t.success;
       const roleName = isUser ? "You" : "Meer";
+      const continuation = message.role === "assistant" && Boolean(message.isContinuation);
 
       return (
-        <Box flexDirection="column" marginBottom={1} marginTop={1}>
-          <Box gap={1}>
-            <Text color={roleColor} bold>
-              {roleName}
-            </Text>
-            {message.timestamp && (
-              <Text color={t.muted} dimColor>
-                {formatTimestamp(message.timestamp)}
+        <Box
+          flexDirection="column"
+          marginBottom={1}
+          marginTop={continuation ? 0 : 1}
+        >
+          {!continuation && (
+            <Box gap={1}>
+              <Text color={roleColor} bold>
+                {roleName}
               </Text>
-            )}
-          </Box>
+              {message.timestamp && (
+                <Text color={t.muted} dimColor>
+                  {formatTimestamp(message.timestamp)}
+                </Text>
+              )}
+            </Box>
+          )}
           <Box flexDirection="column" paddingLeft={2}>
             {normalizedContent.length === 0 && (
               <Text color={t.muted}>…</Text>
@@ -816,7 +895,9 @@ const MessageView: React.FC<{ message: Message; isDraft?: boolean }> =
       prev.message.id === next.message.id &&
       prev.message.content === next.message.content &&
       prev.message.toolDetails === next.message.toolDetails &&
-      prev.isDraft === next.isDraft
+      prev.isDraft === next.isDraft &&
+      prev.fullToolWidgets === next.fullToolWidgets &&
+      prev.message.isContinuation === next.message.isContinuation
   );
 
 const formatTimestamp = (timestamp?: number): string => {
@@ -1209,11 +1290,32 @@ const WorkLogSection: React.FC<{
   const hasBackground = backgroundSessions.length > 0;
   const shouldShow = hasTools || hasBackground || timelineEvents.length > 0;
 
+  // Animate running rows: braille spinner plus live elapsed time. The ticker
+  // only runs while something is actually in flight.
+  const hasRunning =
+    tools.some((tool) => tool.status === "running" || tool.status === "pending") ||
+    backgroundSessions.some((session) => session.status === "running");
+  const [frame, setFrame] = useState(0);
+  useEffect(() => {
+    if (!hasRunning) {
+      return;
+    }
+    const timer = setInterval(() => {
+      setFrame((previous) => (previous + 1) % BRAILLE_FRAMES.length);
+    }, 120);
+    return () => clearInterval(timer);
+  }, [hasRunning]);
+
   if (!shouldShow) {
     return null;
   }
 
-  const rows = buildWorkRows({ timelineEvents, tools, backgroundSessions });
+  const rows = buildWorkRows({
+    timelineEvents,
+    tools,
+    backgroundSessions,
+    spinnerFrame: BRAILLE_FRAMES[frame],
+  });
   const activeBackground = backgroundSessions[0];
 
   return (
@@ -1863,7 +1965,6 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     );
   }
 
-  const compactHiddenToolCount = getCompactHiddenToolCount(visibleMessages);
   const activePlanTask =
     plan?.tasks.find((task) => task.status === "in_progress") ??
     plan?.tasks.find((task) => task.status === "pending");
@@ -1913,13 +2014,6 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                 </Text>
               </Box>
             )}
-            {!showTranscript && compactHiddenToolCount > 0 ? (
-              <Box marginBottom={1} marginLeft={2}>
-                <Text color="gray" dimColor>
-                  Compact view hid {compactHiddenToolCount} completed tool result{compactHiddenToolCount === 1 ? "" : "s"} · ^O transcript
-                </Text>
-              </Box>
-            ) : null}
             {showTranscript ? (
               <Box marginBottom={1} marginLeft={2}>
                 <Text color="yellow">
@@ -1980,6 +2074,7 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                           isDraft={Boolean(
                             draftAssistant && msg.id === draftAssistant.id
                           )}
+                          fullToolWidgets={showTranscript}
                         />
                       </RenderErrorBoundary>
                     )}
@@ -2023,7 +2118,10 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                               })
                             }
                           >
-                            <MessageView message={msg} />
+                            <MessageView
+                              message={msg}
+                              fullToolWidgets={showTranscript}
+                            />
                           </RenderErrorBoundary>
                         );
                       }}

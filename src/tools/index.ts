@@ -36,6 +36,9 @@ import type { Plan } from "../plan/types.js";
 import { planStore } from "../plan/store.js";
 import { formatErrorWithContext } from "../utils/errors.js";
 import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from "../utils/fetch.js";
+import { applyTextEdits, type TextEdit } from "./edit-engine.js";
+import { truncateHead, formatSize } from "./truncate.js";
+import { BoundedOutputBuffer } from "./output-accumulator.js";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const BRAVE_SEARCH_PORTAL_URL = "https://search.brave.com/search";
@@ -43,11 +46,28 @@ const MAX_BRAVE_RESULTS = 20;
 const COMMAND_RESULT_MAX_LINES = 2000;
 const COMMAND_RESULT_MAX_BYTES = 200 * 1024;
 const COMMAND_TAIL_LINES = 12;
+const READ_FILE_MAX_LINES = 2000;
+const READ_FILE_MAX_BYTES = 100 * 1024;
 
 const ANSI_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]/g;
 
 function stripAnsi(value: string): string {
   return value.replace(ANSI_PATTERN, "");
+}
+
+// The Ink TUI renders its own work log; raw console progress lines from tool
+// functions would leak through Ink's console patch as duplicate noise.
+let toolConsoleQuiet = false;
+
+/** Silence tool progress console output (set by the Ink chat UI). */
+export function setToolConsoleQuiet(quiet: boolean): void {
+  toolConsoleQuiet = quiet;
+}
+
+function toolLog(text: string): void {
+  if (!toolConsoleQuiet) {
+    console.log(text);
+  }
 }
 
 export interface ToolResult {
@@ -141,7 +161,11 @@ function resolvePath(path: string, cwd: string): string {
 /**
  * Tool: Read a file from the project
  */
-export function readFile(filepath: string, cwd: string): ToolResult {
+export function readFile(
+  filepath: string,
+  cwd: string,
+  options: { offset?: number; limit?: number } = {}
+): ToolResult {
   try {
     const fullPath = resolvePath(filepath, cwd);
 
@@ -154,11 +178,64 @@ export function readFile(filepath: string, cwd: string): ToolResult {
     }
 
     const content = readFileSync(fullPath, "utf-8");
-    const lines = content.split("\n").length;
+    const allLines = content.split("\n");
+    const totalLines = allLines.length;
+
+    // Apply offset/limit windowing (1-indexed offset)
+    const offset = Math.max(1, Math.floor(options.offset ?? 1));
+    if (offset > totalLines) {
+      return {
+        tool: "read_file",
+        result: "",
+        error: `Offset ${offset} is beyond the end of ${filepath} (${totalLines} lines).`,
+      };
+    }
+    const limit =
+      options.limit !== undefined && options.limit > 0
+        ? Math.floor(options.limit)
+        : undefined;
+    const windowed = allLines.slice(
+      offset - 1,
+      limit !== undefined ? offset - 1 + limit : undefined
+    );
+    const windowedContent = windowed.join("\n");
+
+    // Cap what goes into context; the model can paginate with offset/limit.
+    const truncation = truncateHead(windowedContent, {
+      maxLines: READ_FILE_MAX_LINES,
+      maxBytes: READ_FILE_MAX_BYTES,
+    });
+
+    const windowNote =
+      offset > 1 || limit !== undefined
+        ? ` [lines ${offset}-${offset - 1 + windowed.length} of ${totalLines}]`
+        : "";
+
+    let result = `File: ${filepath} (${totalLines} lines)${windowNote}\n\n${truncation.content}`;
+    if (truncation.truncated) {
+      const shownEnd = offset - 1 + truncation.outputLines;
+      result += `\n\n[Truncated: showing lines ${offset}-${shownEnd} of ${totalLines} (${
+        truncation.truncatedBy === "bytes"
+          ? `${formatSize(READ_FILE_MAX_BYTES)} limit`
+          : `${READ_FILE_MAX_LINES} line limit`
+      }). Use read_file with offset=${shownEnd + 1} to continue reading.]`;
+    }
 
     return {
       tool: "read_file",
-      result: `File: ${filepath} (${lines} lines)\n\n${content}`,
+      result,
+      details: truncation.truncated
+        ? {
+            truncation: {
+              truncated: true,
+              totalLines,
+              outputLines: truncation.outputLines,
+              totalBytes: truncation.totalBytes,
+              maxLines: READ_FILE_MAX_LINES,
+              maxBytes: READ_FILE_MAX_BYTES,
+            },
+          }
+        : undefined,
     };
   } catch (error) {
     return {
@@ -799,8 +876,8 @@ export async function runCommand(
   }
 
   if (!options?.silent && !useInlineUpdates) {
-    console.log(chalk.gray(`  🚀 Running: ${normalizedCommand}`));
-    console.log(chalk.gray(`  ⏱️  Timeout: ${timeoutMs / 1000}s`));
+    toolLog(chalk.gray(`  🚀 Running: ${normalizedCommand}`));
+    toolLog(chalk.gray(`  ⏱️  Timeout: ${timeoutMs / 1000}s`));
     console.log("");
   }
 
@@ -816,8 +893,15 @@ export async function runCommand(
       windowsHide: true,
     });
 
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
+    // Bounded buffers: keep a rolling tail in memory, spill complete output
+    // to a temp file when a command produces more than the cap.
+    const stdoutAcc = new BoundedOutputBuffer({
+      tempFilePrefix: "meer-command",
+    });
+    const stderrAcc = new BoundedOutputBuffer({
+      maxTailBytes: 256 * 1024,
+      tempFilePrefix: "meer-command-stderr",
+    });
     let didTimeout = false;
     let didCancel = false;
     let settled = false;
@@ -859,7 +943,10 @@ export async function runCommand(
         | "cancelled" = "running"
     ) => {
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
-      const combined = [stdoutBuffer, stderrBuffer].filter(Boolean).join("\n").trim();
+      const combined = [stdoutAcc.tailText, stderrAcc.tailText]
+        .filter(Boolean)
+        .join("\n")
+        .trim();
       const lines = combined.split("\n").filter(Boolean);
       const tail = lines.slice(-12).join("\n");
       return [
@@ -985,7 +1072,7 @@ export async function runCommand(
 
     const handleStdout = (chunk: Buffer) => {
       const text = stripAnsi(chunk.toString());
-      stdoutBuffer += text;
+      stdoutAcc.append(text);
       if (useInlineUpdates) {
         scheduleUpdate();
       } else if (!options?.silent) {
@@ -995,7 +1082,7 @@ export async function runCommand(
 
     const handleStderr = (chunk: Buffer) => {
       const text = stripAnsi(chunk.toString());
-      stderrBuffer += text;
+      stderrAcc.append(text);
       if (useInlineUpdates) {
         scheduleUpdate();
       } else if (!options?.silent) {
@@ -1029,6 +1116,10 @@ export async function runCommand(
       // Detach streams so descendants holding inherited fds can't keep us alive.
       child.stdout?.destroy();
       child.stderr?.destroy();
+      // Flush spill files (if any); writes were already queued so this is safe
+      // to fire-and-forget.
+      void stdoutAcc.close();
+      void stderrAcc.close();
 
       const elapsed = Math.floor((Date.now() - startTime) / 1000);
       onUpdate?.(`${buildProgress(state)}\n${state} in ${elapsed}s`);
@@ -1051,9 +1142,12 @@ export async function runCommand(
       const snapshot = buildCommandOutputSnapshot({
         command: normalizedCommand,
         cwd,
-        stdout: stdoutBuffer,
-        stderr: stderrBuffer,
+        stdout: stdoutAcc.tailText,
+        stderr: stderrAcc.tailText,
         outputText,
+        outputTotalBytes: stdoutAcc.totalBytes,
+        outputTotalLines: stdoutAcc.totalLines,
+        spilledOutputPath: stdoutAcc.fullOutputPath,
         startTime,
         timeoutMs,
         ...metadata,
@@ -1073,7 +1167,7 @@ export async function runCommand(
 
       if (didCancel) {
         finalize(
-          buildResult(stdoutBuffer, {
+          buildResult(stdoutAcc.tailText, {
             state: "cancelled",
             exitCode: code,
             signal,
@@ -1086,7 +1180,7 @@ export async function runCommand(
 
       if (didTimeout) {
         finalize(
-          buildResult(stdoutBuffer, {
+          buildResult(stdoutAcc.tailText, {
             state: "timed_out",
             exitCode: code,
             signal,
@@ -1099,7 +1193,7 @@ export async function runCommand(
 
       if (signal && signal !== "SIGTERM") {
         finalize(
-          buildResult(stdoutBuffer, {
+          buildResult(stdoutAcc.tailText, {
             state: "failed",
             exitCode: code,
             signal,
@@ -1113,7 +1207,7 @@ export async function runCommand(
       if (code === 0) {
         ProjectContextManager.getInstance().invalidate(cwd);
         finalize(
-          buildResult(stdoutBuffer || "Command executed successfully.", {
+          buildResult(stdoutAcc.tailText || "Command executed successfully.", {
             state: "completed",
             exitCode: code,
             signal,
@@ -1124,14 +1218,14 @@ export async function runCommand(
       }
 
       // Many tools exit non-zero to signal findings (npm audit, eslint, tsc).
-      const stderrText = stderrBuffer.trim();
-      if (stdoutBuffer.trim()) {
+      const stderrText = stderrAcc.tailText.trim();
+      if (stdoutAcc.tailText.trim()) {
         ProjectContextManager.getInstance().invalidate(cwd);
         const exitNote = stderrText
           ? `\n[exit ${code}: ${stderrText}]`
           : `\n[exit ${code}]`;
         finalize(
-          buildResult(stdoutBuffer + exitNote, {
+          buildResult(stdoutAcc.tailText + exitNote, {
             state: "failed",
             exitCode: code,
             signal,
@@ -1146,7 +1240,7 @@ export async function runCommand(
           ? `Command failed (exit ${code}): ${stderrText}`
           : `Command failed with exit code ${code}.`;
       finalize(
-        buildResult(stdoutBuffer, {
+        buildResult(stdoutAcc.tailText, {
           state: "failed",
           exitCode: code,
           signal,
@@ -1168,7 +1262,7 @@ export async function runCommand(
         error instanceof Error ? error.message : String(error)
       }`;
       finalize(
-        buildResult(stdoutBuffer, {
+        buildResult(stdoutAcc.tailText, {
           state: "failed",
           error: errorMessage,
         }),
@@ -1210,6 +1304,11 @@ function buildCommandOutputSnapshot(input: {
   stdout: string;
   stderr: string;
   outputText: string;
+  /** True total bytes/lines produced (the in-memory tail may be smaller) */
+  outputTotalBytes?: number;
+  outputTotalLines?: number;
+  /** Spill file already containing the complete output, if the command exceeded the in-memory cap */
+  spilledOutputPath?: string;
   startTime: number;
   timeoutMs: number;
   state: "completed" | "failed" | "timed_out" | "cancelled";
@@ -1218,24 +1317,36 @@ function buildCommandOutputSnapshot(input: {
   error?: string;
 }): CommandOutputSnapshot {
   const outputText = input.outputText || "";
-  const outputBytes = Buffer.byteLength(outputText, "utf8");
-  const outputLines = outputText.split("\n").length;
+  const outputBytes = Math.max(
+    Buffer.byteLength(outputText, "utf8"),
+    input.outputTotalBytes ?? 0
+  );
+  const outputLines = Math.max(
+    outputText.split("\n").length,
+    input.outputTotalLines ?? 0
+  );
   const truncated =
     outputBytes > COMMAND_RESULT_MAX_BYTES || outputLines > COMMAND_RESULT_MAX_LINES;
   let resultText = outputText;
   let fullOutputPath: string | undefined;
 
   if (truncated) {
-    fullOutputPath = join(
-      tmpdir(),
-      `meer-command-${Date.now()}-${Math.random().toString(36).slice(2)}.log`
-    );
-    writeFileSync(fullOutputPath, outputText, "utf8");
+    if (input.spilledOutputPath) {
+      // Complete output was already streamed to disk by the bounded buffer.
+      fullOutputPath = input.spilledOutputPath;
+    } else {
+      fullOutputPath = join(
+        tmpdir(),
+        `meer-command-${Date.now()}-${Math.random().toString(36).slice(2)}.log`
+      );
+      writeFileSync(fullOutputPath, outputText, "utf8");
+    }
     const lines = outputText.split("\n");
+    const shownLines = Math.min(lines.length, COMMAND_RESULT_MAX_LINES);
     resultText = [
       ...lines.slice(-COMMAND_RESULT_MAX_LINES),
       "",
-      `[Showing last ${COMMAND_RESULT_MAX_LINES} of ${outputLines} lines. Full output: ${fullOutputPath}]`,
+      `[Showing last ${shownLines} of ${outputLines} lines. Full output: ${fullOutputPath}]`,
     ].join("\n");
   }
 
@@ -1346,8 +1457,8 @@ export function scaffoldProject(
         };
     }
 
-    console.log(chalk.gray(`  🏗️  Scaffolding ${description}: ${projectName}`));
-    console.log(chalk.gray(`  🚀 Running: ${command}`));
+    toolLog(chalk.gray(`  🏗️  Scaffolding ${description}: ${projectName}`));
+    toolLog(chalk.gray(`  🚀 Running: ${command}`));
 
     const result = execSync(command, {
       cwd,
@@ -1574,7 +1685,7 @@ export function findFiles(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  🔍 Finding files matching: ${pattern}`));
+    toolLog(chalk.gray(`  🔍 Finding files matching: ${pattern}`));
 
     const searchPattern = pattern.includes("*") ? pattern : `**/${pattern}`;
     const ignorePatterns = options.excludePattern
@@ -1633,7 +1744,7 @@ export function readManyFiles(
   maxFiles: number = 10
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  📚 Reading ${filePaths.length} files`));
+    toolLog(chalk.gray(`  📚 Reading ${filePaths.length} files`));
 
     if (filePaths.length > maxFiles) {
       return {
@@ -1692,7 +1803,7 @@ export function searchText(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  🔎 Searching for: "${searchTerm}"`));
+    toolLog(chalk.gray(`  🔎 Searching for: "${searchTerm}"`));
 
     const searchPattern =
       options.filePattern ||
@@ -1782,7 +1893,7 @@ export function grep(
     }
 
     if (!options.silent) {
-      console.log(chalk.gray(`  🔎 Searching in ${filepath} for: "${pattern}"`));
+      toolLog(chalk.gray(`  🔎 Searching in ${filepath} for: "${pattern}"`));
     }
 
     const content = readFileSync(fullPath, "utf-8");
@@ -1984,49 +2095,40 @@ export function editSection(
   cwd: string,
   options: { validateSyntax?: boolean } = {}
 ): FileEdit {
+  return editFileSections(filepath, [{ oldText, newText }], cwd, options);
+}
+
+/**
+ * Tool: Apply one or more targeted text replacements to an existing file.
+ *
+ * Matching is robust against CRLF/LF differences, UTF-8 BOM, trailing
+ * whitespace, and Unicode quote/dash variants (fuzzy fallback). The written
+ * file keeps its original BOM and line endings.
+ */
+export function editFileSections(
+  filepath: string,
+  edits: TextEdit[],
+  cwd: string,
+  options: { validateSyntax?: boolean } = {}
+): FileEdit {
   const fullPath = resolvePath(filepath, cwd);
 
   // File must exist for section editing
   if (!existsSync(fullPath)) {
     throw new Error(
       `File not found: ${filepath}. ` +
-      `edit_section only works on existing files. ` +
-      `Use write_file or propose_edit to create new files.`
+      `edit_file only works on existing files. ` +
+      `Use propose_edit to create new files.`
     );
   }
 
   const content = readFileSync(fullPath, 'utf-8');
-
-  // Validate that old text exists in the file
-  if (!content.includes(oldText)) {
-    // Provide helpful error with context
-    const lines = content.split('\n');
-    const preview = lines.slice(0, 5).join('\n');
-    throw new Error(
-      `Exact match not found in ${filepath}.\n\n` +
-      `The old_text must match exactly (including whitespace and indentation).\n\n` +
-      `File preview (first 5 lines):\n${preview}\n\n` +
-      `Hint: Use read_file or grep to get the exact text before using edit_section.`
-    );
-  }
-
-  // Count occurrences to ensure uniqueness
-  const occurrences = content.split(oldText).length - 1;
-  if (occurrences > 1) {
-    throw new Error(
-      `Found ${occurrences} matches for the old_text in ${filepath}. ` +
-      `The old_text must be unique. ` +
-      `Please provide more surrounding context to make it unique.`
-    );
-  }
-
-  // Replace the section
-  const newContent = content.replace(oldText, newText);
+  const applied = applyTextEdits(content, edits, filepath);
 
   // Optional syntax validation (enabled by default for code files)
   const shouldValidate = options.validateSyntax !== false && isCodeFile(fullPath);
   if (shouldValidate) {
-    const validation = validateSyntaxInternal(fullPath, newContent, cwd);
+    const validation = validateSyntaxInternal(fullPath, applied.newContent, cwd);
     if (!validation.valid) {
       throw new Error(
         `Syntax validation failed for ${filepath}:\n` +
@@ -2036,18 +2138,13 @@ export function editSection(
     }
   }
 
-  // Calculate what changed for description
-  const oldLines = oldText.split('\n').length;
-  const newLines = newText.split('\n').length;
-  const changeDesc = oldLines === newLines
-    ? `${oldLines} line(s)`
-    : `${oldLines} → ${newLines} line(s)`;
-
+  const editCount = edits.length;
+  const fuzzyNote = applied.usedFuzzyMatch ? ", fuzzy-matched" : "";
   return {
     path: filepath,
-    oldContent: content,
-    newContent,
-    description: `Edit section in ${filepath} (${changeDesc})`,
+    oldContent: applied.oldContent,
+    newContent: applied.newContent,
+    description: `Edit ${filepath} (${editCount} replacement${editCount === 1 ? "" : "s"}${fuzzyNote})`,
   };
 }
 
@@ -2064,7 +2161,7 @@ export function readFolder(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  📁 Reading folder: ${folderPath}`));
+    toolLog(chalk.gray(`  📁 Reading folder: ${folderPath}`));
 
     const fullPath = resolvePath(folderPath, cwd);
     if (!existsSync(fullPath)) {
@@ -2161,7 +2258,7 @@ export async function googleSearch(
   )}`;
 
   try {
-    console.log(chalk.gray(`  🌐 Searching the web for: "${query}"`));
+    toolLog(chalk.gray(`  🌐 Searching the web for: "${query}"`));
 
     const apiKey = process.env.BRAVE_API_KEY;
 
@@ -2269,7 +2366,7 @@ export function webFetch(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  🌐 Fetching: ${url}`));
+    toolLog(chalk.gray(`  🌐 Fetching: ${url}`));
 
     // Note: This is a placeholder implementation
     // In a real implementation, you would use a proper HTTP client like axios or fetch
@@ -2306,7 +2403,7 @@ export function saveMemory(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  💾 Saving memory: ${key}`));
+    toolLog(chalk.gray(`  💾 Saving memory: ${key}`));
 
     // Create memory directory if it doesn't exist
     const memoryDir = join(cwd, ".meer-memory");
@@ -2350,7 +2447,7 @@ export function saveMemory(
  */
 export function loadMemory(key: string, cwd: string): ToolResult {
   try {
-    console.log(chalk.gray(`  📖 Loading memory: ${key}`));
+    toolLog(chalk.gray(`  📖 Loading memory: ${key}`));
 
     const memoryDir = join(cwd, ".meer-memory");
     const memoryFile = join(
@@ -2396,7 +2493,7 @@ export function loadMemory(key: string, cwd: string): ToolResult {
 export function gitStatus(cwd: string, options: { silent?: boolean } = {}): ToolResult {
   try {
     if (!options.silent) {
-      console.log(chalk.gray(`  📊 Checking git status`));
+      toolLog(chalk.gray(`  📊 Checking git status`));
     }
 
     // Check if we're in a git repository
@@ -2614,7 +2711,7 @@ export function gitLog(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  📜 Fetching git commit history`));
+    toolLog(chalk.gray(`  📜 Fetching git commit history`));
 
     // Check if we're in a git repository
     try {
@@ -2698,7 +2795,7 @@ export function gitCommit(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  💾 Creating git commit`));
+    toolLog(chalk.gray(`  💾 Creating git commit`));
 
     // Check if we're in a git repository
     try {
@@ -2804,7 +2901,7 @@ export function gitBranch(
 
     // Create new branch
     if (options.create) {
-      console.log(chalk.gray(`  🌿 Creating branch: ${options.create}`));
+      toolLog(chalk.gray(`  🌿 Creating branch: ${options.create}`));
       execSync(`git branch "${options.create}"`, { cwd, stdio: "pipe" });
       return {
         tool: "git_branch",
@@ -2814,7 +2911,7 @@ export function gitBranch(
 
     // Switch branch
     if (options.switch) {
-      console.log(chalk.gray(`  🔀 Switching to branch: ${options.switch}`));
+      toolLog(chalk.gray(`  🔀 Switching to branch: ${options.switch}`));
       execSync(`git checkout "${options.switch}"`, { cwd, stdio: "pipe" });
       ProjectContextManager.getInstance().invalidate(cwd);
       return {
@@ -2825,7 +2922,7 @@ export function gitBranch(
 
     // Delete branch
     if (options.delete) {
-      console.log(chalk.gray(`  🗑️  Deleting branch: ${options.delete}`));
+      toolLog(chalk.gray(`  🗑️  Deleting branch: ${options.delete}`));
       execSync(`git branch -d "${options.delete}"`, { cwd, stdio: "pipe" });
       return {
         tool: "git_branch",
@@ -2834,7 +2931,7 @@ export function gitBranch(
     }
 
     // List branches (default)
-    console.log(chalk.gray(`  🌿 Listing branches`));
+    toolLog(chalk.gray(`  🌿 Listing branches`));
     const branches = execSync("git branch -a", {
       cwd,
       encoding: "utf-8",
@@ -2878,7 +2975,7 @@ export function writeFile(
   cwd: string
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  ✍️  Writing file: ${filepath}`));
+    toolLog(chalk.gray(`  ✍️  Writing file: ${filepath}`));
 
     const fullPath = resolvePath(filepath, cwd);
     const dir = dirname(fullPath);
@@ -2934,7 +3031,7 @@ export function writeFile(
  */
 export function deleteFile(filepath: string, cwd: string): ToolResult {
   try {
-    console.log(chalk.gray(`  🗑️  Deleting file: ${filepath}`));
+    toolLog(chalk.gray(`  🗑️  Deleting file: ${filepath}`));
 
     const fullPath = resolvePath(filepath, cwd);
 
@@ -2981,7 +3078,7 @@ export function moveFile(
   cwd: string
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  📦 Moving: ${sourcePath} → ${destPath}`));
+    toolLog(chalk.gray(`  📦 Moving: ${sourcePath} → ${destPath}`));
 
     const fullSourcePath = resolvePath(sourcePath, cwd);
     const fullDestPath = resolvePath(destPath, cwd);
@@ -3022,7 +3119,7 @@ export function moveFile(
  */
 export function createDirectory(dirpath: string, cwd: string): ToolResult {
   try {
-    console.log(chalk.gray(`  📁 Creating directory: ${dirpath}`));
+    toolLog(chalk.gray(`  📁 Creating directory: ${dirpath}`));
 
     const fullPath = resolvePath(dirpath, cwd);
 
@@ -3067,7 +3164,7 @@ export function packageInstall(
     const manager = options.manager || detectPackageManager(cwd);
     const pkgList = packages.join(" ");
 
-    console.log(chalk.gray(`  📦 Installing packages with ${manager}: ${pkgList}`));
+    toolLog(chalk.gray(`  📦 Installing packages with ${manager}: ${pkgList}`));
 
     let command = "";
     switch (manager) {
@@ -3113,7 +3210,7 @@ export function packageRunScript(
 ): ToolResult {
   try {
     const manager = options.manager || detectPackageManager(cwd);
-    console.log(chalk.gray(`  🚀 Running script with ${manager}: ${script}`));
+    toolLog(chalk.gray(`  🚀 Running script with ${manager}: ${script}`));
 
     let command = "";
     switch (manager) {
@@ -3233,7 +3330,7 @@ export function packageList(
     }
 
     if (options.outdated) {
-      console.log(chalk.gray(`  📋 Checking for outdated packages`));
+      toolLog(chalk.gray(`  📋 Checking for outdated packages`));
       const result = execSync("npm outdated", { cwd, encoding: "utf-8", stdio: "pipe" });
       return {
         tool: "package_list",
@@ -3280,7 +3377,7 @@ export function packageList(
  */
 export function getEnv(key: string, cwd: string): ToolResult {
   try {
-    console.log(chalk.gray(`  🔑 Reading environment variable: ${key}`));
+    toolLog(chalk.gray(`  🔑 Reading environment variable: ${key}`));
 
     // Try to read from process.env first
     const value = process.env[key];
@@ -3328,7 +3425,7 @@ export function getEnv(key: string, cwd: string): ToolResult {
  */
 export function setEnv(key: string, value: string, cwd: string): ToolResult {
   try {
-    console.log(chalk.gray(`  🔑 Setting environment variable: ${key}`));
+    toolLog(chalk.gray(`  🔑 Setting environment variable: ${key}`));
 
     const envPath = join(cwd, ".env");
     let envContent = "";
@@ -3374,7 +3471,7 @@ export function setEnv(key: string, value: string, cwd: string): ToolResult {
  */
 export function listEnv(cwd: string): ToolResult {
   try {
-    console.log(chalk.gray(`  🔑 Listing environment variables`));
+    toolLog(chalk.gray(`  🔑 Listing environment variables`));
 
     const envPath = join(cwd, ".env");
     if (!existsSync(envPath)) {
@@ -3429,7 +3526,7 @@ export async function httpRequest(
   } = {}
 ): Promise<ToolResult> {
   try {
-    console.log(chalk.gray(`  🌐 Making ${options.method || "GET"} request to: ${url}`));
+    toolLog(chalk.gray(`  🌐 Making ${options.method || "GET"} request to: ${url}`));
 
     const response = await fetchWithTimeout(url, {
       method: options.method || "GET",
@@ -3502,7 +3599,7 @@ export function getFileOutline(filepath: string, cwd: string): ToolResult {
       };
     }
 
-    console.log(chalk.gray(`  📋 Getting outline for: ${filepath}`));
+    toolLog(chalk.gray(`  📋 Getting outline for: ${filepath}`));
 
     const content = readFileSync(fullPath, "utf-8");
     const ext = filepath.toLowerCase();
@@ -3687,7 +3784,7 @@ export function findSymbolDefinition(
   } = {}
 ): ToolResult {
   try {
-    console.log(chalk.gray(`  🔍 Finding definition of: ${symbol}`));
+    toolLog(chalk.gray(`  🔍 Finding definition of: ${symbol}`));
 
     const searchPattern =
       options.filePattern || "**/*.{js,ts,jsx,tsx}";
@@ -3770,7 +3867,7 @@ export function checkSyntax(filepath: string, cwd: string): ToolResult {
       };
     }
 
-    console.log(chalk.gray(`  ✓ Checking syntax: ${filepath}`));
+    toolLog(chalk.gray(`  ✓ Checking syntax: ${filepath}`));
 
     const content = readFileSync(fullPath, "utf-8");
     const ext = filepath.toLowerCase();
@@ -3889,7 +3986,7 @@ export function validateProject(
 
     // Detect project type
     const projectInfo = detectProjectType(cwd);
-    console.log(chalk.gray(`    ↳ Detected: ${projectInfo.type} project`));
+    toolLog(chalk.gray(`    ↳ Detected: ${projectInfo.type} project`));
 
     if (projectInfo.type === "unknown") {
       return {
@@ -3902,7 +3999,7 @@ export function validateProject(
     // Helper to run command and capture output
     const runValidation = (command: string, name: string): boolean => {
       try {
-        console.log(chalk.gray(`    ↳ Running ${name}...`));
+        toolLog(chalk.gray(`    ↳ Running ${name}...`));
         execSync(command, {
           cwd,
           encoding: "utf-8",

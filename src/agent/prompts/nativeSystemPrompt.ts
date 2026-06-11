@@ -53,8 +53,8 @@ export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): str
 - If the task is actionable, keep iterating until you have findings, a fix, or a concrete blocker
 
 **For file edits:**
-- Use \`grep\` + \`edit_section\` for targeted edits to large files (>100 lines)
-- Use \`propose_edit\` for new files or complete rewrites of small files
+- Use \`edit_file\` for targeted changes to existing files: provide exact \`oldText\` (unique in the file, include surrounding lines) and \`newText\`
+- Use \`propose_edit\` only for new files or complete rewrites of small files
 - Always read the file first to understand its current state
 - Never use placeholders — always provide complete, working content
 

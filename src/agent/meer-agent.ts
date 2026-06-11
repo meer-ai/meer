@@ -415,8 +415,20 @@ export class MeerAgent {
             throw abortError;
           }
 
-          if (loopError && !finalAssistantText) {
-            throw loopError;
+          // TS can't see the emit-closure assignment, so read through a copy.
+          const streamFailure = loopError as Error | null;
+          if (streamFailure) {
+            if (!finalAssistantText) {
+              throw streamFailure;
+            }
+            // The stream failed after partial output. Don't report the turn as
+            // a clean success — append a visible notice so the user knows the
+            // response is incomplete and why.
+            const notice = `\n\n[Provider error after partial response: ${streamFailure.message}. The answer above may be incomplete — send a follow-up to continue.]`;
+            finalAssistantText = `${finalAssistantText}${notice}`;
+            this.config.onStreamingStart?.();
+            this.config.onStreamingChunk?.(notice);
+            this.config.onStreamingEnd?.();
           }
 
           const lastAssistantMessage = [...newMessages]
@@ -440,7 +452,7 @@ export class MeerAgent {
               message.content.trim().length > 0
           );
           if (!finalAssistantText && lastMsg?.role === "tool_result") {
-            if (this.config.maxIterations) {
+            if (this.config.maxIterations && turnCount >= this.config.maxIterations) {
               const limit = this.config.maxIterations;
               finalAssistantText = `Reached the configured safety limit of ${limit} turns. The task may be incomplete — send a follow-up message to continue.`;
               this.config.onStreamingStart?.();
@@ -456,6 +468,19 @@ export class MeerAgent {
             this.config.onStreamingStart?.();
             this.config.onStreamingChunk?.(finalAssistantText);
             this.config.onStreamingEnd?.();
+          }
+
+          // Tools ran but the model never produced a final response (some
+          // providers return empty content after tool results). Without this
+          // notice the turn ends in dead silence — the #1 "meer suddenly
+          // stopped working" report.
+          if (!finalAssistantText && hadToolCalls) {
+            finalAssistantText =
+              "The model ended the turn after running tools without a final response. This usually means the provider returned empty content — send a follow-up (e.g. “continue”) to keep going.";
+            this.config.onStreamingStart?.();
+            this.config.onStreamingChunk?.(finalAssistantText);
+            this.config.onStreamingEnd?.();
+            streamStarted = false;
           }
 
           // If the model opened with text before calling tools (e.g. "## List"),
