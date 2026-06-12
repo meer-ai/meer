@@ -1673,6 +1673,16 @@ export const MeerChat: React.FC<MeerChatProps> = ({
     return liveDraftMessage ? [...transcript, liveDraftMessage] : transcript;
   }, [visibleMessages, showTranscript, liveDraftMessage]);
 
+  // <Static> tracks rendered items by COUNT, not identity. When the adapter
+  // trims old messages, a same-length array would make Static silently skip
+  // every new message — pad the front with one placeholder per dropped
+  // message so the item list only ever grows.
+  const staticTranscriptItems = useMemo(() => {
+    if (droppedMessageCount <= 0) return visibleMessages;
+    const placeholders: (Message | null)[] = new Array(droppedMessageCount).fill(null);
+    return [...placeholders, ...visibleMessages];
+  }, [visibleMessages, droppedMessageCount]) as (Message | null)[];
+
   const scrollWindowSize = Math.max(1, Math.min(displayMessages.length, terminalHeight * 3));
   const maxScrollOffset = Math.max(0, displayMessages.length - scrollWindowSize);
 
@@ -1983,6 +1993,53 @@ export const MeerChat: React.FC<MeerChatProps> = ({
 
   return (
     <Box flexDirection="column" height="100%" width="100%">
+      {/* Settled messages are committed to terminal scrollback exactly once
+          via <Static>. Without this, every live re-render (running tool
+          ticks, status updates) pushes the live region's overflow into
+          scrollback, producing the visible stutter where the user message
+          and tool widgets get re-printed each frame.
+          <Static> MUST be a top-level child: nested inside the flexGrow/
+          minHeight:0 transcript columns its absolutely-positioned box
+          computes width 0 at commit time and every message renders as blank
+          lines (the 2026-06-12 "prompts disappear" bug).
+          We pass the unfiltered messages so Static's append-only contract
+          holds even when transcript mode toggles; per-message visibility is
+          decided inline. */}
+      {!virtualizeHistory ? (
+        <Static items={staticTranscriptItems}>
+          {(msg, staticIndex) => {
+            if (msg === null) {
+              // Placeholder for a trimmed message — keeps Static's
+              // count-based index aligned; never normally rendered.
+              return <Box key={`dropped-${staticIndex}`} />;
+            }
+            const visible =
+              showTranscript || shouldRenderTranscriptMessage(msg);
+            if (!visible) {
+              return <Box key={msg.id ?? `msg-${msg.timestamp ?? ""}`} />;
+            }
+            return (
+              <RenderErrorBoundary
+                key={msg.id ?? `msg-${msg.timestamp ?? ""}`}
+                label={
+                  msg.role === "tool"
+                    ? `tool ${msg.toolName ?? "unknown"}`
+                    : `${msg.role} message`
+                }
+                onError={(error) =>
+                  recordDiagnostic("ui.MessageView", error, {
+                    messageId: msg.id,
+                    role: msg.role,
+                    toolName: msg.toolName,
+                  })
+                }
+              >
+                <MessageView message={msg} fullToolWidgets={showTranscript} />
+              </RenderErrorBoundary>
+            );
+          }}
+        </Static>
+      ) : null}
       <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
         {messages.length === 0 ? (
           <Box flexDirection="column" justifyContent="center" flexGrow={1}>
@@ -2081,51 +2138,9 @@ export const MeerChat: React.FC<MeerChatProps> = ({
                   />
                 ) : (
                   <>
-                    {/* Settled messages are committed to terminal scrollback
-                        exactly once via <Static>. Without this, every live
-                        re-render (running tool ticks, status updates) pushes
-                        the live region's overflow into scrollback, producing
-                        the visible stutter where the user message and tool
-                        widgets get re-printed each frame.
-                        We pass the unfiltered messages so Static's
-                        append-only contract holds even when transcript mode
-                        toggles; per-message visibility is decided inline. */}
-                    <Static items={visibleMessages}>
-                      {(msg) => {
-                        const visible =
-                          showTranscript ||
-                          shouldRenderTranscriptMessage(msg);
-                        if (!visible) {
-                          return (
-                            <Box
-                              key={msg.id ?? `msg-${msg.timestamp ?? ""}`}
-                            />
-                          );
-                        }
-                        return (
-                          <RenderErrorBoundary
-                            key={msg.id ?? `msg-${msg.timestamp ?? ""}`}
-                            label={
-                              msg.role === "tool"
-                                ? `tool ${msg.toolName ?? "unknown"}`
-                                : `${msg.role} message`
-                            }
-                            onError={(error) =>
-                              recordDiagnostic("ui.MessageView", error, {
-                                messageId: msg.id,
-                                role: msg.role,
-                                toolName: msg.toolName,
-                              })
-                            }
-                          >
-                            <MessageView
-                              message={msg}
-                              fullToolWidgets={showTranscript}
-                            />
-                          </RenderErrorBoundary>
-                        );
-                      }}
-                    </Static>
+                    {/* Settled messages live in the top-level <Static> block
+                        (first child of the root Box) — only the in-progress
+                        draft renders here in the live region. */}
                     {liveDraftMessage ? (
                       <RenderErrorBoundary
                         label="streaming assistant"

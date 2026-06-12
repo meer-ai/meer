@@ -19,6 +19,9 @@ import { createRunCommand } from "./commands/run.js";
 import { SessionTracker } from "./session/tracker.js";
 import { ChatBoxUI } from "./ui/chatbox.js";
 import { InkChatAdapter } from "./ui/ink/index.js";
+import { TuiChatAdapter } from "./ui/tui-adapter/TuiChatAdapter.js";
+import type { ChatAdapter } from "./ui/chat-adapter.js";
+import { resolveUISettings } from "./ui/ui-settings.js";
 import { setVerboseLogging } from "./logger.js";
 import { ProjectContextManager } from "./context/manager.js";
 import { planStore } from "./plan/store.js";
@@ -103,7 +106,7 @@ function emitQueueChanges(
  */
 async function runBashModeCommand(
   command: string,
-  chatUI: import("./ui/ink/InkChatAdapter.js").InkChatAdapter | null
+  chatUI: import("./ui/chat-adapter.js").ChatAdapter | null
 ): Promise<void> {
   const { runCommand } = await import("./tools/index.js");
   chatUI?.appendSystemMessage(`$ ${command}`);
@@ -415,14 +418,20 @@ export function createCLI(): Command {
           }
         };
 
-        const chatUI = useTui
-          ? new InkChatAdapter({
-              provider: providerType,
-              model: config.model,
-              cwd: currentCwd,
-              uiSettings: config.ui,
-              eventBus,
-            })
+        const chatUI: ChatAdapter | null = useTui
+          ? resolveUISettings(config.ui).renderer === "tui"
+            ? new TuiChatAdapter({
+                provider: providerType,
+                model: config.model,
+                cwd: currentCwd,
+              })
+            : new InkChatAdapter({
+                provider: providerType,
+                model: config.model,
+                cwd: currentCwd,
+                uiSettings: config.ui,
+                eventBus,
+              })
           : null;
 
         if (chatUI && restoredTranscript?.length) {

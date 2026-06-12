@@ -34,7 +34,8 @@ import {
 } from "../slash/registry.js";
 import type { SlashCommandDefinition } from "../slash/schema.js";
 import { renderSlashTemplate } from "../slash/template.js";
-import type { InkChatAdapter, UITimelineEvent } from "../ui/ink/index.js";
+import type { UITimelineEvent } from "../ui/ink/index.js";
+import type { ChatAdapter } from "../ui/chat-adapter.js";
 import type { AgentEventRecorder } from "../agent/eventRecorder.js";
 import { backgroundTerminals } from "../runtime/backgroundTerminals.js";
 import { loadSkillsForCwd } from "../skills/index.js";
@@ -57,7 +58,7 @@ interface SlashCommandContext {
   rawInput: string;
   config: any;
   sessionTracker?: SessionTracker;
-  tui?: InkChatAdapter | null;
+  tui?: ChatAdapter | null;
   eventRecorder?: AgentEventRecorder | null;
 }
 
@@ -139,7 +140,7 @@ function tokenizeCommandLine(input: string): string[] {
 export async function runStandaloneCommand(
   factory: () => Command,
   args: string[] = [],
-  tui?: InkChatAdapter | null
+  tui?: ChatAdapter | null
 ): Promise<void> {
   const showError = (msg: string) => {
     const clean = msg.trim();
@@ -213,7 +214,7 @@ const parseToggleMode = (value?: string): ToggleMode | null => {
 const ensureTui = (
   context: SlashCommandContext,
   feature: string
-): InkChatAdapter | null => {
+): ChatAdapter | null => {
   if (context.tui) return context.tui;
   console.log(
     chalk.yellow(
@@ -293,7 +294,7 @@ function formatSkillDiagnostic(diagnostic: SkillDiagnostic): string {
   return `${diagnostic.source}:${diagnostic.code} ${diagnostic.path} - ${diagnostic.message}`;
 }
 
-async function handleSkillsCommand(tui?: InkChatAdapter | null): Promise<void> {
+async function handleSkillsCommand(tui?: ChatAdapter | null): Promise<void> {
   const result = await loadSkillsForCwd(process.cwd());
   const lines: string[] = [];
   lines.push(`Skills: ${result.skills.length}`);
@@ -362,7 +363,7 @@ export function parseTokenBudget(input: string): number | null {
  */
 async function writeDiagnosticsDump(args: {
   config: any;
-  tui?: InkChatAdapter | null;
+  tui?: ChatAdapter | null;
 }): Promise<{ path: string; copied: boolean }> {
   const { config, tui } = args;
   const tsLabel = new Date().toISOString().replace(/[:.]/g, "-");
@@ -541,7 +542,7 @@ async function handleAccountCommand(): Promise<void> {
 }
 
 async function promptResumeSession(
-  tui?: InkChatAdapter | null
+  tui?: ChatAdapter | null
 ): Promise<string | null> {
   const sessions = memory.listSessions(process.cwd()).slice(0, 20);
   if (sessions.length === 0) {
@@ -657,7 +658,7 @@ When working with this codebase:
   }
 }
 
-async function handleModelCommand(config: any, tui?: InkChatAdapter | null): Promise<void> {
+async function handleModelCommand(config: any, tui?: ChatAdapter | null): Promise<void> {
   try {
     const provider = config.provider;
 
@@ -773,7 +774,7 @@ async function handleModelCommand(config: any, tui?: InkChatAdapter | null): Pro
   }
 }
 
-async function handleProviderCommand(tui?: InkChatAdapter | null): Promise<void> {
+async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
   try {
     const { readFileSync, writeFileSync, existsSync } = await import("fs");
     const configPath = join(homedir(), ".meer", "config.yaml");
@@ -1440,7 +1441,7 @@ export async function handleSlashCommand(
   command: string,
   config: any,
   sessionTracker?: SessionTracker,
-  tui?: InkChatAdapter | null,
+  tui?: ChatAdapter | null,
   eventRecorder?: AgentEventRecorder | null
 ): Promise<SlashCommandResult> {
   const { command: name, args, argsText } = parseSlashInput(command);

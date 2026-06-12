@@ -1,0 +1,268 @@
+/**
+ * Verifies the pi-tui chat renderer (TuiChatAdapter) end to end.
+ *
+ * Unlike the Ink tests, this needs no mocking tricks and no timing tolerance
+ * for a React reconciler: components render to plain string arrays, so we
+ * assert directly on the TUI's rendered lines — fully deterministic.
+ */
+
+import assert from "node:assert/strict";
+import stripAnsiImport from "strip-ansi";
+import type { Terminal } from "../src/ui/tui/terminal.js";
+import { TuiChatAdapter } from "../src/ui/tui-adapter/TuiChatAdapter.js";
+
+const stripAnsi = stripAnsiImport as unknown as (text: string) => string;
+
+/** In-memory Terminal: captures writes, lets tests inject keystrokes. */
+class FakeTerminal implements Terminal {
+  written = "";
+  private inputHandler: ((data: string) => void) | null = null;
+
+  start(onInput: (data: string) => void, _onResize: () => void): void {
+    this.inputHandler = onInput;
+  }
+  stop(): void {
+    this.inputHandler = null;
+  }
+  async drainInput(): Promise<void> {}
+  write(data: string): void {
+    this.written += data;
+  }
+  get columns(): number {
+    return 100;
+  }
+  get rows(): number {
+    return 30;
+  }
+  get kittyProtocolActive(): boolean {
+    return false;
+  }
+  moveBy(): void {}
+  hideCursor(): void {}
+  showCursor(): void {}
+  clearLine(): void {}
+  clearFromCursor(): void {}
+  clearScreen(): void {}
+  setTitle(): void {}
+  setProgress(): void {}
+
+  type(data: string): void {
+    this.inputHandler?.(data);
+  }
+}
+
+function makeAdapter(): { adapter: TuiChatAdapter; terminal: FakeTerminal } {
+  const terminal = new FakeTerminal();
+  const adapter = new TuiChatAdapter({
+    provider: "test",
+    model: "test-model",
+    cwd: process.cwd(),
+    terminal,
+  });
+  return { adapter, terminal };
+}
+
+/** Full rendered screen as plain text (the TUI is itself a Container). */
+function renderedText(adapter: TuiChatAdapter): string {
+  const ui = (adapter as unknown as { ui: { render(width: number): string[] } }).ui;
+  return ui
+    .render(100)
+    .map((line) => stripAnsi(line))
+    .join("\n");
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ── Transcript basics ────────────────────────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+
+  adapter.appendUserMessage("alpha-prompt-7c1f");
+  let text = renderedText(adapter);
+  assert.ok(text.includes("alpha-prompt-7c1f"), "user prompt renders");
+  assert.ok(text.includes("You"), "user header renders");
+
+  // Streamed assistant turn with markdown
+  adapter.beginTurn();
+  adapter.startAssistantMessage();
+  adapter.appendAssistantChunk("first **bold** paragraph");
+  adapter.appendAssistantChunk("\n\nsecond paragraph tail");
+  adapter.finishAssistantMessage();
+  adapter.settleAssistantMessage("first **bold** paragraph\n\nsecond paragraph tail");
+  adapter.endTurn();
+
+  text = renderedText(adapter);
+  assert.ok(text.includes("first bold paragraph"), "markdown bold rendered without asterisks");
+  assert.ok(text.includes("second paragraph tail"), "second paragraph rendered");
+  assert.ok(text.includes("Meer"), "assistant header rendered");
+  assert.equal(
+    adapter.getLastAssistantContent(),
+    "first **bold** paragraph\n\nsecond paragraph tail",
+    "/copy returns the settled content"
+  );
+
+  // Second prompt — the regression that motivated this renderer
+  adapter.appendUserMessage("delta-prompt-9d24");
+  text = renderedText(adapter);
+  assert.ok(text.includes("delta-prompt-9d24"), "second user prompt renders");
+  const firstIdx = text.indexOf("alpha-prompt-7c1f");
+  const replyIdx = text.indexOf("first bold paragraph");
+  const secondIdx = text.indexOf("delta-prompt-9d24");
+  assert.ok(firstIdx < replyIdx && replyIdx < secondIdx, "transcript order preserved");
+
+  adapter.destroy();
+}
+
+// ── Tool lifecycle ───────────────────────────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.beginTurn();
+  adapter.startAssistantMessage();
+  adapter.appendAssistantChunk("Let me check the file.");
+  adapter.finishAssistantMessage();
+
+  const id = adapter.addTool("read_file", { path: "src/x.ts" }, "tc-1");
+  assert.equal(id, "tc-1");
+  adapter.startTool("tc-1");
+  let text = renderedText(adapter);
+  assert.ok(text.includes("read_file"), "running tool row renders");
+  assert.ok(text.includes("src/x.ts"), "tool summary shows the path");
+
+  adapter.completeTool("tc-1");
+  adapter.startAssistantMessage();
+  adapter.appendAssistantChunk("The file looks fine.");
+  adapter.finishAssistantMessage();
+  adapter.settleAssistantMessage("Let me check the file.\n\nThe file looks fine.");
+  adapter.endTurn();
+
+  text = renderedText(adapter);
+  assert.ok(text.includes("✓ read_file"), "completed tool row keeps its durable mark");
+  const intro = text.indexOf("Let me check the file.");
+  const tool = text.indexOf("✓ read_file");
+  const follow = text.indexOf("The file looks fine.");
+  assert.ok(intro >= 0 && tool >= 0 && follow >= 0, "all pieces rendered");
+  assert.ok(intro < tool && tool < follow, "text → tool row → text order holds");
+
+  // Failure path
+  adapter.beginTurn();
+  adapter.addTool("edit_file", { path: "src/y.ts" }, "tc-2");
+  adapter.startTool("tc-2");
+  adapter.failTool("tc-2", "old_string not found in file");
+  adapter.endTurn();
+  text = renderedText(adapter);
+  assert.ok(text.includes("✗ edit_file"), "failed tool row marked");
+  assert.ok(text.includes("old_string not found"), "error preview rendered");
+
+  adapter.destroy();
+}
+
+// ── Editor submit + optimistic echo ─────────────────────────────────────────
+{
+  const { adapter, terminal } = makeAdapter();
+  const submissions: string[] = [];
+  adapter.enableContinuousChat((text) => submissions.push(text));
+
+  for (const ch of "hello meer") terminal.type(ch);
+  terminal.type("\r");
+
+  assert.deepEqual(submissions, ["hello meer"], "submit fires the continuous-chat callback");
+  const text = renderedText(adapter);
+  assert.ok(text.includes("hello meer"), "submitted prompt echoes into the transcript");
+
+  // The agent confirms the message later — optimistic echo must not duplicate.
+  adapter.appendUserMessage("hello meer", { consumeOptimistic: true });
+  const occurrences = renderedText(adapter).split("hello meer").length - 1;
+  assert.equal(occurrences, 1, "optimistic echo not duplicated on confirmation");
+
+  adapter.destroy();
+}
+
+// ── Interrupt via Esc ────────────────────────────────────────────────────────
+{
+  const { adapter, terminal } = makeAdapter();
+  let interrupted = 0;
+  adapter.setInterruptHandler(() => interrupted++);
+  adapter.beginTurn();
+  terminal.type("\x1b");
+  assert.equal(interrupted, 1, "Esc during a turn calls the interrupt handler");
+  adapter.endTurn();
+  adapter.destroy();
+}
+
+// ── Choice prompt ────────────────────────────────────────────────────────────
+{
+  const { adapter, terminal } = makeAdapter();
+  const pending = adapter.promptChoice(
+    "Apply this edit?",
+    [
+      { label: "Yes", value: "yes" },
+      { label: "No", value: "no" },
+    ],
+    "no"
+  );
+  let text = renderedText(adapter);
+  assert.ok(text.includes("Apply this edit?"), "choice prompt renders");
+  terminal.type("\x1b[B"); // down to "No"
+  terminal.type("\r");
+  const answer = await pending;
+  assert.equal(answer, "no", "arrow + enter selects the choice");
+  assert.ok(!renderedText(adapter).includes("Apply this edit?"), "prompt removed after answer");
+
+  // Esc resolves the default
+  const pending2 = adapter.promptChoice(
+    "Continue?",
+    [
+      { label: "Yes", value: "yes" },
+      { label: "No", value: "no" },
+    ],
+    "yes"
+  );
+  terminal.type("\x1b");
+  assert.equal(await pending2, "yes", "Esc resolves the default choice");
+
+  adapter.destroy();
+}
+
+// ── Non-streamed settle ─────────────────────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.beginTurn();
+  adapter.settleAssistantMessage("completely settled, never streamed");
+  adapter.endTurn();
+  assert.ok(
+    renderedText(adapter).includes("completely settled, never streamed"),
+    "settled-only content renders"
+  );
+  adapter.destroy();
+}
+
+// ── Transcript replay ────────────────────────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.replayTranscript([
+    { role: "user", content: "restored question" },
+    { role: "assistant", content: "restored answer" },
+    { role: "tool", content: "result", metadata: { toolName: "read_file" } },
+    { role: "system", content: "session restored" },
+  ]);
+  const text = renderedText(adapter);
+  for (const expected of ["restored question", "restored answer", "read_file", "session restored"]) {
+    assert.ok(text.includes(expected), `replayed entry renders: ${expected}`);
+  }
+  adapter.destroy();
+}
+
+// ── Console capture ──────────────────────────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+  console.log("stray console noise %d", 42);
+  const text = renderedText(adapter);
+  assert.ok(text.includes("stray console noise 42"), "console output routed into transcript");
+  adapter.destroy();
+  // After destroy the console must be restored (this log goes to real stdout).
+  console.log("");
+}
+
+// Allow any stray loader/ticker callbacks to settle, then confirm clean exit.
+await sleep(50);
+console.log("tui-adapter verification passed");

@@ -473,7 +473,9 @@ export class InkChatAdapter {
 
     this.instance = render(
       React.createElement(AppContainer, {
-        messages: this.messages,
+        // Snapshot — Ink's <Static> memoizes items.slice(index) on the array
+        // reference, so in-place pushes to a shared array are never rendered.
+        messages: [...this.messages],
         draftAssistant: this.draftAssistant ?? undefined,
         isThinking: this.isThinking,
         status: this.statusMessage || undefined,
@@ -586,7 +588,9 @@ export class InkChatAdapter {
 
     this.instance.rerender(
       React.createElement(AppContainer, {
-        messages: this.messages,
+        // Snapshot — see renderUI; <Static> skips items appended to a
+        // previously-seen array reference.
+        messages: [...this.messages],
         draftAssistant: this.draftAssistant ?? undefined,
         isThinking: this.isThinking,
         status: this.statusMessage || undefined,
@@ -1248,8 +1252,10 @@ export class InkChatAdapter {
 
   /**
    * Drop the oldest messages once the buffer exceeds MAX_STORED_MESSAGES.
-   * Called after every push site that adds to `this.messages`. Static's
-   * internal index handles the front-drop cleanly.
+   * Called after every push site that adds to `this.messages`. Ink's <Static>
+   * tracks rendered items by COUNT, so MeerChat pads its item list with
+   * `droppedMessageCount` placeholders to keep new messages aligned past the
+   * already-rendered index.
    */
   private trimMessages(): void {
     const overflow = this.messages.length - MAX_STORED_MESSAGES;
