@@ -1,6 +1,7 @@
 import { randomBytes } from "crypto";
 import chalk from "chalk";
 import { MeerAgent, type MeerAgentConfig } from "../agent/meer-agent.js";
+import { buildEnvironmentSection } from "../agent/prompts/nativeSystemPrompt.js";
 import type { ChatMessage } from "../providers/base.js";
 import { logVerbose } from "../logger.js";
 import type {
@@ -173,6 +174,9 @@ export class SubAgent {
 
   private buildSystemPrompt(context?: AgentExecutionContext): string {
     let prompt = this.definition.systemPrompt;
+
+    // Tell the sub-agent which OS it runs on so it issues compatible shell commands
+    prompt += `\n${buildEnvironmentSection()}`;
 
     // Add context information if provided
     if (context?.metadata) {

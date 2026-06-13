@@ -7,10 +7,48 @@ export interface NativeSystemPromptOptions {
   mcpTools?: MCPTool[];
   providerType?: string;
   skills?: Skill[];
+  /** Override for testing; defaults to the host platform. */
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Builds the Environment section describing the host OS so the agent issues
+ * shell commands compatible with the platform it is actually running on.
+ */
+export function buildEnvironmentSection(platform: NodeJS.Platform = process.platform): string {
+  const isWindows = platform === "win32";
+  const osName = isWindows
+    ? "Windows"
+    : platform === "darwin"
+      ? "macOS"
+      : platform === "linux"
+        ? "Linux"
+        : platform;
+  const defaultShell = isWindows
+    ? "PowerShell (pwsh/powershell.exe) or cmd.exe"
+    : "a POSIX shell (bash/zsh)";
+
+  const guidance = isWindows
+    ? `- Use Windows-compatible commands. Do NOT assume Unix tools (\`ls\`, \`grep\`, \`cat\`, \`rm\`, \`which\`, \`sed\`, \`awk\`) are available.
+- Prefer PowerShell equivalents (\`Get-ChildItem\`, \`Select-String\`, \`Get-Content\`, \`Remove-Item\`, \`Get-Command\`) or cross-platform tooling.
+- Use \`\\\` as the path separator in shell commands, and quote paths that contain spaces.
+- Chain commands with \`;\` (PowerShell) rather than relying on \`&&\`/\`||\` semantics from POSIX shells.`
+    : `- Use standard POSIX/Unix commands (\`ls\`, \`grep\`, \`cat\`, \`rm\`, \`which\`, etc.).
+- Use \`/\` as the path separator and chain commands with \`&&\`, \`||\`, and \`|\` as usual.`;
+
+  return `\n## Environment\n- Operating system: ${osName} (\`${platform}\`)\n- Default shell: ${defaultShell}\n\n**Issue shell commands that work on this operating system.**\n${guidance}\n`;
 }
 
 export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): string {
-  const { cwd, mcpTools = [], providerType = "unknown", skills = [] } = options;
+  const {
+    cwd,
+    mcpTools = [],
+    providerType = "unknown",
+    skills = [],
+    platform = process.platform,
+  } = options;
+
+  const environmentSection = buildEnvironmentSection(platform);
 
   const mcpSection =
     mcpTools.length > 0
@@ -30,7 +68,7 @@ export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): str
 
 ## Working Directory
 \`${cwd}\`
-
+${environmentSection}
 ## Core Principles
 
 **Be direct and action-oriented.** When asked to do something, do it. Read the code first to understand the situation, then make changes.
