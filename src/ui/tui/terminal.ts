@@ -12,7 +12,15 @@ const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 const APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
-const DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS = 7;
+// Flags: 1 = disambiguate escape codes, 4 = report alternate keys.
+// We deliberately do NOT request flag 2 (report event types / key release +
+// repeat). meer never consumes release/repeat events — it only ever filtered
+// them back out — and some terminals (notably VS Code's xterm.js) report the
+// release of a legacy-encoded key as a bare duplicate of the press (e.g. a
+// second "\x1b[B" with no ":3" event marker), which is indistinguishable from
+// a real press and caused single key taps to move/scroll twice. Dropping
+// flag 2 means the terminal sends presses only — no phantom doubles.
+const DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS = 5;
 const KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS = 150;
 const KITTY_KEYBOARD_PROTOCOL_QUERY = `\x1b[>${DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS}u\x1b[?u\x1b[c`;
 
@@ -214,8 +222,10 @@ export class ProcessTerminal implements Terminal {
 	 *
 	 * The requested flags are:
 	 * - 1 = disambiguate escape codes
-	 * - 2 = report event types (press/repeat/release)
 	 * - 4 = report alternate keys (shifted key, base layout key)
+	 *
+	 * Flag 2 (report event types: press/repeat/release) is intentionally NOT
+	 * requested — see DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS for why.
 	 */
 	private queryAndEnableKittyProtocol(): void {
 		this.setupStdinBuffer();

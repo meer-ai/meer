@@ -189,6 +189,22 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   adapter.destroy();
 }
 
+// ── Ctrl+C works in both raw and Kitty CSI-u form ───────────────────────────
+// With the Kitty disambiguate flag active, Ctrl+C arrives as "\x1b[99;5u", not
+// the raw "\x03" byte — the handler must match via matchesKey, not byte compare.
+{
+  for (const ctrlC of ["\x03", "\x1b[99;5u"]) {
+    const { adapter, terminal } = makeAdapter();
+    let interrupted = 0;
+    adapter.setInterruptHandler(() => interrupted++);
+    adapter.beginTurn();
+    terminal.type(ctrlC);
+    assert.equal(interrupted, 1, `Ctrl+C (${JSON.stringify(ctrlC)}) interrupts the active turn`);
+    adapter.endTurn();
+    adapter.destroy();
+  }
+}
+
 // ── Choice prompt ────────────────────────────────────────────────────────────
 {
   const { adapter, terminal } = makeAdapter();
@@ -220,6 +236,27 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   terminal.type("\x1b");
   assert.equal(await pending2, "yes", "Esc resolves the default choice");
 
+  adapter.destroy();
+}
+
+// ── Key-repeat does not double-move the selection ───────────────────────────
+// A single arrow tap on Windows Terminal/ConPTY can emit a press AND an
+// immediate Kitty key-repeat (CSI ":2"); the repeat must not move again.
+{
+  const { adapter, terminal } = makeAdapter();
+  const pending = adapter.promptChoice(
+    "Pick one",
+    [
+      { label: "Alpha", value: "a" },
+      { label: "Bravo", value: "b" },
+      { label: "Charlie", value: "c" },
+    ],
+    "a"
+  );
+  terminal.type("\x1b[B"); // press: Alpha -> Bravo
+  terminal.type("\x1b[1;1:2B"); // Kitty repeat of Down — must be ignored
+  terminal.type("\r");
+  assert.equal(await pending, "b", "a Down press + its repeat lands on the next item, not two down");
   adapter.destroy();
 }
 

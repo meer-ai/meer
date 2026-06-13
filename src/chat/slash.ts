@@ -774,7 +774,7 @@ async function handleModelCommand(config: any, tui?: ChatAdapter | null): Promis
   }
 }
 
-async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
+async function handleProviderCommand(tui?: ChatAdapter | null): Promise<boolean> {
   try {
     const { readFileSync, writeFileSync, existsSync } = await import("fs");
     const configPath = join(homedir(), ".meer", "config.yaml");
@@ -782,12 +782,13 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
     if (!existsSync(configPath)) {
       const msg = "❌ Config file not found";
       if (tui) { tui.appendSystemMessage(msg); } else { console.log(chalk.red(msg)); }
-      return;
+      return false;
     }
 
     const yaml = await import("yaml");
     const config = yaml.parse(readFileSync(configPath, "utf-8"));
     const currentProvider = config.provider || "ollama";
+    const previousModel = config.model;
 
     const providers = [
       { name: "meer", icon: "🌊", label: "Meer Managed" },
@@ -796,6 +797,9 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
       { name: "gemini", icon: "✨", label: "Google Gemini" },
       { name: "anthropic", icon: "🧠", label: "Anthropic Claude" },
       { name: "openrouter", icon: "🌐", label: "OpenRouter" },
+      { name: "chatgpt", icon: "💬", label: "ChatGPT (OAuth login)" },
+      { name: "opencodeZen", icon: "🔮", label: "OpenCode Zen" },
+      { name: "opencodeGo", icon: "⚡", label: "OpenCode Go" },
       { name: "zaiCodingPlan", icon: "⚡", label: "Z.ai Coding Plan" },
       { name: "zaiCredit", icon: "⚡", label: "Z.ai Credit (PAYG)" },
     ];
@@ -807,6 +811,9 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
       anthropic: "claude-3-5-sonnet-20241022",
       openrouter: "anthropic/claude-3.5-sonnet",
       meer: "auto",
+      chatgpt: "gpt-5.3-codex-spark",
+      opencodeZen: "big-pickle",
+      opencodeGo: "deepseek-v4-flash",
       zaiCodingPlan: "glm-4",
       zaiCredit: "glm-4",
     };
@@ -844,13 +851,13 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
     if (!selectedProvider) {
       const msg = "Cancelled";
       if (tui) { tui.appendSystemMessage(msg); } else { console.log(chalk.gray("\nCancelled\n")); }
-      return;
+      return false;
     }
 
     if (selectedProvider === currentProvider) {
       const msg = "No change — already using this provider";
       if (tui) { tui.appendSystemMessage(msg); } else { console.log(chalk.gray("\nNo change — already using this provider\n")); }
-      return;
+      return false;
     }
 
     config.provider = selectedProvider;
@@ -860,6 +867,25 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
 
     writeFileSync(configPath, yaml.stringify(config), "utf-8");
 
+    // Validate the switch with the same loader the restart will use. If the
+    // target provider has no credentials, loadConfig() throws — and because the
+    // restart tears down this session first, that throw would leave a dead,
+    // stuck frame on screen. Revert the config and report the real reason
+    // instead, so the user can fix it (or run `meer setup`) without a crash.
+    try {
+      const { loadConfig } = await import("../config.js");
+      loadConfig();
+    } catch (validationError) {
+      config.provider = currentProvider;
+      config.model = previousModel;
+      writeFileSync(configPath, yaml.stringify(config), "utf-8");
+      const reason = validationError instanceof Error ? validationError.message : String(validationError);
+      const selected = providers.find((p) => p.name === selectedProvider);
+      const msg = `❌ Can't switch to ${selected?.label ?? selectedProvider}: ${reason}\n   Kept current provider. Run \`meer setup\` to configure it.`;
+      if (tui) { tui.appendSystemMessage(msg); } else { console.log(chalk.red(msg)); }
+      return false;
+    }
+
     const selected = providers.find((p) => p.name === selectedProvider);
     const successMsg = `✅ Switched to provider: ${selected?.label}\n   Default model: ${config.model}\n⚠️  Restarting to apply changes…`;
     if (tui) { tui.appendSystemMessage(successMsg); } else {
@@ -867,9 +893,11 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<void> {
       console.log(chalk.gray(`   Default model: ${config.model}`));
       console.log(chalk.yellow("\n⚠️  Please restart the CLI for changes to take effect\n"));
     }
+    return true;
   } catch (error) {
     const msg = `❌ Error: ${error instanceof Error ? error.message : String(error)}`;
     if (tui) { tui.appendSystemMessage(msg); } else { console.log(chalk.red(msg)); }
+    return false;
   }
 }
 
@@ -1148,8 +1176,8 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
   },
 
   "/provider": async ({ tui }) => {
-    await handleProviderCommand(tui);
-    return restartResult();
+    const switched = await handleProviderCommand(tui);
+    return switched ? restartResult() : continueResult();
   },
 
   "/ps": async ({ tui }) => {

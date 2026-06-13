@@ -152,3 +152,26 @@ export function getWaveFrame(frame: number): string {
   ];
   return waves[frame % waves.length];
 }
+
+/** Frame interval for the marching-wave loading indicator. */
+export const WAVE_LOADER_INTERVAL_MS = 120;
+
+/**
+ * Pre-colored marching-wave frames for the loading indicator: a cyan crest
+ * (≈) rolls across calm blue water (~), echoing the Meer logo's `~≈~` wave.
+ * Each frame is fully styled, so the loader renders it verbatim.
+ */
+export function getWaveLoaderFrames(): string[] {
+  const width = 7;
+  const crest = 3; // length of the moving cyan crest
+  const frames: string[] = [];
+  for (let offset = 0; offset < width; offset++) {
+    let frame = "";
+    for (let i = 0; i < width; i++) {
+      const inCrest = (((i - offset) % width) + width) % width < crest;
+      frame += inCrest ? chalk.cyan("≈") : chalk.blue("~");
+    }
+    frames.push(frame);
+  }
+  return frames;
+}

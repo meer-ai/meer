@@ -45,6 +45,7 @@ import {
   UserMessageComponent,
 } from "./components.js";
 import { getEditorTheme, getSelectListTheme, getTuiStyles } from "./theme.js";
+import { WAVE_LOADER_INTERVAL_MS, getWaveLoaderFrames } from "../logo.js";
 
 export interface TuiChatConfig {
   provider: string;
@@ -54,7 +55,6 @@ export interface TuiChatConfig {
   terminal?: Terminal;
 }
 
-const CTRL_C = "\x03";
 const EXIT_CONFIRM_WINDOW_MS = 1500;
 
 /** Inline prompt (choice/form question) shown above the editor. */
@@ -123,6 +123,7 @@ export class TuiChatAdapter implements ChatAdapter {
   private activePrompt: InlinePrompt | null = null;
   private lastCtrlCAt = 0;
   private plan: Plan | null = null;
+  private onTerminalResize?: () => void;
 
   private consolePatched = false;
   private savedConsole: Partial<
@@ -146,6 +147,12 @@ export class TuiChatAdapter implements ChatAdapter {
     this.editor = new Editor(this.ui, getEditorTheme(), { paddingX: 1 });
     this.editor.onSubmit = (text) => this.handleSubmit(text);
     this.installAutocomplete();
+    // Size the autocomplete dropdown to the terminal instead of the vendored
+    // default of 5 rows — meer's slash registry has far more than 5 commands,
+    // so a tiny window made the list feel un-scrollable. Track resizes too.
+    this.applyAutocompleteHeight();
+    this.onTerminalResize = () => this.applyAutocompleteHeight();
+    process.stdout.on("resize", this.onTerminalResize);
     const editorContainer = new Container();
     editorContainer.addChild(new Spacer(1));
     editorContainer.addChild(this.editor as unknown as Component);
@@ -169,6 +176,16 @@ export class TuiChatAdapter implements ChatAdapter {
 
   // ── Input handling ─────────────────────────────────────────────────────────
 
+  /**
+   * Choose how many autocomplete rows to show: roughly 40% of the terminal
+   * height, clamped to a comfortable range (the editor itself clamps to 3–20).
+   */
+  private applyAutocompleteHeight(): void {
+    const rows = this.ui.terminal.rows || 24;
+    const visible = Math.max(6, Math.min(15, Math.floor(rows * 0.4)));
+    this.editor.setAutocompleteMaxVisible(visible);
+  }
+
   private installAutocomplete(): void {
     let commands: SlashCommand[] = [];
     try {
@@ -185,7 +202,10 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   private handleGlobalInput(data: string): { consume?: boolean } | undefined {
-    if (data === CTRL_C) {
+    // Match via matchesKey, not a raw "\x03" byte: with the Kitty keyboard
+    // protocol active (disambiguate flag) Ctrl+C arrives as "\x1b[99;5u", so a
+    // raw-byte check would never fire and Ctrl+C wouldn't interrupt or exit.
+    if (matchesKey(data, "ctrl+c")) {
       if (this.turnActive && this.interruptHandler) {
         this.interruptHandler();
         return { consume: true };
@@ -569,7 +589,8 @@ export class TuiChatAdapter implements ChatAdapter {
         this.ui,
         (text) => s.accent(text),
         (text) => s.muted(text),
-        message
+        message,
+        { frames: getWaveLoaderFrames(), intervalMs: WAVE_LOADER_INTERVAL_MS }
       );
       this.statusContainer.addChild(this.loader);
     }
@@ -863,6 +884,10 @@ export class TuiChatAdapter implements ChatAdapter {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    if (this.onTerminalResize) {
+      process.stdout.removeListener("resize", this.onTerminalResize);
+      this.onTerminalResize = undefined;
+    }
     this.stopTicker();
     this.stopLoader();
     this.restoreConsole();

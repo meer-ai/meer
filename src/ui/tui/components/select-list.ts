@@ -1,4 +1,5 @@
 import { getKeybindings } from "../keybindings.js";
+import { isKeyRepeat } from "../keys.js";
 import type { Component } from "../tui.js";
 import { truncateToWidth, visibleWidth } from "../utils.js";
 
@@ -111,6 +112,16 @@ export class SelectList implements Component {
 
 	handleInput(keyData: string): void {
 		const kb = getKeybindings();
+		// MEER PATCH: ignore Kitty key-repeat events (CSI ":2" event type). The
+		// TUI dispatch filters key *releases* but not repeats, and matchesKey()
+		// treats a repeat as the same key — so on terminals that emit an immediate
+		// repeat for a single tap (notably Windows Terminal / ConPTY) one arrow
+		// press would move the selection twice. Held-to-scroll via synthetic
+		// repeats is not worth the double-step in a short list; discrete presses
+		// (legacy auto-repeat) still navigate normally.
+		if (isKeyRepeat(keyData)) {
+			return;
+		}
 		// Up arrow - wrap to bottom when at top
 		if (kb.matches(keyData, "tui.select.up")) {
 			this.selectedIndex = this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
