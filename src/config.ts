@@ -22,6 +22,8 @@ import {
   DEFAULT_OPENCODE_GO_MODEL,
 } from "./providers/opencode.js";
 import { ChatGPTProvider } from "./providers/chatgpt.js";
+import { DeepSeekProvider, DEFAULT_DEEPSEEK_MODEL } from "./providers/deepseek.js";
+import { TogetherProvider, DEFAULT_TOGETHER_MODEL } from "./providers/together.js";
 import { AuthStorage } from "./auth/storage.js";
 import type { Provider } from "./providers/base.js";
 import { wrapProvider } from "./providers/provider-wrapper.js";
@@ -44,6 +46,8 @@ const ConfigSchema = z.object({
     "opencodeZen",
     "opencodeGo",
     "chatgpt",
+    "deepseek",
+    "together",
   ]),
   model: z.string().optional(),
   temperature: z.number().optional(),
@@ -108,6 +112,14 @@ const ConfigSchema = z.object({
     maxTokens: z.number().optional(),
   }).optional(),
   opencodeGo: z.object({
+    apiKey: z.string().optional(),
+    maxTokens: z.number().optional(),
+  }).optional(),
+  deepseek: z.object({
+    apiKey: z.string().optional(),
+    maxTokens: z.number().optional(),
+  }).optional(),
+  together: z.object({
     apiKey: z.string().optional(),
     maxTokens: z.number().optional(),
   }).optional(),
@@ -429,6 +441,26 @@ export function loadConfig(): LoadedConfig {
       });
       break;
     }
+
+    case 'deepseek':
+      defaultModel = config.model || DEFAULT_DEEPSEEK_MODEL;
+      provider = new DeepSeekProvider({
+        apiKey: config.deepseek?.apiKey || process.env.DEEPSEEK_API_KEY || '',
+        model: defaultModel,
+        temperature: config.temperature,
+        maxTokens: config.deepseek?.maxTokens,
+      });
+      break;
+
+    case 'together':
+      defaultModel = config.model || DEFAULT_TOGETHER_MODEL;
+      provider = new TogetherProvider({
+        apiKey: config.together?.apiKey || process.env.TOGETHER_API_KEY || '',
+        model: defaultModel,
+        temperature: config.temperature,
+        maxTokens: config.together?.maxTokens,
+      });
+      break;
 
     default:
       throw new Error(`Unsupported provider: ${config.provider}`);

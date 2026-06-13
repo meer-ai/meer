@@ -535,8 +535,15 @@ export class OpenRouterProvider implements Provider {
         }
       } else if (msg.role === "tool_result") {
         if (!msg.toolCallId || !pendingToolCallIds.has(msg.toolCallId)) {
+          // Orphan tool result (no matching tool_call in the preceding
+          // assistant turn — happens after history compaction or injected
+          // context). Represent it as a USER message, not a mid-conversation
+          // "system" message: OpenAI tolerates inline system, but Anthropic /
+          // Bedrock / Vertex (reachable through OpenRouter) reject it with
+          // "role 'system' must follow a 'user' message...". A user message is
+          // accepted by every backend.
           converted.push({
-            role: "system",
+            role: "user",
             content: `Previous tool result (${msg.toolName}${msg.isError ? ", error" : ""}):\n${msg.content}`,
           });
           continue;

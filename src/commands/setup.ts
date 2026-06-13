@@ -22,6 +22,8 @@ import {
   DEFAULT_OPENCODE_ZEN_MODEL,
   DEFAULT_OPENCODE_GO_MODEL,
 } from '../providers/opencode.js';
+import { DEEPSEEK_MODELS, DEFAULT_DEEPSEEK_MODEL } from '../providers/deepseek.js';
+import { TOGETHER_MODELS, DEFAULT_TOGETHER_MODEL } from '../providers/together.js';
 
 export function createSetupCommand(): Command {
   return new Command('setup')
@@ -258,6 +260,14 @@ export async function runSetupWizard(): Promise<void> {
           value: 'openrouter'
         },
         {
+          name: chalk.cyan('🐳 DeepSeek') + chalk.gray(' - DeepSeek Chat / Reasoner, V4 (requires DEEPSEEK_API_KEY)'),
+          value: 'deepseek'
+        },
+        {
+          name: chalk.cyan('🤝 Together AI') + chalk.gray(' - Llama, Qwen, DeepSeek & more (requires TOGETHER_API_KEY)'),
+          value: 'together'
+        },
+        {
           name: chalk.cyan('⚡ Z.ai Coding Plan') + chalk.gray(' - DevPack subscription (coding bundle, integrates with Cline/Claude Code)'),
           value: 'zaiCodingPlan'
         },
@@ -329,6 +339,12 @@ export async function runSetupWizard(): Promise<void> {
       apiKey: '',
     },
     opencodeGo: {
+      apiKey: '',
+    },
+    deepseek: {
+      apiKey: '',
+    },
+    together: {
       apiKey: '',
     },
     context: {
@@ -820,6 +836,60 @@ export async function runSetupWizard(): Promise<void> {
       console.log(chalk.gray('   use the Anthropic provider with baseURL: https://opencode.ai/zen'));
     } else {
       console.log(chalk.blue('\n⚡ OpenCode Go: Fast, affordable models — DeepSeek, Kimi, Qwen, GLM & more!'));
+    }
+  } else if (provider === 'deepseek' || provider === 'together') {
+    const isDeepSeek = provider === 'deepseek';
+    const label = isDeepSeek ? 'DeepSeek' : 'Together AI';
+    const envVar = isDeepSeek ? 'DEEPSEEK_API_KEY' : 'TOGETHER_API_KEY';
+    const models = isDeepSeek ? DEEPSEEK_MODELS : TOGETHER_MODELS;
+    const defaultModel = isDeepSeek ? DEFAULT_DEEPSEEK_MODEL : DEFAULT_TOGETHER_MODEL;
+
+    const { apiKey } = await inquirer.prompt([
+      {
+        type: 'password',
+        name: 'apiKey',
+        message: `Enter your ${label} API key (or press Enter to use ${envVar} env var):`,
+        mask: '*'
+      }
+    ]);
+
+    if (isDeepSeek) {
+      config.deepseek = { apiKey: apiKey || '' };
+    } else {
+      config.together = { apiKey: apiKey || '' };
+    }
+
+    const modelChoices = models.map(m => ({ name: m.name, value: m.id }));
+    modelChoices.push({ name: 'Custom model...', value: 'custom' });
+
+    const { model } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'model',
+        message: 'Choose a model:',
+        choices: modelChoices,
+        default: defaultModel,
+      }
+    ]);
+
+    if (model === 'custom') {
+      const { customModel } = await inquirer.prompt([
+        {
+          type: 'input',
+          name: 'customModel',
+          message: `Enter model ID (e.g., ${defaultModel}):`,
+        }
+      ]);
+      config.model = customModel || defaultModel;
+    } else {
+      config.model = model;
+    }
+
+    console.log(chalk.green(`\n✅ ${label} configured!`));
+    console.log(chalk.gray(`   Model: ${config.model}`));
+    if (!apiKey) {
+      console.log(chalk.yellow('\n💡 Remember to set your API key:'));
+      console.log(chalk.cyan(`   export ${envVar}=your-key-here\n`));
     }
   } else if (provider === 'chatgpt') {
     console.log(chalk.cyan('\n💬 ChatGPT Setup\n'));

@@ -479,8 +479,12 @@ export class OpenAIProvider implements Provider {
         }
       } else if (msg.role === "tool_result") {
         if (!msg.toolCallId || !pendingToolCallIds.has(msg.toolCallId)) {
+          // Orphan tool result (no matching tool_call in the preceding
+          // assistant turn). Use a USER message rather than a mid-conversation
+          // "system" message — inline system is rejected by Anthropic-family
+          // backends (and by OpenAI-compatible proxies that front them).
           converted.push({
-            role: "system",
+            role: "user",
             content: `Previous tool result (${msg.toolName}${msg.isError ? ", error" : ""}):\n${msg.content}`,
           });
           continue;

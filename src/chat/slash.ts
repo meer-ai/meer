@@ -774,6 +774,52 @@ async function handleModelCommand(config: any, tui?: ChatAdapter | null): Promis
   }
 }
 
+/**
+ * API-key-based providers: which env var backs each, and the config object key
+ * (same as the provider name) we write the entered key into. Providers absent
+ * here need no key (ollama, meer) or use a separate auth flow (chatgpt OAuth).
+ */
+const PROVIDER_API_KEY_ENV: Record<string, string> = {
+  openai: "OPENAI_API_KEY",
+  gemini: "GEMINI_API_KEY",
+  anthropic: "ANTHROPIC_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+  together: "TOGETHER_API_KEY",
+  opencodeZen: "OPENCODE_API_KEY",
+  opencodeGo: "OPENCODE_API_KEY",
+  zaiCodingPlan: "ZAI_API_KEY",
+  zaiCredit: "ZAI_API_KEY",
+};
+
+/**
+ * Collect an API key interactively — in the TUI composer (not echoed to the
+ * transcript, since a prompt resolver is active) or via a masked inquirer
+ * prompt in plain mode. Returns null if the user cancels (empty input).
+ */
+async function promptForApiKey(
+  tui: ChatAdapter | null | undefined,
+  label: string,
+  envVar: string
+): Promise<string | null> {
+  if (tui) {
+    tui.appendSystemMessage(
+      `🔑 ${label} needs an API key. Paste it here and press Enter — it won't be saved to the transcript. (Empty line to cancel, or set ${envVar}.)`
+    );
+    const key = (await tui.prompt()).trim();
+    return key || null;
+  }
+  const { apiKey } = await inquirer.prompt([
+    {
+      type: "password",
+      name: "apiKey",
+      message: `Enter your ${label} API key (leave blank to cancel):`,
+      mask: "*",
+    },
+  ]);
+  return (typeof apiKey === "string" ? apiKey.trim() : "") || null;
+}
+
 async function handleProviderCommand(tui?: ChatAdapter | null): Promise<boolean> {
   try {
     const { readFileSync, writeFileSync, existsSync } = await import("fs");
@@ -797,6 +843,8 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<boolean>
       { name: "gemini", icon: "✨", label: "Google Gemini" },
       { name: "anthropic", icon: "🧠", label: "Anthropic Claude" },
       { name: "openrouter", icon: "🌐", label: "OpenRouter" },
+      { name: "deepseek", icon: "🐳", label: "DeepSeek" },
+      { name: "together", icon: "🤝", label: "Together AI" },
       { name: "chatgpt", icon: "💬", label: "ChatGPT (OAuth login)" },
       { name: "opencodeZen", icon: "🔮", label: "OpenCode Zen" },
       { name: "opencodeGo", icon: "⚡", label: "OpenCode Go" },
@@ -811,6 +859,8 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<boolean>
       anthropic: "claude-3-5-sonnet-20241022",
       openrouter: "anthropic/claude-3.5-sonnet",
       meer: "auto",
+      deepseek: "deepseek-chat",
+      together: "deepseek-ai/DeepSeek-V3",
       chatgpt: "gpt-5.3-codex-spark",
       opencodeZen: "big-pickle",
       opencodeGo: "deepseek-v4-flash",
@@ -867,26 +917,45 @@ async function handleProviderCommand(tui?: ChatAdapter | null): Promise<boolean>
 
     writeFileSync(configPath, yaml.stringify(config), "utf-8");
 
-    // Validate the switch with the same loader the restart will use. If the
-    // target provider has no credentials, loadConfig() throws — and because the
+    const selected = providers.find((p) => p.name === selectedProvider);
+    const label = selected?.label ?? selectedProvider;
+
+    // Validate the switch with the same loader the restart will use — if the
+    // target provider lacks credentials, loadConfig() throws, and since the
     // restart tears down this session first, that throw would leave a dead,
-    // stuck frame on screen. Revert the config and report the real reason
-    // instead, so the user can fix it (or run `meer setup`) without a crash.
-    try {
-      const { loadConfig } = await import("../config.js");
-      loadConfig();
-    } catch (validationError) {
+    // stuck frame on screen.
+    const validate = async (): Promise<string | null> => {
+      try {
+        const { loadConfig } = await import("../config.js");
+        loadConfig();
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    };
+
+    let reason = await validate();
+
+    // Missing API key? Collect it inline (like `meer setup`) and retry, rather
+    // than bailing out — that's the friendlier flow.
+    if (reason && PROVIDER_API_KEY_ENV[selectedProvider]) {
+      const key = await promptForApiKey(tui, label, PROVIDER_API_KEY_ENV[selectedProvider]);
+      if (key) {
+        config[selectedProvider] = { ...(config[selectedProvider] ?? {}), apiKey: key };
+        writeFileSync(configPath, yaml.stringify(config), "utf-8");
+        reason = await validate();
+      }
+    }
+
+    if (reason) {
       config.provider = currentProvider;
       config.model = previousModel;
       writeFileSync(configPath, yaml.stringify(config), "utf-8");
-      const reason = validationError instanceof Error ? validationError.message : String(validationError);
-      const selected = providers.find((p) => p.name === selectedProvider);
-      const msg = `❌ Can't switch to ${selected?.label ?? selectedProvider}: ${reason}\n   Kept current provider. Run \`meer setup\` to configure it.`;
+      const msg = `❌ Can't switch to ${label}: ${reason}\n   Kept current provider. Run \`meer setup\` to configure it.`;
       if (tui) { tui.appendSystemMessage(msg); } else { console.log(chalk.red(msg)); }
       return false;
     }
 
-    const selected = providers.find((p) => p.name === selectedProvider);
     const successMsg = `✅ Switched to provider: ${selected?.label}\n   Default model: ${config.model}\n⚠️  Restarting to apply changes…`;
     if (tui) { tui.appendSystemMessage(successMsg); } else {
       console.log(chalk.green(`\n✅ Switched to provider: ${chalk.bold(selected?.label)}`));

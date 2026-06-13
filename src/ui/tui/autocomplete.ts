@@ -3,6 +3,8 @@ import { readdirSync, statSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { fuzzyFilter } from "./fuzzy.js";
+// MEER PATCH: shared file-finder backend (fff → fd → JS) for the @ picker.
+import { findFilesFuzzy } from "../../utils/file-finder.js";
 
 const PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 
@@ -716,12 +718,14 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		return score;
 	}
 
-	// Fuzzy file search using fd (fast, respects .gitignore)
+	// Fuzzy file search. MEER PATCH: routed through meer's findFilesFuzzy
+	// (fff → fd → JS-walk cascade) instead of requiring an injected fd path —
+	// the @ picker now works even when no `fd` binary is present/discovered.
 	private async getFuzzyFileSuggestions(
 		query: string,
 		options: { isQuotedPrefix: boolean; signal: AbortSignal },
 	): Promise<AutocompleteItem[]> {
-		if (!this.fdPath || options.signal.aborted) {
+		if (options.signal.aborted) {
 			return [];
 		}
 
@@ -729,7 +733,7 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 			const scopedQuery = this.resolveScopedFuzzyQuery(query);
 			const fdBaseDir = scopedQuery?.baseDir ?? this.basePath;
 			const fdQuery = scopedQuery?.query ?? query;
-			const entries = await walkDirectoryWithFd(fdBaseDir, this.fdPath, fdQuery, 100, options.signal);
+			const entries = await findFilesFuzzy({ basePath: fdBaseDir, query: fdQuery, maxResults: 100, signal: options.signal });
 			if (options.signal.aborted) {
 				return [];
 			}
