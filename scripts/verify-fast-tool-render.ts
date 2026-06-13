@@ -12,7 +12,7 @@
  * result the user might care about.
  */
 
-import { shouldRenderCompact } from "../src/ui/ink/tool-renderers/utils.js";
+import { shouldRenderCompact } from "../src/ui/shared/tool-utils.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

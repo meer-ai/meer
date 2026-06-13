@@ -2,18 +2,15 @@
  * Renderer-agnostic chat UI seam.
  *
  * Everything outside src/ui that drives the interactive chat UI talks to this
- * interface. Two implementations exist:
- *   - InkChatAdapter   (src/ui/ink)         — React/Ink renderer (legacy default)
- *   - TuiChatAdapter   (src/ui/tui-adapter) — pi-tui differential renderer
- *
- * The method names and signatures mirror InkChatAdapter's public surface so
- * the Ink adapter satisfies this interface structurally without changes.
+ * interface. The sole implementation is TuiChatAdapter (src/ui/tui-adapter),
+ * built on the vendored pi-tui differential renderer. The interface is kept as
+ * a seam so the renderer can be swapped or mocked without touching callers.
  */
 
 import type { MessageAttachment } from "../agent/core/types.js";
 import type { Plan } from "../plan/types.js";
 import type { BackgroundTerminalSession } from "../runtime/backgroundTerminals.js";
-import type { UITimelineEvent } from "./ink/timelineTypes.js";
+import type { UITimelineEvent } from "./shared/timelineTypes.js";
 
 export type ChatMode = "edit" | "plan";
 

@@ -1,15 +1,12 @@
 export type ScreenReaderMode = "auto" | "on" | "off";
 export type VirtualizedHistoryMode = "auto" | "always" | "never";
 export type ScrollMode = "auto" | "manual";
-export type ChatRenderer = "ink" | "tui";
 
 export interface UISettings {
   useAlternateBuffer: boolean;
   screenReaderMode: ScreenReaderMode;
   virtualizedHistory: VirtualizedHistoryMode;
   scrollMode: ScrollMode;
-  /** Which interactive chat renderer to use. "tui" is the pi-tui port. */
-  renderer: ChatRenderer;
 }
 
 export type UISettingsInput = Partial<UISettings> | undefined;
@@ -19,7 +16,6 @@ export const DEFAULT_UI_SETTINGS: UISettings = {
   screenReaderMode: "auto",
   virtualizedHistory: "auto",
   scrollMode: "auto",
-  renderer: "tui",
 };
 
 export function resolveUISettings(input?: UISettingsInput): UISettings {
@@ -31,19 +27,7 @@ export function resolveUISettings(input?: UISettingsInput): UISettings {
     virtualizedHistory:
       input?.virtualizedHistory ?? DEFAULT_UI_SETTINGS.virtualizedHistory,
     scrollMode: input?.scrollMode ?? DEFAULT_UI_SETTINGS.scrollMode,
-    renderer: resolveRenderer(input?.renderer),
   };
-}
-
-function resolveRenderer(
-  configured?: ChatRenderer,
-  env: NodeJS.ProcessEnv = process.env
-): ChatRenderer {
-  const fromEnv = (env.MEER_UI_RENDERER ?? "").trim().toLowerCase();
-  if (fromEnv === "tui" || fromEnv === "ink") {
-    return fromEnv;
-  }
-  return configured ?? DEFAULT_UI_SETTINGS.renderer;
 }
 
 function parseBooleanFlag(value?: string): boolean | undefined {

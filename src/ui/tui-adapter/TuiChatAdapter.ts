@@ -21,8 +21,8 @@ import type {
 import type { MessageAttachment } from "../../agent/core/types.js";
 import type { Plan } from "../../plan/types.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
-import type { UITimelineEvent } from "../ink/timelineTypes.js";
-import { collapseWhitespace } from "../ink/streamCommit.js";
+import type { UITimelineEvent } from "../shared/timelineTypes.js";
+import { collapseWhitespace } from "../shared/streamCommit.js";
 import { getAllCommands } from "../../slash/registry.js";
 import { isSlashCommandInput } from "../../slash/utils.js";
 import { setToolConsoleQuiet } from "../../tools/index.js";

@@ -130,7 +130,6 @@ const ConfigSchema = z.object({
     screenReaderMode: z.enum(["auto", "on", "off"]).optional(),
     virtualizedHistory: z.enum(["auto", "always", "never"]).optional(),
     scrollMode: z.enum(["auto", "manual"]).optional(),
-    renderer: z.enum(["ink", "tui"]).optional(),
   }).optional(),
   approvals: z.object({
     alwaysAsk: z.boolean().optional(),

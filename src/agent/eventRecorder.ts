@@ -1,5 +1,5 @@
 import type { AgentEventBus, AgentLogEvent, AgentTaskEvent, AgentToolEvent, AgentQueueEvent } from "./eventBus.js";
-import type { UITimelineEvent } from "../ui/ink/timelineTypes.js";
+import type { UITimelineEvent } from "../ui/shared/timelineTypes.js";
 import type { Plan } from "../plan/types.js";
 
 const MAX_EVENTS = 400;

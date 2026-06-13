@@ -34,7 +34,7 @@ import {
 } from "../slash/registry.js";
 import type { SlashCommandDefinition } from "../slash/schema.js";
 import { renderSlashTemplate } from "../slash/template.js";
-import type { UITimelineEvent } from "../ui/ink/index.js";
+import type { UITimelineEvent } from "../ui/shared/timelineTypes.js";
 import type { ChatAdapter } from "../ui/chat-adapter.js";
 import type { AgentEventRecorder } from "../agent/eventRecorder.js";
 import { backgroundTerminals } from "../runtime/backgroundTerminals.js";

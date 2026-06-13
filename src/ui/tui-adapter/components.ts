@@ -19,7 +19,7 @@ import {
   getCommand,
   getFilePath,
   truncateLine,
-} from "../ink/tool-renderers/utils.js";
+} from "../shared/tool-utils.js";
 import { getMarkdownTheme, getTuiStyles, type TuiStyles } from "./theme.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
