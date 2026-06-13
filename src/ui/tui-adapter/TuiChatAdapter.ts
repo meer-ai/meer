@@ -18,7 +18,10 @@ import type {
   FormQuestion,
   TranscriptEntry,
 } from "../chat-adapter.js";
+import { readFileSync } from "node:fs";
 import type { MessageAttachment } from "../../agent/core/types.js";
+import { readClipboardImage } from "../../utils/clipboard-image.js";
+import { saveAttachmentBytes } from "../../utils/attachments.js";
 import type { Plan } from "../../plan/types.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
 import type { UITimelineEvent } from "../shared/timelineTypes.js";
@@ -124,6 +127,8 @@ export class TuiChatAdapter implements ChatAdapter {
   private lastCtrlCAt = 0;
   private plan: Plan | null = null;
   private onTerminalResize?: () => void;
+  /** Images pasted (Ctrl+V) that will ride along with the next submitted message. */
+  private pendingAttachments: MessageAttachment[] = [];
 
   private consolePatched = false;
   private savedConsole: Partial<
@@ -223,14 +228,52 @@ export class TuiChatAdapter implements ChatAdapter {
       this.interruptHandler();
       return { consume: true };
     }
+    // Ctrl+V: attach an image from the clipboard if there is one. When the
+    // clipboard holds no image we DON'T consume the event, so normal
+    // text-paste behaviour is unaffected.
+    if (matchesKey(data, "ctrl+v") && !this.activePrompt) {
+      if (this.tryPasteImage()) {
+        return { consume: true };
+      }
+    }
     return undefined;
+  }
+
+  /**
+   * Read an image off the system clipboard, persist it as an attachment, and
+   * queue it for the next submitted message. Returns true if an image was
+   * found (so the keypress is consumed); false means "no image — fall through".
+   */
+  private tryPasteImage(): boolean {
+    let clip: { path: string; mimeType: string } | null = null;
+    try {
+      clip = readClipboardImage();
+    } catch {
+      clip = null;
+    }
+    if (!clip) return false;
+    try {
+      const attachment = saveAttachmentBytes(readFileSync(clip.path), clip.mimeType);
+      this.pendingAttachments.push(attachment);
+      this.appendSystemMessage(
+        `📎 Image attached (${this.pendingAttachments.length} pending) — it will be sent with your next message.`
+      );
+      this.refreshFooter();
+    } catch (error) {
+      this.appendSystemMessage(
+        `❌ Couldn't attach image: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    return true;
   }
 
   private handleSubmit(rawText: string): void {
     const text = rawText.replace(/\r\n/g, "\n");
     const trimmed = text.trim();
-    if (!trimmed) return;
-    this.editor.addToHistory(text);
+    const attachments = this.pendingAttachments;
+    // Allow submitting with just an image (no text) — same as the old Ink flow.
+    if (!trimmed && attachments.length === 0) return;
+    if (trimmed) this.editor.addToHistory(text);
 
     if (this.promptResolver) {
       const resolve = this.promptResolver;
@@ -240,10 +283,17 @@ export class TuiChatAdapter implements ChatAdapter {
     }
     if (!this.onSubmitCallback) return;
 
+    // Hand the queued attachments off with this turn, then reset.
+    this.pendingAttachments = [];
+    this.refreshFooter();
+
     if (!isSlashCommandInput(trimmed)) {
-      this.appendUserMessage(trimmed, { optimistic: true });
+      this.appendUserMessage(trimmed, {
+        optimistic: true,
+        attachmentCount: attachments.length,
+      });
     }
-    this.onSubmitCallback(text);
+    this.onSubmitCallback(text, attachments.length > 0 ? attachments : undefined);
   }
 
   // ── ChatAdapter: transcript ────────────────────────────────────────────────
@@ -669,6 +719,7 @@ export class TuiChatAdapter implements ChatAdapter {
       mode: this.mode,
       messageCount: this.messageCount,
       queued: this.queueState.steering + this.queueState.followUp,
+      attachments: this.pendingAttachments.length,
     });
     this.ui.requestRender();
   }

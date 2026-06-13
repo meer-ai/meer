@@ -2405,10 +2405,11 @@ export function saveMemory(
   try {
     toolLog(chalk.gray(`  💾 Saving memory: ${key}`));
 
-    // Create memory directory if it doesn't exist
+    // Create memory directory if it doesn't exist. Use fs.mkdirSync (not
+    // `mkdir -p`, which is Unix-only and fails in Windows cmd.exe).
     const memoryDir = join(cwd, ".meer-memory");
     if (!existsSync(memoryDir)) {
-      execSync(`mkdir -p "${memoryDir}"`, { cwd });
+      fs.mkdirSync(memoryDir, { recursive: true });
     }
 
     const memoryData = {

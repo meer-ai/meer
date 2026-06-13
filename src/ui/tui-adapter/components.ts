@@ -251,6 +251,8 @@ export interface FooterState {
   cost?: { current: number; limit?: number };
   queued: number;
   status?: string;
+  /** Number of images queued to send with the next message. */
+  attachments?: number;
 }
 
 export class FooterComponent implements Component {
@@ -284,6 +286,9 @@ export class FooterComponent implements Component {
     parts.push(s.muted(`${st.messageCount} msgs`));
     if (st.queued > 0) {
       parts.push(s.warning(`${st.queued} queued`));
+    }
+    if (st.attachments && st.attachments > 0) {
+      parts.push(s.warning(`📎 ${st.attachments}`));
     }
     const hints = s.muted("Enter send · Esc stop · / commands · ^C exit");
     const line = ` ${parts.join(s.muted(" · "))}`;

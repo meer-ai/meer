@@ -177,6 +177,46 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   adapter.destroy();
 }
 
+// ── Image attachments ride along with the next submit ───────────────────────
+// Ctrl+V capture reads the real clipboard (untestable here), so we seed a
+// pending attachment directly and verify the submit wiring + UI indicator.
+{
+  const { adapter, terminal } = makeAdapter();
+  const calls: Array<{ text: string; attachments?: unknown[] }> = [];
+  adapter.enableContinuousChat((text, attachments) => calls.push({ text, attachments }));
+
+  const fakeAttachment = {
+    kind: "image",
+    mimeType: "image/png",
+    source: { type: "path", path: "/tmp/shot.png" },
+    name: "shot.png",
+  };
+  (adapter as unknown as { pendingAttachments: unknown[] }).pendingAttachments.push(fakeAttachment);
+
+  for (const ch of "look at this") terminal.type(ch);
+  terminal.type("\r");
+
+  assert.equal(calls.length, 1, "submit fired once");
+  assert.ok(calls[0].attachments?.length === 1, "pending attachment passed to onSubmit");
+  assert.ok(renderedText(adapter).includes("📎"), "attachment indicator shown in transcript");
+
+  // Pending list is cleared after the turn so it doesn't leak into the next.
+  assert.equal(
+    (adapter as unknown as { pendingAttachments: unknown[] }).pendingAttachments.length,
+    0,
+    "pending attachments reset after submit"
+  );
+
+  // Attachment-only submit (no text) is allowed.
+  (adapter as unknown as { pendingAttachments: unknown[] }).pendingAttachments.push(fakeAttachment);
+  terminal.type("\r");
+  assert.equal(calls.length, 2, "image-only submit fires without text");
+  assert.equal(calls[1].text.trim(), "", "image-only submit carries empty text");
+  assert.ok(calls[1].attachments?.length === 1, "image-only submit carries the attachment");
+
+  adapter.destroy();
+}
+
 // ── Interrupt via Esc ────────────────────────────────────────────────────────
 {
   const { adapter, terminal } = makeAdapter();
