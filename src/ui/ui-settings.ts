@@ -19,7 +19,7 @@ export const DEFAULT_UI_SETTINGS: UISettings = {
   screenReaderMode: "auto",
   virtualizedHistory: "auto",
   scrollMode: "auto",
-  renderer: "ink",
+  renderer: "tui",
 };
 
 export function resolveUISettings(input?: UISettingsInput): UISettings {
