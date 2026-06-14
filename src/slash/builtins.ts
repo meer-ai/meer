@@ -56,6 +56,10 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     description: "Switch the active AI model",
   },
   {
+    command: "/trust",
+    description: "Show or reset project-trust for this folder",
+  },
+  {
     command: "/review",
     description: "Run a code review on staged changes",
   },

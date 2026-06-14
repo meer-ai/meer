@@ -25,6 +25,9 @@ import { tmpdir } from "node:os";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sanitizeToolOutput } from "../utils/output-sanitize.js";
+import { TrustStore, type TrustMode } from "../trust/store.js";
+import { normalizeCommand } from "../trust/match.js";
+import { classifyCommand } from "../trust/command-classifier.js";
 
 // Re-export the config type so cli.ts can use it
 export interface MeerAgentConfig {
@@ -79,6 +82,22 @@ export interface MeerAgentConfig {
     }>,
     submitLabel?: string
   ) => Promise<Record<string, string | string[]>>;
+  /**
+   * Project-trust mode for this session:
+   *   - "trusted":    persisted allowlist active; "Always allow" writes to disk
+   *   - "session":    in-memory allowlist only; "Always allow" lasts the session
+   *   - "restricted": no allowlist; every command is prompted (no "Always allow")
+   * Defaults to "trusted" when omitted.
+   */
+  trustMode?: TrustMode;
+  /** Override the trust store location (primarily for testing). */
+  trustStore?: TrustStore;
+  /**
+   * Whether interactive approval prompts are enabled for edits and shell
+   * commands. When false, edits auto-apply and trusted/session commands run
+   * without prompting (restricted-mode commands still prompt). Defaults to false.
+   */
+  approvalsEnabled?: boolean;
 }
 
 export interface MeerAgentInitOptions {
@@ -90,6 +109,11 @@ export class MeerAgent {
   private config: MeerAgentConfig;
   private provider: Provider;
   private cwd: string;
+  private trustStore: TrustStore;
+  /** Commands the user chose to "always allow" for this session only. */
+  private sessionAllowedCommands = new Set<string>();
+  /** Tool actions the user chose to "always allow" for this session only. */
+  private sessionAllowedTools = new Set<string>();
   private mcpManager = MCPManager.getInstance();
   private mcpTools: MCPTool[] = [];
   private abortController: AbortController | null = null;
@@ -124,6 +148,7 @@ export class MeerAgent {
     });
     this.cwd = config.cwd;
     this.shellCwd = config.cwd;
+    this.trustStore = config.trustStore ?? new TrustStore();
     this.enableMemory = config.enableMemory ?? true;
     this.providerType = config.providerType ?? "unknown";
     this.model = config.model ?? "unknown";
@@ -687,7 +712,7 @@ export class MeerAgent {
   }
 
   private async reviewFileEdit(edit: FileEdit): Promise<boolean> {
-    if (!this.config.promptChoice) {
+    if (!this.config.promptChoice || !this.config.approvalsEnabled) {
       this.editedFiles.add(edit.path);
       return true;
     }
@@ -721,60 +746,138 @@ export class MeerAgent {
 
   private async confirmCommand(command: string): Promise<boolean> {
     const cmd = command.trim();
+    const mode: TrustMode = this.config.trustMode ?? "trusted";
+    const promptChoice = this.config.promptChoice;
+    const risk = classifyCommand(cmd);
 
-    // Block unambiguously destructive patterns regardless of anything else
-    const blockedPatterns = [
-      /rm\s+-[a-z]*r[a-z]*f|rm\s+-[a-z]*f[a-z]*r/i,    // rm -rf / rm -fr
-      /\bformat\s+(c:|\/dev\/)/i,
-      /\bmkfs\b/i,
-      /\bdd\s+if=.*of=\/dev\//i,
-      /\bshutdown\b|\breboot\b|\binit\s+0\b/i,
-      /\bsudo\s+rm\b/i,
-      /\bdel\s+\/[sf]/i,
-      /\brd\s+\/s/i,
-    ];
-    if (blockedPatterns.some((p) => p.test(cmd))) {
+    // Catastrophic, system-destroying commands are hard-denied regardless of
+    // trust, approvals, or any allowlist.
+    if (risk === "catastrophic") {
       return false;
     }
 
-    // Auto-approve read-only and common dev-workflow commands
-    const safePatterns = [
-      // git — all read operations
-      /^git\s+(status|diff|log|branch|show|describe|rev-parse|shortlog|tag|ls-files|ls-remote|blame|stash list|remote|fetch\s+--dry-run|config\s+--list|reflog|cherry|check-ignore)/i,
-      // npm — build, test, info, audit, listing
-      /^npm\s+(run|test|build|install|i|ci|audit|ls|list|outdated|info|view|pack|version|help|fund|ping|prefix|bin)(\s|$)/i,
-      // yarn — build, test, info, audit
-      /^yarn(\s+(run|test|build|install|audit|list|outdated|info|versions|check|help|why|licenses|bin|config))?(\s|$)/i,
-      // pnpm — build, test, info, audit
-      /^pnpm\s+(run|test|build|install|audit|list|ls|outdated|info|why|licenses)(\s|$)/i,
-      // npx for common read/check tools
-      /^npx\s+(tsc|eslint|prettier|jest|vitest|mocha|ts-node|tsx|vite build|next build|nuxt build|rollup|esbuild|swc|turbo)(\s|$)/i,
-      // runtime version / help queries
-      /^(node|npm|npx|yarn|pnpm|bun|deno|go|python3?|ruby|java|rustc|cargo)\s+(--version|-v|--help|-h|version)(\s|$)/i,
-      // OS read-only
-      /^(ls|dir|cat|head|tail|grep|rg|find|fd|bat|less|more|type)\s/i,
-      /^(ls|dir|pwd|echo|printf|env|whoami|hostname|uname|date|which|where|type)(\s|$)/i,
-      // package.json scripts via node/bun
-      /^(node|bun)\s+--?\w/i,
-    ];
+    // Dangerous but recoverable commands ALWAYS prompt before running, even in
+    // a trusted project with approvals off. The decision is never remembered
+    // (no "Always allow"), defaults to Cancel, and is denied in headless mode.
+    if (risk === "dangerous") {
+      if (!promptChoice) {
+        return false;
+      }
+      const choice = await promptChoice(
+        `**⚠️ Dangerous command — confirm to run:**\n\`\`\`\n${command}\n\`\`\``,
+        [
+          { label: "Run", value: "run" },
+          { label: "Cancel", value: "cancel" },
+        ],
+        "cancel"
+      );
+      return choice === "run";
+    }
 
-    if (safePatterns.some((p) => p.test(cmd))) return true;
+    // Read-only / common dev-workflow commands are auto-approved.
+    if (risk === "safe") return true;
 
-    if (!this.config.promptChoice) {
-      // No TUI prompt available — auto-approve non-destructive commands
+    // Allowlist fast-path: commands the user previously chose to "always allow"
+    // skip the prompt. Persisted rules apply only in trusted mode; the in-memory
+    // session allowlist applies in trusted and session modes.
+    const normalized = normalizeCommand(cmd);
+    if (mode === "trusted" && this.trustStore.isCommandAllowed(this.cwd, cmd)) {
+      return true;
+    }
+    if (mode !== "restricted" && this.sessionAllowedCommands.has(normalized)) {
       return true;
     }
 
-    const choice = await this.config.promptChoice(
+    // Decide whether to prompt at all. Approval prompts are normally gated by
+    // `approvalsEnabled`, but a restricted (untrusted) project forces prompting
+    // even when approvals are otherwise off. With no chooser available
+    // (headless), fall back to auto-approving non-destructive commands.
+    const promptingEnabled =
+      Boolean(promptChoice) &&
+      (Boolean(this.config.approvalsEnabled) || mode === "restricted");
+    if (!promptChoice || !promptingEnabled) {
+      return true;
+    }
+
+    // "Always allow" is only meaningful when we can remember the decision;
+    // in restricted mode the user declined trust, so we never offer it.
+    const choices =
+      mode === "restricted"
+        ? [
+            { label: "Run", value: "run" },
+            { label: "Cancel", value: "cancel" },
+          ]
+        : [
+            { label: "Run", value: "run" },
+            { label: "Always allow", value: "always" },
+            { label: "Cancel", value: "cancel" },
+          ];
+
+    const choice = await promptChoice(
       `**Run shell command:**\n\`\`\`\n${command}\n\`\`\``,
-      [
-        { label: "Run", value: "run" },
-        { label: "Cancel", value: "cancel" },
-      ],
+      choices,
       "run"
     );
 
+    if (choice === "always") {
+      if (mode === "trusted") {
+        this.trustStore.allowCommand(this.cwd, cmd);
+      } else {
+        this.sessionAllowedCommands.add(normalized);
+      }
+      return true;
+    }
+
     return choice === "run";
+  }
+
+  /**
+   * Approve a mutating tool action (delete_file, move_file, create_directory,
+   * package_install, set_env). Mirrors confirmCommand's trust semantics but is
+   * keyed by tool name so "Always allow" remembers the whole tool, not a string.
+   */
+  private async confirmToolAction(toolName: string, action: string): Promise<boolean> {
+    const mode: TrustMode = this.config.trustMode ?? "trusted";
+
+    if (mode === "trusted" && this.trustStore.isToolAllowed(this.cwd, toolName)) {
+      return true;
+    }
+    if (mode !== "restricted" && this.sessionAllowedTools.has(toolName)) {
+      return true;
+    }
+
+    const promptChoice = this.config.promptChoice;
+    const promptingEnabled =
+      Boolean(promptChoice) &&
+      (Boolean(this.config.approvalsEnabled) || mode === "restricted");
+    if (!promptChoice || !promptingEnabled) {
+      return true;
+    }
+
+    const choices =
+      mode === "restricted"
+        ? [
+            { label: "Yes", value: "yes" },
+            { label: "No", value: "no" },
+          ]
+        : [
+            { label: "Yes", value: "yes" },
+            { label: `Always allow ${toolName}`, value: "always" },
+            { label: "No", value: "no" },
+          ];
+
+    const choice = await promptChoice(`**${action}**`, choices, "yes");
+
+    if (choice === "always") {
+      if (mode === "trusted") {
+        this.trustStore.allowTool(this.cwd, toolName);
+      } else {
+        this.sessionAllowedTools.add(toolName);
+      }
+      return true;
+    }
+
+    return choice === "yes";
   }
 
   private buildAgentTools(): AgentTool[] {
@@ -794,6 +897,8 @@ export class MeerAgent {
             .join("\n") || "Tool completed.";
         },
         confirmCommand: (command) => this.confirmCommand(command),
+        confirmToolAction: (toolName, action) =>
+          this.confirmToolAction(toolName, action),
         promptForm: (title, questions, submitLabel) => {
           if (!this.config.promptForm) {
             throw new Error("Structured user input is unavailable in this UI.");

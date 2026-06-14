@@ -60,6 +60,23 @@ export interface TuiChatConfig {
 
 const EXIT_CONFIRM_WINDOW_MS = 1500;
 
+/**
+ * Reduce the small amount of Markdown that callers put in prompt messages
+ * (bold, inline code, code fences, headers) to plain text. The InlinePrompt
+ * renders a single styled string, so raw `**` / backticks would otherwise show
+ * literally.
+ */
+function stripPromptMarkdown(input: string): string {
+  return input
+    .replace(/```[a-zA-Z0-9_-]*\n?/g, "") // code-fence markers
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .replace(/\*\*([^*]+)\*\*/g, "$1") // **bold**
+    .replace(/__([^_]+)__/g, "$1") // __bold__
+    .replace(/^#{1,6}\s+/gm, "") // # headers
+    .replace(/\n{3,}/g, "\n\n") // collapse excess blank lines
+    .trim();
+}
+
 /** Inline prompt (choice/form question) shown above the editor. */
 class InlinePrompt extends Container {
   list: SelectList;
@@ -69,7 +86,7 @@ class InlinePrompt extends Container {
     super();
     const s = getTuiStyles();
     this.addChild(new Spacer(1));
-    this.addChild(new Text(s.bold(s.text(message)), 1, 0));
+    this.addChild(new Text(s.bold(s.text(stripPromptMarkdown(message))), 1, 0));
     this.list = new SelectList(items, Math.min(10, Math.max(items.length, 1)), getSelectListTheme());
     this.addChild(this.list);
     this.addChild(new Text(s.muted(hint), 1, 0));
@@ -270,17 +287,25 @@ export class TuiChatAdapter implements ChatAdapter {
   private handleSubmit(rawText: string): void {
     const text = rawText.replace(/\r\n/g, "\n");
     const trimmed = text.trim();
+
+    // An active prompt resolver (prompt / promptSecret) consumes the input
+    // directly — including empty input, which lets the caller treat it as
+    // "cancel". Secret input is never echoed to history and exits mask mode.
+    if (this.promptResolver) {
+      const resolve = this.promptResolver;
+      this.promptResolver = null;
+      const wasSecret = this.editor.isSecret();
+      if (wasSecret) this.editor.setSecret(false);
+      if (trimmed && !wasSecret) this.editor.addToHistory(text);
+      resolve(text);
+      return;
+    }
+
     const attachments = this.pendingAttachments;
     // Allow submitting with just an image (no text) — same as the old Ink flow.
     if (!trimmed && attachments.length === 0) return;
     if (trimmed) this.editor.addToHistory(text);
 
-    if (this.promptResolver) {
-      const resolve = this.promptResolver;
-      this.promptResolver = null;
-      resolve(text);
-      return;
-    }
     if (!this.onSubmitCallback) return;
 
     // Hand the queued attachments off with this turn, then reset.
@@ -750,6 +775,16 @@ export class TuiChatAdapter implements ChatAdapter {
     if (this.promptResolver) {
       throw new Error("Prompt already active");
     }
+    return new Promise<string>((resolve) => {
+      this.promptResolver = resolve;
+    });
+  }
+
+  async promptSecret(): Promise<string> {
+    if (this.promptResolver) {
+      throw new Error("Prompt already active");
+    }
+    this.editor.setSecret(true);
     return new Promise<string>((resolve) => {
       this.promptResolver = resolve;
     });

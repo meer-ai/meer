@@ -24,6 +24,11 @@ export interface MeerAgentToolContext {
    */
   confirmCommand?: (command: string) => Promise<boolean>;
   /**
+   * Ask the user before a mutating tool action (delete_file, move_file, …).
+   * Keyed by tool name so an "always allow" decision can be remembered per tool.
+   */
+  confirmToolAction?: (toolName: string, action: string) => Promise<boolean>;
+  /**
    * Ask the user a structured set of questions through the active UI.
    */
   promptForm?: (
@@ -314,11 +319,17 @@ async function ensureCommandApproval(
 
 async function ensureToolActionApproval(
   context: MeerAgentToolContext,
+  toolName: string,
   action: string
 ): Promise<boolean> {
+  // Prefer the tool-aware approval path (supports per-tool "always allow").
+  // Fall back to the shell-command confirm callback for back-compat.
+  if (context.confirmToolAction) {
+    return context.confirmToolAction(toolName, action);
+  }
   if (!context.confirmCommand) {
     throw new Error(
-      `confirmCommand callback is required to execute dangerous operations safely (${action}).`
+      `An approval callback is required to execute dangerous operations safely (${action}).`
     );
   }
   return context.confirmCommand(action);
@@ -816,7 +827,7 @@ async function callMeerTool(
     }
     case "delete_file": {
       const path = String(input.path);
-      if (!(await ensureToolActionApproval(context, `Delete file ${path}?`))) {
+      if (!(await ensureToolActionApproval(context, "delete_file", `Delete file ${path}?`))) {
         return `⚠️ Delete cancelled: ${path}`;
       }
       return unwrap(tools.deleteFile(path, context.cwd));
@@ -824,14 +835,14 @@ async function callMeerTool(
     case "move_file": {
       const source = String(input.source);
       const dest = String(input.dest);
-      if (!(await ensureToolActionApproval(context, `Move ${source} → ${dest}?`))) {
+      if (!(await ensureToolActionApproval(context, "move_file", `Move ${source} → ${dest}?`))) {
         return `⚠️ Move cancelled: ${source} → ${dest}`;
       }
       return unwrap(tools.moveFile(source, dest, context.cwd));
     }
     case "create_directory": {
       const path = String(input.path);
-      if (!(await ensureToolActionApproval(context, `Create directory ${path}?`))) {
+      if (!(await ensureToolActionApproval(context, "create_directory", `Create directory ${path}?`))) {
         return `⚠️ Directory creation cancelled: ${path}`;
       }
       return unwrap(tools.createDirectory(path, context.cwd));
@@ -854,7 +865,7 @@ async function callMeerTool(
         input.global !== undefined ? Boolean(input.global) : undefined;
       const scopeLabel = globalInstall ? "globally" : "locally";
       const packageLabel = packages.join(", ");
-      if (!(await ensureToolActionApproval(context, `Install ${packageLabel} ${scopeLabel}?`))) {
+      if (!(await ensureToolActionApproval(context, "package_install", `Install ${packageLabel} ${scopeLabel}?`))) {
         return `⚠️ Package install cancelled: ${packageLabel}`;
       }
       return unwrap(
@@ -893,7 +904,7 @@ async function callMeerTool(
     case "set_env": {
       const key = String(input.key);
       const value = String(input.value ?? "");
-      if (!(await ensureToolActionApproval(context, `Set environment variable ${key}=${value}?`))) {
+      if (!(await ensureToolActionApproval(context, "set_env", `Set environment variable ${key}=${value}?`))) {
         return `⚠️ Environment variable modification cancelled: ${key}`;
       }
       return unwrap(tools.setEnv(key, value, context.cwd));

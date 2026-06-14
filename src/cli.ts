@@ -28,6 +28,8 @@ import { AgentEventRecorder } from "./agent/eventRecorder.js";
 import { BusTimeline } from "./agent/busTimeline.js";
 import { WorkflowTimeline } from "./ui/workflowTimeline.js";
 import { showWelcomeScreen } from "./chat/welcome.js";
+import { TrustStore } from "./trust/store.js";
+import { resolveTrustMode, describeTrustMode } from "./trust/gate.js";
 import { memory } from "./memory/index.js";
 import {
   handleSlashCommand,
@@ -433,10 +435,29 @@ export function createCLI(): Command {
           chatUI.setBackgroundSessions(backgroundTerminals.list());
         });
 
+        // ── Project trust gate ────────────────────────────────────────────────
+        // Ask once per folder whether the user trusts it. The result selects how
+        // shell commands are gated for this session. Headless/non-TUI runs skip
+        // the prompt and default to trusted (preserving prior behavior).
+        const trustStore = new TrustStore();
+        const trustMode = await resolveTrustMode({
+          cwd: currentCwd,
+          store: trustStore,
+          promptChoice: chatUI
+            ? (message, choices, def) => chatUI.promptChoice(message, choices, def ?? choices[0]?.value ?? "")
+            : undefined,
+        });
+        if (chatUI) {
+          chatUI.appendSystemMessage(describeTrustMode(trustMode));
+        }
+
         // ── Agent setup ───────────────────────────────────────────────────────
         const agentConfig = {
           provider: config.provider,
           cwd: currentCwd,
+          trustStore,
+          trustMode,
+          approvalsEnabled,
           maxIterations: config.maxIterations,
           autoCollectContext: config.autoCollectContext,
           compaction: config.compaction,
@@ -492,19 +513,21 @@ export function createCLI(): Command {
           },
           onToolEnd: () => chatUI?.clearTools(),
           onError: () => {},
-          promptChoice: approvalsEnabled
-            ? async (
-                promptMessage: string,
-                choices: Array<{ label: string; value: string }>,
-                defaultChoice?: string
-              ) => {
-                if (chatUI) {
-                  const fallback = defaultChoice ?? choices[0]?.value ?? "";
-                  return chatUI.promptChoice(promptMessage, choices, fallback);
-                }
-                return defaultChoice ?? choices[0]?.value ?? "";
-              }
-            : undefined,
+          // Always wired so an untrusted (restricted) project can prompt before
+          // shell commands even when approvals are otherwise off. Whether a
+          // prompt actually appears is decided inside the agent based on
+          // approvalsEnabled and the trust mode.
+          promptChoice: async (
+            promptMessage: string,
+            choices: Array<{ label: string; value: string }>,
+            defaultChoice?: string
+          ) => {
+            if (chatUI) {
+              const fallback = defaultChoice ?? choices[0]?.value ?? "";
+              return chatUI.promptChoice(promptMessage, choices, fallback);
+            }
+            return defaultChoice ?? choices[0]?.value ?? "";
+          },
           promptForm: async (
             title: string,
             questions: Array<{

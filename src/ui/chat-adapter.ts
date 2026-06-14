@@ -107,6 +107,8 @@ export interface ChatAdapter {
     onSubmit: (text: string, attachments?: MessageAttachment[]) => void
   ): void;
   prompt(): Promise<string>;
+  /** Like prompt(), but masks input for secrets (API keys) and never stores it in history. */
+  promptSecret(): Promise<string>;
   promptChoice<T extends string>(
     message: string,
     options: Array<ChoiceOption<T>>,

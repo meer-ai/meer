@@ -263,6 +263,10 @@ export class Editor implements Component, Focusable {
 	private theme: EditorTheme;
 	private paddingX: number = 0;
 
+	// When true, rendered characters are masked (for secret/API-key entry).
+	// getText() still returns the real value.
+	private secret: boolean = false;
+
 	// Store last render width for cursor navigation
 	private lastWidth: number = 80;
 
@@ -346,6 +350,22 @@ export class Editor implements Component, Focusable {
 
 	getPaddingX(): number {
 		return this.paddingX;
+	}
+
+	/**
+	 * Toggle secret mode. While on, the editor renders each character as a mask
+	 * glyph so API keys / passwords are not shown in plain text. The underlying
+	 * value (getText) is unchanged.
+	 */
+	setSecret(on: boolean): void {
+		if (this.secret !== on) {
+			this.secret = on;
+			this.tui.requestRender();
+		}
+	}
+
+	isSecret(): boolean {
+		return this.secret;
 	}
 
 	setPaddingX(padding: number): void {
@@ -886,7 +906,12 @@ export class Editor implements Component, Focusable {
 
 		// Process each logical line
 		for (let i = 0; i < this.state.lines.length; i++) {
-			const line = this.state.lines[i] || "";
+			const rawLine = this.state.lines[i] || "";
+			// In secret mode mask each grapheme 1:1 so column/cursor math (which
+			// counts graphemes) stays correct while the value is hidden.
+			const line = this.secret
+				? "•".repeat([...this.segment(rawLine, "grapheme")].length)
+				: rawLine;
 			const isCurrentLine = i === this.state.cursorLine;
 			const lineVisibleWidth = visibleWidth(line);
 

@@ -340,6 +340,45 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   console.log("");
 }
 
+// ── Inline prompt strips markdown ─────────────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+  // Callers pass light markdown; the inline prompt must render it as plain text.
+  void adapter.promptChoice(
+    "**Trust this project folder?**\n`/Users/moe/widget`",
+    [
+      { label: "Trust", value: "trust" },
+      { label: "Don't trust", value: "no" },
+    ],
+    "trust"
+  );
+  const text = renderedText(adapter);
+  assert.ok(text.includes("Trust this project folder?"), "prompt message text renders");
+  assert.ok(text.includes("/Users/moe/widget"), "prompt path renders");
+  assert.ok(!text.includes("**"), "no raw bold markers in prompt");
+  assert.ok(!text.includes("`"), "no raw backticks in prompt");
+  adapter.destroy();
+}
+
+// ── Secret prompt masks input and keeps it out of the transcript ──────────────
+{
+  const { adapter, terminal } = makeAdapter();
+  const secretValue = "sk-live-SECRET-7f3a";
+  const pending = adapter.promptSecret();
+  terminal.type(secretValue);
+  let text = renderedText(adapter);
+  assert.ok(!text.includes(secretValue), "secret value is not shown in plain text");
+  assert.ok(text.includes("•"), "secret characters are masked");
+
+  // Submit (Enter) resolves with the real value, but nothing leaks to the screen.
+  terminal.type("\r");
+  const resolved = await pending;
+  assert.equal(resolved, secretValue, "promptSecret resolves with the real value");
+  text = renderedText(adapter);
+  assert.ok(!text.includes(secretValue), "secret never appears after submit");
+  adapter.destroy();
+}
+
 // Allow any stray loader/ticker callbacks to settle, then confirm clean exit.
 await sleep(50);
 console.log("tui-adapter verification passed");

@@ -27,6 +27,7 @@ import { ChatBoxUI } from "../ui/chatbox.js";
 import { showSlashHelp } from "../ui/slashHelp.js";
 import { runCommand } from "../tools/index.js";
 import { memory } from "../memory/index.js";
+import { TrustStore } from "../trust/store.js";
 import { generateCompactionSummaryWithProvider } from "../agent/session-compaction.js";
 import {
   resolveCustomCommand,
@@ -804,9 +805,9 @@ async function promptForApiKey(
 ): Promise<string | null> {
   if (tui) {
     tui.appendSystemMessage(
-      `🔑 ${label} needs an API key. Paste it here and press Enter — it won't be saved to the transcript. (Empty line to cancel, or set ${envVar}.)`
+      `🔑 ${label} needs an API key. Paste it here and press Enter — input is hidden and won't be saved to history or the transcript. (Empty line to cancel, or set ${envVar}.)`
     );
-    const key = (await tui.prompt()).trim();
+    const key = (await tui.promptSecret()).trim();
     return key || null;
   }
   const { apiKey } = await inquirer.prompt([
@@ -1275,6 +1276,55 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
 
   "/review": async ({ args, tui }) => {
     await runStandaloneCommand(createReviewCommand, args, tui);
+    return continueResult();
+  },
+
+  "/trust": async ({ args, tui }) => {
+    const cwd = process.cwd();
+    const store = new TrustStore();
+    const sub = (args[0] ?? "").toLowerCase();
+    const emit = (text: string) => {
+      if (tui) tui.appendSystemMessage(text);
+      else console.log(text);
+    };
+
+    if (sub === "reset" || sub === "forget") {
+      const had = store.hasDecision(cwd);
+      store.reset(cwd);
+      emit(
+        had
+          ? `Cleared trust + allowlist for ${cwd}.\nRestart meer (or reopen this folder) to be asked again.`
+          : `No trust decision was stored for ${cwd}.`
+      );
+      return continueResult();
+    }
+
+    const project = store.getProject(cwd);
+    if (!project) {
+      emit(
+        [
+          `Trust for ${cwd}:`,
+          "  No decision recorded yet (you'll be asked on next launch).",
+          "",
+          "Usage: /trust            show trust status",
+          "       /trust reset      forget this folder's trust + allowlist",
+        ].join("\n")
+      );
+      return continueResult();
+    }
+
+    const lines = [
+      `Trust for ${cwd}:`,
+      `  Trusted: ${project.trusted ? "yes" : "no"}`,
+      `  Decided: ${project.decidedAt}`,
+      `  Allowed commands: ${project.allowedCommands.length}`,
+      ...project.allowedCommands.slice(0, 10).map((c) => `    • ${c}`),
+      `  Allowed tools: ${project.allowedTools.length}`,
+      ...project.allowedTools.slice(0, 10).map((t) => `    • ${t}`),
+      "",
+      "Run /trust reset to forget this folder.",
+    ];
+    emit(lines.join("\n"));
     return continueResult();
   },
 
