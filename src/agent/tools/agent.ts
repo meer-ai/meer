@@ -5,6 +5,7 @@ import * as tools from "../../tools/index.js";
 import type { Provider } from "../../providers/base.js";
 import type { MCPTool } from "../../mcp/types.js";
 import type { AgentTool, AgentToolCallResult } from "../runtime/types.js";
+import { extractLeadingCd } from "../../utils/shell-cd.js";
 export interface MeerAgentToolContext {
   cwd: string;
   provider?: Provider;
@@ -455,8 +456,6 @@ async function callMeerTool(
       //   - execute whatever's left after the cd's (often empty for a
       //     bare `cd /path`, in which case we report success without
       //     spawning a shell at all)
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { extractLeadingCd } = require("../../utils/shell-cd.js") as typeof import("../../utils/shell-cd.js");
       const sessionCwd = context.getShellCwd?.() ?? context.cwd;
       const cdParse = extractLeadingCd(command, sessionCwd);
       if (cdParse.error) {

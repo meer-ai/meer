@@ -2,10 +2,12 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlin
 import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
+import { CURRENT_SESSION_VERSION, parseSessionEntries } from "./migrate.js";
 
 export interface SessionHeader {
   type: "session";
-  version: 3;
+  /** Schema version of the session file; see CURRENT_SESSION_VERSION. */
+  version: number;
   id: string;
   createdAt: string;
   cwd: string;
@@ -80,10 +82,10 @@ function encodeCwd(cwd: string): string {
 }
 
 function parseSessionFile(content: string): SessionEntry[] {
-  return content
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as SessionEntry);
+  // Resilient + versioned: skips corrupt lines and migrates older files so a
+  // single bad line never crashes a session load (or, via listSessions, all of
+  // them). See ./migrate.ts.
+  return parseSessionEntries(content);
 }
 
 export class SessionStore {
@@ -121,7 +123,7 @@ export class SessionStore {
     const path = join(projectDir, filename);
     const header: SessionHeader = {
       type: "session",
-      version: 3,
+      version: CURRENT_SESSION_VERSION,
       id: sessionId,
       createdAt,
       cwd,

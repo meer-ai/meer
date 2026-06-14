@@ -988,12 +988,9 @@ export class ChatBoxUI {
     // Get auth status
     let authInfo = "";
     try {
-      const fs = require("fs");
-      const path = require("path");
-      const os = require("os");
-      const authPath = path.join(os.homedir(), ".meer", "auth.json");
-      if (fs.existsSync(authPath)) {
-        const authData = JSON.parse(fs.readFileSync(authPath, "utf-8"));
+      const authPath = join(homedir(), ".meer", "auth.json");
+      if (existsSync(authPath)) {
+        const authData = JSON.parse(readFileSync(authPath, "utf-8"));
         if (authData.user) {
           const name = authData.user.name.split(" ")[0]; // First name only
           const tier = authData.user.subscription_tier;

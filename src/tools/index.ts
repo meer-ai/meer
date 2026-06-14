@@ -24,7 +24,15 @@ import {
   statSync,
 } from "fs";
 import * as fs from "fs";
+import { createRequire } from "node:module";
+import { validateSyntax } from "../lsp/diagnostics.js";
 import { join, relative, dirname } from "path";
+
+// meer ships as ESM, where the CommonJS `require` global is undefined. Some
+// optional/heavy CJS deps (e.g. @babel/parser) are still loaded lazily and
+// synchronously; createRequire gives us a working require for those without
+// converting their call sites to async dynamic import().
+const require = createRequire(import.meta.url);
 import { tmpdir, homedir } from "os";
 import * as pathLib from "path";
 import chalk from "chalk";
@@ -340,7 +348,7 @@ export function applyEdit(edit: FileEdit, cwd: string): ToolResult {
 
     // Ensure directory exists
     if (!existsSync(dir)) {
-      const { mkdirSync } = require("fs");
+      const { mkdirSync } = fs;
       mkdirSync(dir, { recursive: true });
     }
 
@@ -2026,7 +2034,6 @@ function validateSyntaxInternal(
 ): { valid: boolean; errors: string[] } {
   // Use the advanced LSP diagnostics module for better validation
   try {
-    const { validateSyntax } = require('../lsp/diagnostics.js');
     return validateSyntax(filepath, content, cwd);
   } catch (error) {
     // Fallback to basic Babel validation if LSP module fails
@@ -2983,7 +2990,7 @@ export function writeFile(
 
     // Ensure directory exists
     if (!existsSync(dir)) {
-      const { mkdirSync } = require("fs");
+      const { mkdirSync } = fs;
       mkdirSync(dir, { recursive: true });
     }
 
@@ -3053,7 +3060,7 @@ export function deleteFile(filepath: string, cwd: string): ToolResult {
       };
     }
 
-    const { unlinkSync } = require("fs");
+    const { unlinkSync } = fs;
     unlinkSync(fullPath);
     ProjectContextManager.getInstance().invalidate(cwd);
 
@@ -3094,11 +3101,11 @@ export function moveFile(
 
     const destDir = dirname(fullDestPath);
     if (!existsSync(destDir)) {
-      const { mkdirSync } = require("fs");
+      const { mkdirSync } = fs;
       mkdirSync(destDir, { recursive: true });
     }
 
-    const { renameSync } = require("fs");
+    const { renameSync } = fs;
     renameSync(fullSourcePath, fullDestPath);
     ProjectContextManager.getInstance().invalidate(cwd);
 
@@ -3132,7 +3139,7 @@ export function createDirectory(dirpath: string, cwd: string): ToolResult {
       };
     }
 
-    const { mkdirSync } = require("fs");
+    const { mkdirSync } = fs;
     mkdirSync(fullPath, { recursive: true });
     ProjectContextManager.getInstance().invalidate(cwd);
 

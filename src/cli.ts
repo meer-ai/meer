@@ -354,6 +354,19 @@ export function createCLI(): Command {
           return false;
         };
 
+        // Unblock the main loop when it is parked on `askQuestion()`. Slash
+        // commands submitted through the TUI run in the async path below, so a
+        // restart/exit/queued-message they trigger would otherwise sit unnoticed
+        // until the user typed again. Resolving with empty text makes the loop
+        // `continue` and re-check its `!restarting && !exitRequested` guard.
+        const wakeMainLoop = () => {
+          if (pendingResolver) {
+            const resolve = pendingResolver;
+            pendingResolver = null;
+            resolve({ text: "" });
+          }
+        };
+
         const enqueueInput = (
           value: string,
           attachments?: import("./agent/core/types.js").MessageAttachment[]
@@ -368,7 +381,12 @@ export function createCLI(): Command {
             void (async () => {
               try {
                 const result = await executeSlashCommand(trimmed);
-                await applySlashResult(result);
+                const shouldBreak = await applySlashResult(result);
+                // Restart/exit, or a command that queued a message, must wake the
+                // idle loop so it acts now instead of after the next keystroke.
+                if (shouldBreak || queuedMessage !== null) {
+                  wakeMainLoop();
+                }
               } catch (error) {
                 const message =
                   error instanceof Error ? error.message : String(error);
