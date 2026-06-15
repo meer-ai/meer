@@ -102,6 +102,18 @@ class InlinePrompt extends Container {
   }
 }
 
+/** Human-readable one-line description of a permission mode for system messages. */
+function describeMode(mode: ChatMode): string {
+  switch (mode) {
+    case "normal":
+      return "🔒 Normal — ask before edits and commands";
+    case "auto-accept":
+      return "⚡ Auto-accept edits — applies edits, still asks for commands";
+    case "plan":
+      return "📋 Plan mode — read-only, proposes a plan";
+  }
+}
+
 export class TuiChatAdapter implements ChatAdapter {
   private config: TuiChatConfig;
   private ui: TUI;
@@ -114,7 +126,7 @@ export class TuiChatAdapter implements ChatAdapter {
   private footer: FooterComponent;
   private loader: Loader | null = null;
 
-  private mode: ChatMode = "edit";
+  private mode: ChatMode = "normal";
   private turnActive = false;
   private destroyed = false;
   private messageCount = 0;
@@ -246,6 +258,12 @@ export class TuiChatAdapter implements ChatAdapter {
     }
     if (this.turnActive && this.interruptHandler && matchesKey(data, "escape") && !this.activePrompt) {
       this.interruptHandler();
+      return { consume: true };
+    }
+    // Shift+Tab: cycle the permission mode (normal → auto-accept → plan).
+    // Ignored mid-turn and while a modal prompt is open.
+    if (matchesKey(data, "shift+tab") && !this.activePrompt && !this.turnActive) {
+      this.cycleMode();
       return { consume: true };
     }
     // Ctrl+V: attach an image from the clipboard if there is one. When the
@@ -900,6 +918,14 @@ export class TuiChatAdapter implements ChatAdapter {
     this.mode = mode;
     this.modeChangeHandler?.(mode);
     this.refreshFooter();
+  }
+
+  /** Advance to the next permission mode (Shift+Tab) and announce the change. */
+  private cycleMode(): void {
+    const order: ChatMode[] = ["normal", "auto-accept", "plan"];
+    const next = order[(order.indexOf(this.mode) + 1) % order.length];
+    this.setMode(next);
+    this.appendSystemMessage(`${describeMode(next)} (Shift+Tab to cycle)`);
   }
 
   /** A plan with at least one task and none left pending/in-progress. */

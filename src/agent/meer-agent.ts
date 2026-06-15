@@ -107,6 +107,14 @@ export interface MeerAgentInitOptions {
   priorMessages?: ChatMessage[];
 }
 
+/**
+ * Session permission mode, cycled from the UI with Shift+Tab.
+ *  - "normal":      prompt before edits and non-safe shell commands
+ *  - "auto-accept": auto-apply edits; commands still follow approval/trust rules
+ *  - "plan":        read-only — edits and mutating commands are blocked
+ */
+export type PermissionMode = "normal" | "auto-accept" | "plan";
+
 export class MeerAgent {
   private config: MeerAgentConfig;
   private provider: Provider;
@@ -126,6 +134,13 @@ export class MeerAgent {
   private skills: Skill[] = [];
   private skillDiagnostics: SkillDiagnostic[] = [];
   private editedFiles = new Set<string>();
+  /**
+   * Session permission mode (Shift+Tab). Defaults so existing launch behavior is
+   * preserved: a project launched with approvals on starts in "normal"; without
+   * approvals it starts in "auto-accept" (edits auto-apply, commands stay
+   * frictionless until the user opts into prompting by cycling to "normal").
+   */
+  private permissionMode: PermissionMode = "auto-accept";
   /**
    * Session-level shell cwd. Each `run_command` call lands in here by
    * default; bare `cd <path>` commands update it instead of running. Pi
@@ -154,6 +169,35 @@ export class MeerAgent {
     this.enableMemory = config.enableMemory ?? true;
     this.providerType = config.providerType ?? "unknown";
     this.model = config.model ?? "unknown";
+    this.permissionMode = config.approvalsEnabled ? "normal" : "auto-accept";
+  }
+
+  /** Current session permission mode. */
+  getPermissionMode(): PermissionMode {
+    return this.permissionMode;
+  }
+
+  /** Update the session permission mode (driven by Shift+Tab in the UI). */
+  setPermissionMode(mode: PermissionMode): void {
+    this.permissionMode = mode;
+  }
+
+  /**
+   * Per-turn system-prompt suffix announcing the active mode. Only PLAN needs a
+   * strong directive (read-only); the other modes don't constrain the model.
+   */
+  private permissionModeNote(): string {
+    if (this.permissionMode === "plan") {
+      return (
+        "\n\nCURRENT MODE: 📋 PLAN (read-only). Do NOT modify files or run " +
+        "mutating commands (no propose_edit, write_file, apply_edit, edit_line, " +
+        "run_command for non-read-only commands, delete_file, move_file, " +
+        "create_directory, git_commit, git_branch, scaffold_project). Investigate " +
+        "and produce a clear, actionable plan instead. Tell the user to press " +
+        "Shift+Tab to switch to edit mode when they're ready to apply changes."
+      );
+    }
+    return "";
   }
 
   /** Current session-level shell cwd. Defaults to the project cwd. */
@@ -245,9 +289,10 @@ export class MeerAgent {
 
         const agentTools = this.buildAgentTools();
 
-        const systemPrompt =
+        const basePrompt =
           options?.systemPrompt ??
           `You are Meer AI, a coding assistant. Use the provided messages and tools to complete the task.`;
+        const systemPrompt = basePrompt + this.permissionModeNote();
 
         const clearToolUi = () => {
           if (toolsCleared) return;
@@ -725,7 +770,21 @@ export class MeerAgent {
   }
 
   private async reviewFileEdit(edit: FileEdit): Promise<boolean> {
-    if (!this.config.promptChoice || !this.config.approvalsEnabled) {
+    // Plan mode is read-only: edits are blocked outright (defense in depth — the
+    // system prompt already instructs the model not to call edit tools here).
+    if (this.permissionMode === "plan") {
+      throw new Error(
+        "Plan mode is read-only — switch to edit mode (Shift+Tab) to apply changes."
+      );
+    }
+
+    // Auto-accept (or no chooser, e.g. headless) applies edits without prompting.
+    // "normal" mode always prompts when a chooser is available, regardless of the
+    // launch-time approvals flag.
+    if (
+      this.permissionMode === "auto-accept" ||
+      !this.config.promptChoice
+    ) {
       this.editedFiles.add(edit.path);
       return true;
     }
@@ -769,6 +828,11 @@ export class MeerAgent {
       return false;
     }
 
+    // Plan mode is read-only: only safe (read-only) commands may run.
+    if (this.permissionMode === "plan" && risk !== "safe") {
+      return false;
+    }
+
     // Dangerous but recoverable commands ALWAYS prompt before running, even in
     // a trusted project with approvals off. The decision is never remembered
     // (no "Always allow"), defaults to Cancel, and is denied in headless mode.
@@ -807,7 +871,9 @@ export class MeerAgent {
     // (headless), fall back to auto-approving non-destructive commands.
     const promptingEnabled =
       Boolean(promptChoice) &&
-      (Boolean(this.config.approvalsEnabled) || mode === "restricted");
+      (this.permissionMode === "normal" ||
+        Boolean(this.config.approvalsEnabled) ||
+        mode === "restricted");
     if (!promptChoice || !promptingEnabled) {
       return true;
     }
@@ -851,6 +917,11 @@ export class MeerAgent {
    */
   private async confirmToolAction(toolName: string, action: string): Promise<boolean> {
     const mode: TrustMode = this.config.trustMode ?? "trusted";
+
+    // Plan mode is read-only: mutating tool actions are blocked outright.
+    if (this.permissionMode === "plan") {
+      return false;
+    }
 
     if (mode === "trusted" && this.trustStore.isToolAllowed(this.cwd, toolName)) {
       return true;

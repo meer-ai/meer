@@ -12,7 +12,13 @@ import type { Plan } from "../plan/types.js";
 import type { BackgroundTerminalSession } from "../runtime/backgroundTerminals.js";
 import type { UITimelineEvent } from "./shared/timelineTypes.js";
 
-export type ChatMode = "edit" | "plan";
+/**
+ * Permission modes cycled with Shift+Tab:
+ *  - "normal":      ask before edits and (non-safe) shell commands
+ *  - "auto-accept": apply edits automatically; still ask before commands
+ *  - "plan":        read-only — propose a plan, no edits or mutating commands
+ */
+export type ChatMode = "normal" | "auto-accept" | "plan";
 
 export interface TranscriptEntry {
   role: "user" | "assistant" | "system" | "tool";

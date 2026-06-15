@@ -353,7 +353,7 @@ export interface FooterState {
   provider: string;
   model: string;
   cwd: string;
-  mode: "edit" | "plan";
+  mode: "normal" | "auto-accept" | "plan";
   messageCount: number;
   tokens?: { used: number; limit?: number };
   /** When true, the token figure is a char-based context estimate, not billed usage. */
@@ -381,10 +381,16 @@ export class FooterComponent implements Component {
   render(width: number): string[] {
     const s = getTuiStyles();
     const st = this.state;
+    const modeLabel =
+      st.mode === "auto-accept"
+        ? "⚡ auto-accept"
+        : st.mode === "plan"
+        ? "📋 plan"
+        : "🔒 normal";
     const parts: string[] = [
       s.accent("meer"),
       s.muted(`${st.provider}/${st.model}`),
-      s.muted(st.mode),
+      st.mode === "plan" ? s.accent(modeLabel) : s.muted(modeLabel),
     ];
     if (st.tokens && st.tokens.used > 0) {
       const limit = st.tokens.limit ? `/${formatCompact(st.tokens.limit)}` : "";

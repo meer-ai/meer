@@ -598,7 +598,8 @@ export function createCLI(): Command {
         };
 
         const { MeerAgent } = await import("./agent/meer-agent.js");
-        const runtime: SessionAgentRuntime = new MeerAgent(agentConfig);
+        const agent = new MeerAgent(agentConfig);
+        const runtime: SessionAgentRuntime = agent;
 
         session = new AgentSession({
           runtime,
@@ -659,6 +660,11 @@ export function createCLI(): Command {
         });
 
         chatUI?.setInterruptHandler(() => session?.abort());
+
+        // Shift+Tab in the TUI cycles the permission mode; keep the agent's
+        // runtime mode in sync. Seed the footer with the agent's launch default.
+        chatUI?.setModeChangeHandler((mode) => agent.setPermissionMode(mode));
+        chatUI?.setMode(agent.getPermissionMode());
 
         if (sessionBanner && !chatUI) {
           console.log(chalk.gray(`${sessionBanner}\n`));
