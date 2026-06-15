@@ -14,6 +14,7 @@ import { createLogoutCommand } from "./commands/logout.js";
 import { createWhoamiCommand } from "./commands/whoami.js";
 import { createIndexCommand } from "./commands/indexCmd.js";
 import { createDoctorCommand } from "./commands/doctor.js";
+import { createUpdateCommand } from "./commands/update.js";
 import { createAgentsCommand } from "./commands/agents.js";
 import { createRunCommand } from "./commands/run.js";
 import { SessionTracker } from "./session/tracker.js";
@@ -169,9 +170,13 @@ export function createCLI(): Command {
   program.addCommand(createIndexCommand());
   program.addCommand(createAgentsCommand());
   program.addCommand(createDoctorCommand());
+  program.addCommand(createUpdateCommand());
 
   // ── Interactive chat (default action) ──────────────────────────────────────
-  program.action(async () => {
+  const runChatAction = async (actionOverrides?: {
+    resume?: string | boolean;
+    fork?: string;
+  }) => {
     const { loadConfig } = await import("./config.js");
     let restarting = false;
     let restartResumeSession: string | undefined;
@@ -185,10 +190,13 @@ export function createCLI(): Command {
         }
 
         const config = loadConfig();
-        const cliOptions = program.opts() as {
-          resume?: string | boolean;
-          fork?: string;
-          alwaysAsk?: boolean;
+        const cliOptions = {
+          ...(program.opts() as {
+            resume?: string | boolean;
+            fork?: string;
+            alwaysAsk?: boolean;
+          }),
+          ...(actionOverrides ?? {}),
         };
         const effectiveResume =
           restartResumeSession ??
@@ -900,7 +908,20 @@ export function createCLI(): Command {
         break;
       }
     } while (restarting);
-  });
+  };
+
+  program.action(() => runChatAction());
+
+  // ── Resume sub-command ──────────────────────────────────────────────────────
+  // `meer resume [session]` is an explicit alias for the `--resume` flag so the
+  // Ctrl+C exit hint ("meer resume <id>") is directly runnable. Without an
+  // argument it resumes the latest saved session in this project.
+  program
+    .command("resume [session]")
+    .description("Resume the latest or a specific saved session")
+    .action(async (session?: string) => {
+      await runChatAction({ resume: session ?? true });
+    });
 
   program.configureOutput({
     writeErr: (str) => process.stderr.write(str),

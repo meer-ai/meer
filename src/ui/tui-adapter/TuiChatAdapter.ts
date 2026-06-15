@@ -31,6 +31,7 @@ import { isSlashCommandInput } from "../../slash/utils.js";
 import { setToolConsoleQuiet } from "../../tools/index.js";
 import { CombinedAutocompleteProvider, type SlashCommand } from "../tui/autocomplete.js";
 import { Editor } from "../tui/components/editor.js";
+import { PromptHistoryStore } from "../promptHistory.js";
 import { Loader } from "../tui/components/loader.js";
 import { SelectList, type SelectItem } from "../tui/components/select-list.js";
 import { Spacer } from "../tui/components/spacer.js";
@@ -109,6 +110,7 @@ export class TuiChatAdapter implements ChatAdapter {
   private planContainer = new Container();
   private promptContainer = new Container();
   private editor: Editor;
+  private readonly history = new PromptHistoryStore();
   private footer: FooterComponent;
   private loader: Loader | null = null;
 
@@ -167,6 +169,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.ui.addChild(this.promptContainer);
 
     this.editor = new Editor(this.ui, getEditorTheme(), { paddingX: 1 });
+    this.editor.setHistory(this.history.load());
     this.editor.onSubmit = (text) => this.handleSubmit(text);
     this.installAutocomplete();
     // Size the autocomplete dropdown to the terminal instead of the vendored
@@ -296,7 +299,10 @@ export class TuiChatAdapter implements ChatAdapter {
       this.promptResolver = null;
       const wasSecret = this.editor.isSecret();
       if (wasSecret) this.editor.setSecret(false);
-      if (trimmed && !wasSecret) this.editor.addToHistory(text);
+      if (trimmed && !wasSecret) {
+        this.editor.addToHistory(text);
+        this.history.append(text);
+      }
       resolve(text);
       return;
     }
@@ -304,7 +310,10 @@ export class TuiChatAdapter implements ChatAdapter {
     const attachments = this.pendingAttachments;
     // Allow submitting with just an image (no text) — same as the old Ink flow.
     if (!trimmed && attachments.length === 0) return;
-    if (trimmed) this.editor.addToHistory(text);
+    if (trimmed) {
+      this.editor.addToHistory(text);
+      this.history.append(text);
+    }
 
     if (!this.onSubmitCallback) return;
 

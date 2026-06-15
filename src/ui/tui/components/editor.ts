@@ -1,6 +1,7 @@
 import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocomplete.js";
 import { getKeybindings } from "../keybindings.js";
 import { decodePrintableKey, matchesKey } from "../keys.js";
+import { fuzzyMatch } from "../fuzzy.js";
 import { KillRing } from "../kill-ring.js";
 import { type Component, CURSOR_MARKER, type Focusable, type TUI } from "../tui.js";
 import { UndoStack } from "../undo-stack.js";
@@ -300,9 +301,17 @@ export class Editor implements Component, Focusable {
 	private isInPaste: boolean = false;
 
 	// Prompt history for up/down navigation
+	private static readonly MAX_HISTORY = 1000;
 	private history: string[] = [];
 	private historyIndex: number = -1; // -1 = not browsing, 0 = most recent, 1 = older, etc.
 	private historyDraft: EditorState | null = null;
+
+	// Reverse incremental search (Ctrl+R) state.
+	private searchMode = false;
+	private searchQuery = "";
+	private searchMatches: number[] = []; // indices into `history`, best-first
+	private searchPos = 0; // cursor into `searchMatches`
+	private searchSnapshot: EditorState | null = null; // restored on cancel
 
 	// Kill ring for Emacs-style kill/yank operations
 	private killRing = new KillRing();
@@ -395,6 +404,17 @@ export class Editor implements Component, Focusable {
 	}
 
 	/**
+	 * Seed the up/down navigation history with persisted prompts (newest-first,
+	 * index 0 = most recent). Replaces any existing in-memory history and resets
+	 * the browse cursor.
+	 */
+	setHistory(entries: string[]): void {
+		this.history = entries.slice(0, Editor.MAX_HISTORY);
+		this.historyIndex = -1;
+		this.historyDraft = null;
+	}
+
+	/**
 	 * Add a prompt to history for up/down arrow navigation.
 	 * Called after successful submission.
 	 */
@@ -405,7 +425,7 @@ export class Editor implements Component, Focusable {
 		if (this.history.length > 0 && this.history[0] === trimmed) return;
 		this.history.unshift(trimmed);
 		// Limit history size
-		if (this.history.length > 100) {
+		if (this.history.length > Editor.MAX_HISTORY) {
 			this.history.pop();
 		}
 	}
@@ -457,6 +477,182 @@ export class Editor implements Component, Focusable {
 	private exitHistoryBrowsing(): void {
 		this.historyIndex = -1;
 		this.historyDraft = null;
+	}
+
+	/** Whether reverse history search is currently active. */
+	isSearching(): boolean {
+		return this.searchMode;
+	}
+
+	/** Current reverse-search query (for rendering the status line). */
+	getSearchQuery(): string {
+		return this.searchQuery;
+	}
+
+	/** 1-based position / total of the current match, or null when no matches. */
+	getSearchStatus(): { position: number; total: number } | null {
+		if (this.searchMatches.length === 0) return null;
+		return { position: this.searchPos + 1, total: this.searchMatches.length };
+	}
+
+	/**
+	 * Enter reverse incremental search. Snapshots the current buffer so it can be
+	 * restored on cancel and seeds the match list from history (newest-first).
+	 */
+	private enterHistorySearch(): void {
+		if (this.searchMode) return;
+		this.cancelAutocomplete();
+		this.exitHistoryBrowsing();
+		this.lastAction = null;
+		this.searchMode = true;
+		this.searchQuery = "";
+		this.searchSnapshot = structuredClone(this.state);
+		this.recomputeSearchMatches();
+		this.tui.requestRender();
+	}
+
+	/**
+	 * Recompute the ordered list of history indices that match the current query.
+	 * `history` is already newest-first, so ties preserve recency. An empty query
+	 * matches everything (so Ctrl+R immediately shows the most recent entries).
+	 */
+	private recomputeSearchMatches(): void {
+		const query = this.searchQuery;
+		if (query.length === 0) {
+			this.searchMatches = this.history.map((_, index) => index);
+		} else {
+			const scored: Array<{ index: number; score: number }> = [];
+			for (let index = 0; index < this.history.length; index++) {
+				const result = fuzzyMatch(query, this.history[index] ?? "");
+				if (result.matches) scored.push({ index, score: result.score });
+			}
+			// Lower score = better; keep newest-first for equal scores (stable).
+			scored.sort((a, b) => a.score - b.score || a.index - b.index);
+			this.searchMatches = scored.map((entry) => entry.index);
+		}
+		this.searchPos = 0;
+		this.showCurrentSearchMatch();
+	}
+
+	/** Reflect the currently selected match in the editor buffer. */
+	private showCurrentSearchMatch(): void {
+		const matchIndex = this.searchMatches[this.searchPos];
+		if (matchIndex === undefined) return;
+		this.setTextInternal(this.history[matchIndex] ?? "", "end");
+	}
+
+	/** Move to the next (older) match, clamping at the end. */
+	private cycleHistorySearch(): void {
+		if (this.searchMatches.length === 0) return;
+		if (this.searchPos < this.searchMatches.length - 1) {
+			this.searchPos++;
+			this.showCurrentSearchMatch();
+			this.tui.requestRender();
+		}
+	}
+
+	private appendToSearchQuery(text: string): void {
+		this.searchQuery += text;
+		this.recomputeSearchMatches();
+		this.tui.requestRender();
+	}
+
+	private backspaceSearchQuery(): void {
+		if (this.searchQuery.length === 0) return;
+		this.searchQuery = [...this.searchQuery].slice(0, -1).join("");
+		this.recomputeSearchMatches();
+		this.tui.requestRender();
+	}
+
+	/** Accept the current match into the buffer and leave search mode. */
+	private acceptHistorySearch(): void {
+		this.searchMode = false;
+		this.searchQuery = "";
+		this.searchMatches = [];
+		this.searchPos = 0;
+		this.searchSnapshot = null;
+		// Buffer already holds the matched text via showCurrentSearchMatch().
+		if (this.onChange) this.onChange(this.getText());
+		this.tui.requestRender();
+	}
+
+	/** Abort search, restoring the buffer that was present when search started. */
+	private cancelHistorySearch(): void {
+		const snapshot = this.searchSnapshot;
+		this.searchMode = false;
+		this.searchQuery = "";
+		this.searchMatches = [];
+		this.searchPos = 0;
+		this.searchSnapshot = null;
+		if (snapshot) {
+			this.state = snapshot;
+			this.preferredVisualCol = null;
+			this.snappedFromCursorCol = null;
+			this.scrollOffset = 0;
+			if (this.onChange) this.onChange(this.getText());
+		}
+		this.tui.requestRender();
+	}
+
+	/**
+	 * Handle a key while reverse-search is active. Returns true when the key was
+	 * consumed by search, false to let normal editor handling proceed.
+	 */
+	private handleSearchKey(data: string, kb: ReturnType<typeof getKeybindings>): boolean {
+		// Ctrl+R again → next (older) match.
+		if (kb.matches(data, "tui.editor.historySearch")) {
+			this.cycleHistorySearch();
+			return true;
+		}
+		// Escape / Ctrl+C / Ctrl+G → cancel and restore the original buffer.
+		if (kb.matches(data, "tui.select.cancel") || matchesKey(data, "ctrl+g")) {
+			this.cancelHistorySearch();
+			return true;
+		}
+		// Enter → accept the current match into the editable buffer.
+		if (kb.matches(data, "tui.input.submit")) {
+			this.acceptHistorySearch();
+			return true;
+		}
+		// Backspace → shrink the query.
+		if (
+			kb.matches(data, "tui.editor.deleteCharBackward") ||
+			matchesKey(data, "shift+backspace")
+		) {
+			this.backspaceSearchQuery();
+			return true;
+		}
+		// Cursor movement / line edits → accept the match, then fall through so the
+		// pressed key acts on the now-editable buffer (matches readline behavior).
+		const acceptAndFallThroughBindings = [
+			"tui.editor.cursorUp",
+			"tui.editor.cursorDown",
+			"tui.editor.cursorLeft",
+			"tui.editor.cursorRight",
+			"tui.editor.cursorWordLeft",
+			"tui.editor.cursorWordRight",
+			"tui.editor.cursorLineStart",
+			"tui.editor.cursorLineEnd",
+		] as const;
+		for (const binding of acceptAndFallThroughBindings) {
+			if (kb.matches(data, binding)) {
+				this.acceptHistorySearch();
+				return false;
+			}
+		}
+		// Printable characters extend the query.
+		const printable = decodePrintableKey(data);
+		if (printable !== undefined) {
+			this.appendToSearchQuery(printable);
+			return true;
+		}
+		if (data.charCodeAt(0) >= 32) {
+			this.appendToSearchQuery(data);
+			return true;
+		}
+		// Any other control key cancels search (and is otherwise ignored).
+		this.cancelHistorySearch();
+		return true;
 	}
 
 	/** Internal setText that doesn't reset history state - used by navigateHistory */
@@ -591,6 +787,19 @@ export class Editor implements Component, Focusable {
 			result.push(horizontal.repeat(width));
 		}
 
+		// Reverse-search status line (Ctrl+R).
+		if (this.searchMode) {
+			const status = this.getSearchStatus();
+			const label =
+				status === null
+					? `(failed reverse-i-search)\`${this.searchQuery}'`
+					: `(reverse-i-search)\`${this.searchQuery}' [${status.position}/${status.total}]`;
+			const truncated = truncateToWidth(label, contentWidth);
+			const lineWidth = visibleWidth(truncated);
+			const linePadding = " ".repeat(Math.max(0, contentWidth - lineWidth));
+			result.push(`${leftPadding}\x1b[2m${truncated}\x1b[0m${linePadding}${rightPadding}`);
+		}
+
 		// Add autocomplete list if active
 		if (this.autocompleteState && this.autocompleteList) {
 			const autocompleteResult = this.autocompleteList.render(contentWidth);
@@ -651,6 +860,16 @@ export class Editor implements Component, Focusable {
 				}
 				return;
 			}
+			return;
+		}
+
+		// Reverse incremental history search (Ctrl+R). While active it owns most
+		// keys; handleSearchKey returns false only when it accepted a match and
+		// wants the pressed key to act on the now-editable buffer.
+		if (this.searchMode) {
+			if (this.handleSearchKey(data, kb)) return;
+		} else if (kb.matches(data, "tui.editor.historySearch")) {
+			this.enterHistorySearch();
 			return;
 		}
 

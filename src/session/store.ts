@@ -59,6 +59,8 @@ export interface SessionFileInfo {
   parentSessionId?: string;
   branchRootSessionId?: string;
   branchDepth?: number;
+  /** Snippet of the first user prompt, for human-friendly identification. */
+  firstPrompt?: string;
 }
 
 export interface CompactionSummaryInput {
@@ -72,6 +74,19 @@ export interface CompactSessionOptions {
   summaryGenerator?: (
     input: CompactionSummaryInput
   ) => Promise<string> | string;
+}
+
+/**
+ * Collapse a message body into a single-line snippet suitable for session
+ * pickers. Strips whitespace/newlines and truncates with an ellipsis.
+ */
+function snippetFromContent(content?: string, maxLength = 60): string | undefined {
+  if (!content) return undefined;
+  const normalized = content.replace(/\s+/g, " ").trim();
+  if (!normalized) return undefined;
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 1)}…`
+    : normalized;
 }
 
 function encodeCwd(cwd: string): string {
@@ -340,6 +355,11 @@ export class SessionStore {
         const [header, ...rest] = entries;
         if (header.type !== "session") continue;
 
+        const firstUserMessage = rest.find(
+          (entry): entry is SessionMessageEntry =>
+            entry.type === "message" && entry.role === "user"
+        );
+
         sessions.push({
           id: header.id,
           path,
@@ -348,6 +368,7 @@ export class SessionStore {
           messageCount: rest.filter((entry) => entry.type === "message").length,
           parentSessionId: header.parentSessionId,
           branchRootSessionId: header.branchRootSessionId,
+          firstPrompt: snippetFromContent(firstUserMessage?.content),
         });
       }
     }

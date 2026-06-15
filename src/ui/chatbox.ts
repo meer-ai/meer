@@ -2,7 +2,7 @@ import chalk from "chalk";
 import inquirer from "inquirer";
 import { glob } from "glob";
 import { createInterface, Interface } from "readline";
-import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync } from "fs";
+import { existsSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { showSlashHelp } from "./slashHelp.js";
@@ -11,6 +11,7 @@ import {
   type SlashCommandListEntry,
 } from "../slash/registry.js";
 import { getSlashCommandBadges } from "../slash/utils.js";
+import { DEFAULT_HISTORY_PATH, PromptHistoryStore } from "./promptHistory.js";
 
 function formatBadgeLabel(badge: string): string {
   switch (badge) {
@@ -877,41 +878,24 @@ export class ChatBoxUI {
 
   private static lastStatusSignature: string | null = null;
 
+  // Shared with the TUI editor so prompt history follows the user across both
+  // input modes. See ./promptHistory.ts.
+  private static readonly historyStore = new PromptHistoryStore();
+
   private static getHistoryPath(): string {
-    return join(homedir(), ".meer", "history.log");
+    return DEFAULT_HISTORY_PATH;
   }
 
-  private static loadHistory(path: string): string[] {
-    try {
-      if (existsSync(path)) {
-        const contents = readFileSync(path, "utf-8");
-        return contents.split("\n").filter(Boolean).slice(-500).reverse();
-      }
-    } catch {
-      // Ignore history loading errors
-    }
-    return [];
+  private static loadHistory(_path: string): string[] {
+    return ChatBoxUI.historyStore.load();
   }
 
-  private static appendHistory(path: string, entry: string): void {
-    const trimmed = entry.trim();
-    if (!trimmed) {
-      return;
-    }
-
-    try {
-      mkdirSync(join(homedir(), ".meer"), { recursive: true });
-      const stream = createWriteStream(path, { flags: "a" });
-      stream.write(`${trimmed}\n`);
-      stream.end();
-    } catch {
-      // Ignore history write errors
-    }
+  private static appendHistory(_path: string, entry: string): void {
+    ChatBoxUI.historyStore.append(entry);
   }
 
   static getHistoryEntries(limit = 10): string[] {
-    const history = ChatBoxUI.loadHistory(ChatBoxUI.getHistoryPath());
-    return history.slice(0, limit);
+    return ChatBoxUI.historyStore.load().slice(0, limit);
   }
 
   static async printPaged(lines: string[], pageSize?: number): Promise<void> {
@@ -1235,6 +1219,15 @@ export class ChatBoxUI {
       process.env.MEER_PLAIN_SUMMARY === "1" ||
       process.env.NO_COLOR === "1";
 
+    const printResumeHint = () => {
+      if (!stats.sessionId) return;
+      console.log(
+        chalk.gray("  To resume this session: ") +
+          chalk.cyan(`meer resume ${stats.sessionId}`)
+      );
+      console.log("");
+    };
+
     if (usePlainSummary) {
       console.log(chalk.cyan("Meer session ended."));
     } else {
@@ -1282,6 +1275,7 @@ export class ChatBoxUI {
         );
       }
       console.log("");
+      printResumeHint();
       return;
     }
 
@@ -1415,5 +1409,6 @@ export class ChatBoxUI {
     }
     console.log(chalk.gray(bottomBorder));
     console.log("");
+    printResumeHint();
   }
 }

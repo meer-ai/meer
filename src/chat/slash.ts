@@ -545,9 +545,15 @@ async function handleAccountCommand(): Promise<void> {
 async function promptResumeSession(
   tui?: ChatAdapter | null
 ): Promise<string | null> {
-  const sessions = memory.listSessions(process.cwd()).slice(0, 20);
+  const currentPath = memory.getCurrentSessionPath();
+  const sessions = memory
+    .listSessions(process.cwd())
+    .filter(
+      (session) => session.messageCount > 0 && session.path !== currentPath
+    )
+    .slice(0, 20);
   if (sessions.length === 0) {
-    const msg = "No saved sessions for this project.";
+    const msg = "No other saved sessions to resume for this project.";
     if (tui) tui.appendSystemMessage(msg);
     else console.log(chalk.gray(msg));
     return null;
@@ -557,10 +563,12 @@ async function promptResumeSession(
     const parent = session.parentSessionId
       ? ` ← fork of ${session.parentSessionId.slice(0, 8)}`
       : "";
+    const title = session.firstPrompt ? ` ${session.firstPrompt}` : "";
     return {
       label:
-        `${session.id.slice(0, 8)} ` +
-        `(${session.messageCount} msgs • ${new Date(session.createdAt).toLocaleString()})` +
+        `${session.id.slice(0, 8)}` +
+        title +
+        ` (${session.messageCount} msgs • ${new Date(session.createdAt).toLocaleString()})` +
         parent,
       value: session.path,
     };
@@ -1201,9 +1209,13 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
       const parent = session.parentSessionId
         ? chalk.gray(` ← fork of ${session.parentSessionId.slice(0, 8)}`)
         : "";
+      const title = session.firstPrompt
+        ? ` ${chalk.white(session.firstPrompt)}`
+        : "";
       console.log(
-        `${chalk.cyan(`${index + 1}.`)} ${chalk.yellow(session.id.slice(0, 8))} ` +
-          chalk.gray(`(${session.messageCount} msgs • ${new Date(session.createdAt).toLocaleString()})`) +
+        `${chalk.cyan(`${index + 1}.`)} ${chalk.yellow(session.id.slice(0, 8))}` +
+          title +
+          chalk.gray(` (${session.messageCount} msgs • ${new Date(session.createdAt).toLocaleString()})`) +
           parent
       );
     });
