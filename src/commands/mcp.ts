@@ -9,12 +9,70 @@ import { MCPManager } from '../mcp/manager.js';
 import {
   loadMCPConfig,
   toggleServer,
+  addServer,
+  removeServer,
   mcpConfigExists,
   saveMCPConfig,
   checkUvxInstalled,
   displayUvxWarning,
   getUvxRequiredServers,
 } from '../mcp/config.js';
+import type { MCPServerConfig } from '../mcp/types.js';
+import { hasMCPAuth, clearMCPAuth } from '../mcp/oauth/provider.js';
+
+const VALID_TRANSPORTS = ['stdio', 'websocket', 'streaming-http'] as const;
+
+/** Whether a positional target should be treated as a remote URL. */
+function isUrl(value: string): boolean {
+  return /^(https?|wss?):\/\//i.test(value);
+}
+
+/**
+ * Map user-facing transport names (and common aliases) to the canonical value
+ * stored in config. Returns undefined for unrecognized input.
+ */
+function normalizeTransport(input: string | undefined): MCPServerConfig['transport'] | undefined {
+  if (!input) return undefined;
+  switch (input.toLowerCase()) {
+    case 'stdio':
+      return 'stdio';
+    case 'ws':
+    case 'websocket':
+      return 'websocket';
+    // The MCP "streamable HTTP" transport — accept the names people actually type.
+    case 'http':
+    case 'https':
+    case 'sse':
+    case 'streamable':
+    case 'streamable-http':
+    case 'streamablehttp':
+    case 'streaming-http':
+    case 'streaminghttp':
+      return 'streaming-http';
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Parse repeatable `KEY=VALUE` CLI options into a record.
+ * Returns undefined when no pairs were provided so the field is omitted.
+ */
+function parseKeyValuePairs(pairs: string[] | undefined): Record<string, string> | undefined {
+  if (!pairs || pairs.length === 0) {
+    return undefined;
+  }
+
+  const result: Record<string, string> = {};
+  for (const pair of pairs) {
+    const idx = pair.indexOf('=');
+    if (idx <= 0) {
+      throw new Error(`Invalid KEY=VALUE pair: "${pair}" (expected format KEY=VALUE)`);
+    }
+    result[pair.slice(0, idx)] = pair.slice(idx + 1);
+  }
+  return result;
+}
 
 export function createMCPCommand(): Command {
   const command = new Command('mcp');
@@ -24,6 +82,11 @@ export function createMCPCommand(): Command {
     .addCommand(createListCommand())
     .addCommand(createToolsCommand())
     .addCommand(createResourcesCommand())
+    .addCommand(createAddCommand())
+    .addCommand(createEditCommand())
+    .addCommand(createRemoveCommand())
+    .addCommand(createLoginCommand())
+    .addCommand(createLogoutCommand())
     .addCommand(createConnectCommand())
     .addCommand(createDisconnectCommand())
     .addCommand(createEnableCommand())
@@ -74,6 +137,12 @@ function createListCommand(): Command {
             console.log(`          ${chalk.gray(`URL: ${serverConfig.url}`)}`);
             if (serverConfig.transport) {
               console.log(`          ${chalk.gray(`Transport: ${serverConfig.transport}`)}`);
+            }
+            if (serverConfig.oauth) {
+              const authState = hasMCPAuth(name)
+                ? chalk.green('signed in')
+                : chalk.yellow(`not signed in — run \`meer mcp login ${name}\``);
+              console.log(`          ${chalk.gray('OAuth:')} ${authState}`);
             }
           } else if (serverConfig.command) {
             const args = serverConfig.args?.join(' ') ?? '';
@@ -194,6 +263,323 @@ function createResourcesCommand(): Command {
         await manager.disconnectAll();
       } catch (error) {
         throw error;
+      }
+    });
+
+  return command;
+}
+
+/**
+ * Add a new MCP server to configuration
+ */
+function createAddCommand(): Command {
+  const command = new Command('add');
+
+  command
+    .description('Add a new MCP server to the configuration')
+    .argument('<name>', 'Unique name for the server')
+    .argument('[target]', 'A URL (remote server) or a command (stdio server)')
+    .argument('[args...]', 'Args for the command; use `--` before args that start with a dash')
+    .option('-c, --command <command>', 'Command to launch a stdio server (e.g. npx, uvx)')
+    .option('-a, --args <args...>', 'Arguments for the command (quote each to preserve spaces)')
+    .option('-u, --url <url>', 'URL for a remote (HTTP/WebSocket) server')
+    .option('-t, --transport <transport>', `Transport: stdio | http | sse | ws (aliases accepted)`)
+    .option('-e, --env <pairs...>', 'Environment variables as KEY=VALUE (supports ${VAR} substitution)')
+    .option('-H, --header <pairs...>', 'HTTP headers as KEY=VALUE (remote servers only)')
+    .option('-d, --description <description>', 'Human-readable description')
+    .option('--timeout <ms>', 'Connection timeout in milliseconds', (v) => parseInt(v, 10))
+    .option('--oauth', 'Remote server uses OAuth (sign in later with `meer mcp login`)')
+    .option('--scope <scope>', 'OAuth scopes to request, space-separated (implies --oauth)')
+    .option('--disabled', 'Add the server but leave it disabled')
+    .action(async (name: string, target: string | undefined, positionalArgs: string[], options) => {
+      try {
+        // Resolve command/url/args from either explicit flags or the positional
+        // target (e.g. `meer mcp add supabase https://...` or `... npx -y pkg`).
+        const targetIsUrl = target ? isUrl(target) : false;
+        const url = options.url ?? (targetIsUrl ? target : undefined);
+        const command = options.command ?? (target && !targetIsUrl ? target : undefined);
+        const args =
+          options.args ?? (positionalArgs && positionalArgs.length > 0 ? positionalArgs : undefined);
+
+        if (url && command) {
+          console.log(chalk.red('\n✗ Ambiguous: provide either a URL (remote) or a command (stdio), not both.\n'));
+          process.exitCode = 1;
+          return;
+        }
+
+        if (!command && !url) {
+          console.log(chalk.red('\n✗ Provide a target: a URL (remote) or a command (stdio).'));
+          console.log(chalk.gray('  e.g. meer mcp add supabase https://mcp.supabase.com/mcp --transport http'));
+          console.log(chalk.gray('       meer mcp add fs -- npx -y @modelcontextprotocol/server-filesystem ~/code'));
+          console.log(chalk.gray('  (use `--` before command args that start with a dash, like `-y`)\n'));
+          process.exitCode = 1;
+          return;
+        }
+
+        if (url && args) {
+          console.log(chalk.red('\n✗ Positional/--args arguments only apply to stdio (command) servers, not URLs.\n'));
+          process.exitCode = 1;
+          return;
+        }
+
+        const transport = normalizeTransport(options.transport);
+        if (options.transport && !transport) {
+          console.log(
+            chalk.red(`\n✗ Invalid transport "${options.transport}". Use one of: stdio, http, sse, ws.\n`)
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        const serverConfig: MCPServerConfig = {
+          enabled: !options.disabled,
+        };
+
+        if (command) serverConfig.command = command;
+        if (args) serverConfig.args = args;
+        if (url) serverConfig.url = url;
+        if (transport) serverConfig.transport = transport;
+
+        const env = parseKeyValuePairs(options.env);
+        if (env) serverConfig.env = env;
+
+        const headers = parseKeyValuePairs(options.header);
+        if (headers) serverConfig.headers = headers;
+
+        if (options.description) serverConfig.description = options.description;
+        if (typeof options.timeout === 'number' && !Number.isNaN(options.timeout)) {
+          serverConfig.timeout = options.timeout;
+        }
+        if (options.oauth || options.scope) {
+          if (!url) {
+            console.log(chalk.red('\n✗ --oauth/--scope only apply to remote (URL) servers.\n'));
+            process.exitCode = 1;
+            return;
+          }
+          serverConfig.oauth = true;
+          if (options.scope) serverConfig.oauthScope = options.scope;
+        }
+
+        addServer(name, serverConfig);
+
+        console.log(chalk.green(`\n✓ Added MCP server "${name}"`));
+        console.log(
+          chalk.gray(`  ${serverConfig.enabled ? 'Enabled' : 'Disabled'} — ${url ?? command}`)
+        );
+        if (serverConfig.oauth) {
+          console.log(chalk.gray(`  Uses OAuth — sign in with \`meer mcp login ${name}\`.`));
+        }
+        console.log(chalk.gray('  Run `meer mcp status` to verify the connection.\n'));
+      } catch (error) {
+        console.log(chalk.red(`\n✗ ${error instanceof Error ? error.message : String(error)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  return command;
+}
+
+/**
+ * Edit fields of an existing MCP server in configuration
+ */
+function createEditCommand(): Command {
+  const command = new Command('edit');
+
+  command
+    .description('Edit fields of an existing MCP server')
+    .argument('<name>', 'Server name to edit')
+    .option('-u, --url <url>', 'Set the remote server URL')
+    .option('-c, --command <command>', 'Set the stdio command')
+    .option('-a, --args <args...>', 'Replace the command arguments')
+    .option('-t, --transport <transport>', 'Set transport: stdio | http | sse | ws (aliases accepted)')
+    .option('-d, --description <description>', 'Set the description')
+    .option('--timeout <ms>', 'Set connection timeout in milliseconds', (v) => parseInt(v, 10))
+    .option('--scope <scope>', 'Set OAuth scopes (space-separated); implies --oauth')
+    .option('--oauth', 'Mark the server as OAuth-backed')
+    .option('--no-oauth', 'Unset the OAuth flag')
+    .action(async (name: string, options) => {
+      try {
+        const config = loadMCPConfig();
+        const serverConfig = config.mcpServers[name];
+        if (!serverConfig) {
+          console.log(chalk.red(`\n✗ Server "${name}" not found in config. See \`meer mcp list\`.\n`));
+          process.exitCode = 1;
+          return;
+        }
+
+        if (options.transport) {
+          const transport = normalizeTransport(options.transport);
+          if (!transport) {
+            console.log(chalk.red(`\n✗ Invalid transport "${options.transport}". Use one of: stdio, http, sse, ws.\n`));
+            process.exitCode = 1;
+            return;
+          }
+          serverConfig.transport = transport;
+        }
+
+        if (options.url) serverConfig.url = options.url;
+        if (options.command) serverConfig.command = options.command;
+        if (options.args) serverConfig.args = options.args;
+        if (options.description) serverConfig.description = options.description;
+        if (typeof options.timeout === 'number' && !Number.isNaN(options.timeout)) {
+          serverConfig.timeout = options.timeout;
+        }
+        if (options.scope !== undefined) {
+          if (options.scope === '') {
+            // `--scope ""` clears the scope (let the consent screen decide).
+            delete serverConfig.oauthScope;
+          } else {
+            serverConfig.oauthScope = options.scope;
+            serverConfig.oauth = true;
+          }
+        }
+        // commander sets options.oauth=false only when --no-oauth is passed.
+        if (options.oauth === true) serverConfig.oauth = true;
+        if (options.oauth === false) {
+          serverConfig.oauth = false;
+          delete serverConfig.oauthScope;
+        }
+
+        saveMCPConfig(config);
+
+        // Changing scope/OAuth invalidates any client registered under the old
+        // settings — clear stored credentials so the next login starts fresh.
+        const oauthChanged = options.scope !== undefined || options.oauth !== undefined;
+        if (oauthChanged && hasMCPAuth(name)) {
+          clearMCPAuth(name);
+        }
+
+        console.log(chalk.green(`\n✓ Updated MCP server "${name}"`));
+        if (oauthChanged) {
+          console.log(chalk.gray(`  Re-run \`meer mcp login ${name}\` to apply OAuth changes.\n`));
+        } else {
+          console.log('');
+        }
+      } catch (error) {
+        console.log(chalk.red(`\n✗ ${error instanceof Error ? error.message : String(error)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  return command;
+}
+
+/**
+ * Remove an MCP server from configuration
+ */
+function createRemoveCommand(): Command {
+  const command = new Command('remove');
+
+  command
+    .description('Remove an MCP server from the configuration')
+    .alias('rm')
+    .argument('<server>', 'Server name to remove')
+    .action(async (serverName: string) => {
+      try {
+        removeServer(serverName);
+        console.log(chalk.green(`\n✓ Removed MCP server "${serverName}"\n`));
+      } catch (error) {
+        console.log(chalk.red(`\n✗ ${error instanceof Error ? error.message : String(error)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  return command;
+}
+
+/**
+ * Authenticate with a remote MCP server via OAuth
+ */
+function createLoginCommand(): Command {
+  const command = new Command('login');
+
+  command
+    .description('Sign in to a remote MCP server that requires OAuth')
+    .argument('<server>', 'Server name to authenticate with')
+    .action(async (serverName: string) => {
+      let activeSpinner: ReturnType<typeof ora> | undefined;
+      try {
+        const config = loadMCPConfig();
+        const serverConfig = config.mcpServers[serverName];
+
+        if (!serverConfig) {
+          console.log(chalk.red(`\n✗ Server "${serverName}" not found in config.`));
+          console.log(chalk.gray('  Add it first with `meer mcp add`, or see `meer mcp list`.\n'));
+          process.exitCode = 1;
+          return;
+        }
+
+        if (!serverConfig.url) {
+          console.log(
+            chalk.red(`\n✗ "${serverName}" is a stdio (command) server. OAuth login only applies to remote (url) servers.\n`)
+          );
+          process.exitCode = 1;
+          return;
+        }
+
+        const { loginToMCPServer } = await import('../mcp/oauth/login.js');
+
+        console.log(chalk.bold.cyan(`\n🔐 Signing in to MCP server "${serverName}"\n`));
+        activeSpinner = ora(chalk.blue('Starting authorization...')).start();
+
+        const result = await loginToMCPServer(serverName, serverConfig, async (authUrl) => {
+          activeSpinner?.stop();
+          activeSpinner = undefined;
+          console.log(chalk.gray('Opening your browser to authorize...\n'));
+          try {
+            const open = (await import('open')).default;
+            await open(authUrl.toString());
+            console.log(chalk.green('✓ Browser opened'));
+          } catch {
+            console.log(chalk.yellow('⚠  Could not open browser automatically'));
+          }
+          console.log(
+            chalk.gray(`\n  If it did not open, visit:\n  ${chalk.blue.underline(authUrl.toString())}\n`)
+          );
+          activeSpinner = ora(chalk.blue('Waiting for authorization to complete...')).start();
+        });
+        activeSpinner?.stop();
+
+        // Mark the server as oauth-backed so future connections attach credentials.
+        if (!serverConfig.oauth) {
+          serverConfig.oauth = true;
+          saveMCPConfig(config);
+        }
+
+        console.log(chalk.green(`\n✓ Signed in to "${serverName}" (${result.toolCount} tools available)`));
+        console.log(chalk.gray('  Run `meer mcp enable ' + serverName + '` if it is not already enabled.\n'));
+      } catch (error) {
+        activeSpinner?.stop();
+        const { humanizeMCPOAuthError } = await import('../mcp/oauth/login.js');
+        console.log(chalk.red(`\n✗ Login failed: ${humanizeMCPOAuthError(error)}\n`));
+        process.exitCode = 1;
+      }
+    });
+
+  return command;
+}
+
+/**
+ * Remove stored OAuth credentials for a server
+ */
+function createLogoutCommand(): Command {
+  const command = new Command('logout');
+
+  command
+    .description('Remove stored OAuth credentials for a remote MCP server')
+    .argument('<server>', 'Server name to sign out of')
+    .action(async (serverName: string) => {
+      try {
+        const { clearMCPAuth } = await import('../mcp/oauth/provider.js');
+        const removed = clearMCPAuth(serverName);
+        if (removed) {
+          console.log(chalk.green(`\n✓ Signed out of "${serverName}" (credentials removed)\n`));
+        } else {
+          console.log(chalk.yellow(`\n⚠  No stored credentials found for "${serverName}"\n`));
+        }
+      } catch (error) {
+        console.log(chalk.red(`\n✗ ${error instanceof Error ? error.message : String(error)}\n`));
+        process.exitCode = 1;
       }
     });
 

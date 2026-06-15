@@ -176,6 +176,13 @@ export async function runLoop(
             } else if (event.type === "tool-call") {
               pendingToolCalls.push(event.toolCall);
             } else if (event.type === "done") {
+              if (event.usage) {
+                await emit({
+                  type: "usage",
+                  promptTokens: event.usage.promptTokens,
+                  completionTokens: event.usage.completionTokens,
+                });
+              }
               if (event.turn?.toolCalls?.length && pendingToolCalls.length === 0) {
                 pendingToolCalls.push(...event.turn.toolCalls);
               }
@@ -209,6 +216,11 @@ export async function runLoop(
           await emit({ type: "error", error });
           await emit({ type: "turn_end" });
           return newMessages;
+        }
+
+        // Surface reasoning-model thinking to the UI (capped at render time).
+        if (assistantReasoningContent && assistantReasoningContent.trim()) {
+          await emit({ type: "reasoning", content: assistantReasoningContent });
         }
 
         const assistantMsg: AgentMessage = {

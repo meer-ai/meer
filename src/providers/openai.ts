@@ -219,6 +219,9 @@ export class OpenAIProvider implements Provider {
       ...this.temperatureParams(),
       ...this.tokenParam(),
       stream: true,
+      // Ask OpenAI-compatible APIs to append a final usage chunk so we can
+      // report real billed token counts (and cost) instead of an estimate.
+      stream_options: { include_usage: true },
     };
     if (toolRegistry.providerTools.length > 0) {
       body.tools = toolRegistry.providerTools.map((t) => ({
@@ -257,6 +260,7 @@ export class OpenAIProvider implements Provider {
     let rawText = "";
     let rawReasoningContent = "";
     let hitLengthLimit = false;
+    let usage: { promptTokens?: number; completionTokens?: number } | undefined;
 
     const reader = response.body?.getReader();
     if (!reader) throw new Error("No response body");
@@ -276,6 +280,18 @@ export class OpenAIProvider implements Provider {
         parsed = JSON.parse(trimmed.slice(6)) as Record<string, unknown>;
       } catch {
         return;
+      }
+
+      // The usage chunk arrives last and may carry an empty `choices` array,
+      // so capture it before bailing on a missing choice.
+      const rawUsage = parsed.usage as
+        | { prompt_tokens?: number; completion_tokens?: number }
+        | undefined;
+      if (rawUsage) {
+        usage = {
+          promptTokens: rawUsage.prompt_tokens,
+          completionTokens: rawUsage.completion_tokens,
+        };
       }
 
       const choices = parsed.choices as Array<Record<string, unknown>>;
@@ -422,6 +438,7 @@ export class OpenAIProvider implements Provider {
       type: "done",
       rawText,
       reasoningContent: rawReasoningContent || undefined,
+      usage,
     };
   }
 

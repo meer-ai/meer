@@ -379,6 +379,174 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   adapter.destroy();
 }
 
+// ── Plan panel renders tasks + live status updates ───────────────────────────
+{
+  const { adapter } = makeAdapter();
+  const now = Date.now();
+  adapter.setPlan({
+    title: "Build calling agent",
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      { id: "1", description: "scaffold project", status: "completed" },
+      { id: "2", description: "wire telephony", status: "in_progress" },
+      { id: "3", description: "add STT/TTS", status: "pending" },
+      { id: "4", description: "drop legacy demo", status: "skipped" },
+    ],
+  });
+  let text = renderedText(adapter);
+  assert.ok(text.includes("Build calling agent"), "plan title renders");
+  assert.ok(text.includes("(1/4)"), "completed/total counter renders");
+  for (const desc of ["scaffold project", "wire telephony", "add STT/TTS", "drop legacy demo"]) {
+    assert.ok(text.includes(desc), `task renders: ${desc}`);
+  }
+  assert.ok(text.includes("✓") && text.includes("◐") && text.includes("○") && text.includes("⊘"), "all status glyphs render");
+
+  // A status update must re-render the panel (the bug: it never updated).
+  adapter.setPlan({
+    title: "Build calling agent",
+    createdAt: now,
+    updatedAt: now + 1,
+    tasks: [
+      { id: "1", description: "scaffold project", status: "completed" },
+      { id: "2", description: "wire telephony", status: "completed" },
+      { id: "3", description: "add STT/TTS", status: "in_progress" },
+    ],
+  });
+  text = renderedText(adapter);
+  assert.ok(text.includes("(2/3)"), "counter updates after task completion");
+
+  // Clearing the plan empties the panel.
+  adapter.setPlan(null);
+  text = renderedText(adapter);
+  assert.ok(!text.includes("Build calling agent"), "cleared plan removes the panel");
+  adapter.destroy();
+}
+
+// ── A completed plan stops sticking once the user moves on ────────────────────
+{
+  const { adapter } = makeAdapter();
+  const now = Date.now();
+  const completedPlan = {
+    title: "Ship feature",
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      { id: "1", description: "write code", status: "completed" as const },
+      { id: "2", description: "ship it", status: "completed" as const },
+    ],
+  };
+  adapter.setPlan(completedPlan);
+  let text = renderedText(adapter);
+  assert.ok(text.includes("Ship feature"), "completed plan still visible right after finishing");
+
+  // Next user turn → the finished plan is dismissed from the sticky panel.
+  adapter.beginTurn();
+  text = renderedText(adapter);
+  assert.ok(!text.includes("Ship feature"), "completed plan dismissed on next turn");
+  adapter.endTurn();
+
+  // An UNFINISHED plan must persist across turns.
+  adapter.setPlan({
+    title: "Long task",
+    createdAt: now,
+    updatedAt: now,
+    tasks: [
+      { id: "1", description: "step one", status: "completed" as const },
+      { id: "2", description: "step two", status: "in_progress" as const },
+    ],
+  });
+  adapter.beginTurn();
+  text = renderedText(adapter);
+  assert.ok(text.includes("Long task"), "in-progress plan survives a new turn");
+  adapter.destroy();
+}
+
+// ── Tool output renders (live progress + final result) ───────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.addTool("run_command", { command: "npm test" }, "tc-out");
+  adapter.startTool("tc-out");
+
+  // Live partial output appears while running.
+  adapter.updateToolProgress("tc-out", "compiling…");
+  let text = renderedText(adapter);
+  assert.ok(text.includes("compiling…"), "live tool output renders");
+
+  // Final result replaces it.
+  adapter.appendToolMessage("run_command", "PASS 12 passed\nDone in 2.0s", false, { toolCallId: "tc-out" });
+  adapter.completeTool("tc-out", "ok");
+  text = renderedText(adapter);
+  assert.ok(text.includes("PASS 12 passed"), "final tool output renders");
+  assert.ok(!text.includes("compiling…"), "stale partial output cleared");
+
+  // An edit shows a diff, not raw output text.
+  adapter.addTool("edit_file", { path: "src/x.ts" }, "tc-edit");
+  adapter.completeTool("tc-edit", "ok", { path: "src/x.ts", diff: "@@ -1,1 +1,1 @@\n-a\n+b" });
+  adapter.appendToolMessage("edit_file", "Successfully updated src/x.ts", false, { toolCallId: "tc-edit" });
+  text = renderedText(adapter);
+  assert.ok(!text.includes("Successfully updated"), "edit result text is not shown (diff is)");
+  adapter.destroy();
+}
+
+// ── Footer shows estimated context tokens ────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.updateTokens(12400, 200000, true);
+  let text = renderedText(adapter);
+  assert.ok(/~12\.4k\/200\.0k ctx/.test(text), `footer shows ~ctx estimate (got: ${text.split("\n").find((l) => l.includes("ctx")) ?? "no ctx line"})`);
+
+  // Real billed usage renders without the ~ and as "tok", plus cost.
+  adapter.updateTokens(12400, 200000, false);
+  adapter.updateCost(0.0089);
+  text = renderedText(adapter);
+  assert.ok(/12\.4k\/200\.0k tok/.test(text) && !text.includes("~12.4k"), "real usage shows 'tok' without ~");
+  assert.ok(text.includes("$0.0089"), "footer shows real cost");
+  adapter.destroy();
+}
+
+// ── Streaming tool args show the call building live ──────────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.previewToolCall("tc-stream", "run_command", '{"command":"npm ru');
+  let text = renderedText(adapter);
+  assert.ok(text.includes("npm ru…"), "partial streamed command shows with ellipsis");
+  adapter.previewToolCall("tc-stream", "run_command", 'n build"}');
+  // Once finalized args arrive (tool start), the real summary takes over.
+  adapter.addTool("run_command", { command: "npm run build" }, "tc-stream");
+  adapter.startTool("tc-stream");
+  text = renderedText(adapter);
+  assert.ok(text.includes("$ npm run build"), "finalized command summary replaces the partial");
+  adapter.destroy();
+}
+
+// ── Chain-of-thought is capped ───────────────────────────────────────────────
+{
+  const { adapter } = makeAdapter();
+  const reasoning = Array.from({ length: 20 }, (_, i) => `reasoning line ${i + 1}`).join("\n");
+  adapter.addCotMessage(reasoning);
+  const text = renderedText(adapter);
+  assert.ok(text.includes("reasoning line 1"), "first reasoning line shown");
+  assert.ok(!text.includes("reasoning line 12"), "later reasoning lines collapsed");
+  assert.ok(/\+\d+ more lines of reasoning/.test(text), "shows collapsed-reasoning footer");
+  adapter.destroy();
+}
+
+// ── Truncated command output shows a 'full output' hint ──────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.addTool("run_command", { command: "npm test" }, "tc-trunc");
+  adapter.completeTool("tc-trunc", "ok");
+  adapter.appendToolMessage("run_command", "line a\nline b", false, {
+    toolCallId: "tc-trunc",
+    details: { truncation: { truncated: true, totalLines: 5000, fullOutputPath: "/tmp/meer-cmd-x.log" } },
+  });
+  const text = renderedText(adapter);
+  assert.ok(text.includes("/tmp/meer-cmd-x.log"), "full-output path surfaced");
+  assert.ok(text.includes("5000 lines"), "total line count surfaced");
+  adapter.destroy();
+}
+
 // Allow any stray loader/ticker callbacks to settle, then confirm clean exit.
 await sleep(50);
 console.log("tui-adapter verification passed");

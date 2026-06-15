@@ -94,7 +94,7 @@ export interface ChatAdapter {
 
   // ── Status / footer ──────────────────────────────────────────────────────
   setStatus(text: string): void;
-  updateTokens(used: number, limit?: number): void;
+  updateTokens(used: number, limit?: number, estimated?: boolean): void;
   updateCost(current: number, limit?: number): void;
   incrementMessageCount(): void;
 

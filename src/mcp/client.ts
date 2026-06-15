@@ -18,6 +18,7 @@ import type {
   MCPClientInfo,
 } from './types.js';
 import { resolveEnvVars } from './config.js';
+import { MCPOAuthProvider, hasMCPAuth } from './oauth/provider.js';
 import { shouldLogMCPToConsole } from './console.js';
 import { CircuitBreaker } from './circuitBreaker.js';
 import { retryWithBackoff, RetryPredicates } from '../utils/retry.js';
@@ -322,7 +323,19 @@ export class MCPClient {
       this.transport = new WebSocketClientTransport(urlInstance);
     } else {
       const headers = this.config.headers ?? {};
+      // Attach stored OAuth credentials when the server uses OAuth (explicitly
+      // flagged or already logged in). The provider has no onRedirect handler,
+      // so if interactive consent is needed it throws MCPAuthRequiredError
+      // pointing the user at `meer mcp login`.
+      const authProvider =
+        this.config.oauth || hasMCPAuth(this.serverName)
+          ? new MCPOAuthProvider(this.serverName, {
+              redirectUrl: 'http://localhost/callback',
+              scope: this.config.oauthScope,
+            })
+          : undefined;
       this.transport = new StreamableHTTPClientTransport(urlInstance, {
+        authProvider,
         requestInit: {
           headers,
         },

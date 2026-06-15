@@ -66,6 +66,8 @@ export interface MeerAgentConfig {
   ) => void;
   onToolEnd?: () => void;
   onError?: (error: Error) => void;
+  /** Real token usage reported by the provider for a completed response. */
+  onUsage?: (usage: { promptTokens?: number; completionTokens?: number }) => void;
   promptChoice?: (
     message: string,
     choices: Array<{ label: string; value: string }>,
@@ -387,6 +389,17 @@ export class MeerAgent {
               break;
             }
 
+            case "usage":
+              this.config.onUsage?.({
+                promptTokens: event.promptTokens,
+                completionTokens: event.completionTokens,
+              });
+              break;
+
+            case "reasoning":
+              this.config.onCotMessage?.(event.content);
+              break;
+
             case "error":
               loopError = event.error;
               this.sessionEventSink?.({ type: "status_change", status: "" });
@@ -479,7 +492,7 @@ export class MeerAgent {
           if (!finalAssistantText && lastMsg?.role === "tool_result") {
             if (this.config.maxIterations && turnCount >= this.config.maxIterations) {
               const limit = this.config.maxIterations;
-              finalAssistantText = `Reached the configured safety limit of ${limit} turns. The task may be incomplete — send a follow-up message to continue.`;
+              finalAssistantText = `Paused after ${limit} steps — this is the \`maxIterations\` limit in your meer config, not an error. The task may not be finished: reply to keep going, or raise \`maxIterations\` in ~/.meer/config.yaml to let it run longer.`;
               this.config.onStreamingStart?.();
               this.config.onStreamingChunk?.(finalAssistantText);
               this.config.onStreamingEnd?.();

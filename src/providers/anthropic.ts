@@ -277,6 +277,7 @@ export class AnthropicProvider implements Provider {
     const toolBlocks = new Map<number, ToolBlock>();
     let rawText = "";
     let stopReason = "";
+    let usage: { promptTokens?: number; completionTokens?: number } | undefined;
 
     const reader = response.body?.getReader();
     if (!reader) throw new Error("No response body");
@@ -313,7 +314,16 @@ export class AnthropicProvider implements Provider {
 
           const eventType = parsed.type as string;
 
-          if (eventType === "content_block_start") {
+          if (eventType === "message_start") {
+            const msg = parsed.message as Record<string, unknown> | undefined;
+            const u = msg?.usage as { input_tokens?: number; output_tokens?: number } | undefined;
+            if (u) {
+              usage = {
+                promptTokens: u.input_tokens,
+                completionTokens: u.output_tokens,
+              };
+            }
+          } else if (eventType === "content_block_start") {
             const block = parsed.content_block as Record<string, unknown>;
             if (block?.type === "tool_use") {
               toolBlocks.set(parsed.index as number, {
@@ -365,6 +375,11 @@ export class AnthropicProvider implements Provider {
             if (delta?.stop_reason) {
               stopReason = delta.stop_reason as string;
             }
+            // Anthropic streams the running output token count on message_delta.
+            const u = parsed.usage as { output_tokens?: number } | undefined;
+            if (u?.output_tokens != null) {
+              usage = { ...(usage ?? {}), completionTokens: u.output_tokens };
+            }
           }
         }
       }
@@ -395,7 +410,7 @@ export class AnthropicProvider implements Provider {
       yield { type: "text-delta", text: note };
     }
 
-    yield { type: "done", rawText };
+    yield { type: "done", rawText, usage };
   }
 
   private convertAgentMessages(messages: AgentMessage[]): {

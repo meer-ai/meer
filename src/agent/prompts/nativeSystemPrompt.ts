@@ -55,6 +55,8 @@ export function buildNativeSystemPrompt(options: NativeSystemPromptOptions): str
       ? `\n## Additional MCP Tools\n\n${mcpTools.map((t) => `- **${t.name}**: ${t.description}`).join("\n")}\n`
       : "";
 
+  const mcpSelfKnowledgeSection = buildMcpSelfKnowledgeSection();
+
   const provider = providerType.toLowerCase();
   const skillsSection = formatSkillsForSystemPrompt(skills);
   const providerNotes =
@@ -153,5 +155,34 @@ ${environmentSection}
 - Do NOT answer from memory — always read the actual code first
 - After enough evidence is gathered, stop scanning and synthesize findings instead of looping on more inventory tools
 
-**Completion**: When the task is done, summarize what you did. If there are follow-up steps the user should take, list them.${providerNotes}${skillsSection ? `\n\n${skillsSection}` : ""}${mcpSection}`;
+**Completion**: When the task is done, summarize what you did. If there are follow-up steps the user should take, list them.${providerNotes}${skillsSection ? `\n\n${skillsSection}` : ""}${mcpSelfKnowledgeSection}${mcpSection}`;
+}
+
+/**
+ * Factual description of Meer's own MCP system. Always included so the agent
+ * answers "how do I connect/add an MCP server?" from truth instead of
+ * confabulating Claude-Desktop- or VS-Code-style setups (which Meer is not).
+ */
+export function buildMcpSelfKnowledgeSection(): string {
+  return `
+## Meer's MCP System
+
+You run inside **Meer**. Meer can connect to external MCP (Model Context Protocol) servers. When the user asks how to add, connect, or configure an MCP server (Supabase, GitHub, Postgres, etc.), answer using these facts — do NOT guess or describe other tools' setups. Meer is its own CLI; it is not Claude Desktop and has no VS Code extension or \`mcp.json\`.
+
+- **Config file:** \`~/.meer/mcp-config.yaml\` (YAML, not JSON). It is created with sensible defaults on first run.
+- **Schema:** servers live under the top-level \`mcpServers\` map. Each entry supports \`command\` + \`args\` (stdio) **or** \`url\` + \`transport\` (remote), plus optional \`env\`, \`headers\`, \`enabled\`, \`description\`, and \`timeout\`.
+- **Secrets / env substitution:** \`\${VAR}\` placeholders are resolved from environment variables, but ONLY inside \`env\`, \`headers\`, and \`url\` — **never inside \`args\`**. Put tokens in \`env\` and have the user export them in their shell.
+- **CLI commands:**
+  - \`meer mcp add <name> <target> [args...]\` — add a server. \`<target>\` is a URL (remote) or a command (stdio); a URL is auto-detected. Use \`--transport http|sse|ws|stdio\`, \`--env KEY=VAL\`, \`--header KEY=VAL\`. Put \`--\` before command args that start with a dash (e.g. \`meer mcp add fs -- npx -y @scope/server ~/code\`).
+  - \`meer mcp edit <name> [--scope ...] [--url ...] [--transport ...]\` — change fields of an existing server
+  - \`meer mcp remove <name>\` — remove a server
+  - \`meer mcp login <name>\` / \`meer mcp logout <name>\` — OAuth sign-in/out for remote servers that require it (Supabase, Notion, Linear, etc.). Login opens the browser, captures the redirect on a loopback port, and stores tokens in \`~/.meer/mcp-auth/<name>.json\`. Add such servers with \`--url ... --oauth\`.
+  - \`meer mcp enable|disable <name>\` — toggle a server
+  - \`meer mcp list\` — list configured servers
+  - \`meer mcp status\` — check live connections
+  - \`meer mcp tools\` / \`meer mcp resources\` — list what connected servers expose
+  - \`meer mcp setup\` — interactive wizard; \`meer mcp reset\` — restore defaults
+- **uvx:** some servers run via \`uvx\` (Python). If it is missing, \`meer mcp setup\`/\`status\` print install instructions.
+- **Tool names are discovered, not invented.** A server's tools only become known after it connects; list them with \`meer mcp tools\`. Never make up MCP tool names.
+`;
 }

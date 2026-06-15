@@ -43,6 +43,83 @@ export function getCommand(args?: Record<string, unknown>): string {
   return typeof value === "string" ? value : Array.isArray(value) ? value.join(" ") : "";
 }
 
+function firstString(args: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function asList(value: unknown): string {
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(", ");
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => String(v).trim()).filter(Boolean).join(", ");
+  }
+  return "";
+}
+
+/**
+ * A concise, human-readable summary of what a tool call is doing, shown after
+ * the tool name in its worklog row. Falls back to file path / search pattern,
+ * then to nothing.
+ */
+export function getToolSummary(toolName: string, args?: Record<string, unknown>): string {
+  const lower = toolName.toLowerCase();
+  const a = args ?? {};
+
+  if (/run_command|bash|exec|package_run_script/.test(lower)) {
+    const command = getCommand(args);
+    return command ? `$ ${command}` : "";
+  }
+  if (/http_request|fetch|web_request|web_fetch|curl/.test(lower)) {
+    const url = firstString(a, ["url", "endpoint", "uri"]);
+    if (url) {
+      const method = firstString(a, ["method"]).toUpperCase() || "GET";
+      return `${method} ${url}`;
+    }
+  }
+  if (/package_install|install_package|add_dependency/.test(lower)) {
+    const pkgs = asList(a.packages ?? a.package ?? a.dependencies);
+    if (pkgs) return pkgs;
+  }
+  if (/git_commit|commit/.test(lower)) {
+    const message = firstString(a, ["message", "msg"]);
+    if (message) return `"${message}"`;
+  }
+  if (/symbol|reference|rename|definition|move_symbol/.test(lower)) {
+    const symbol = firstString(a, ["symbol", "symbolName", "name", "oldName", "identifier"]);
+    if (symbol) return symbol;
+  }
+  if (/set_plan|create_plan/.test(lower)) {
+    const title = firstString(a, ["title", "goal", "name"]);
+    if (title) return title;
+  }
+  if (/memory/.test(lower)) {
+    const key = firstString(a, ["key", "query", "name", "title"]);
+    if (key) return key;
+  }
+  if (/extract_function|extract_variable|inline_variable/.test(lower)) {
+    const name = firstString(a, ["name", "functionName", "variableName"]);
+    const path = getFilePath(args);
+    if (path && name) return `${path} → ${name}`;
+  }
+
+  const path = getFilePath(args);
+  if (path) return path;
+
+  const pattern = firstString(a, ["pattern", "term", "query", "includePattern", "search"]);
+  if (pattern) return `"${pattern}"`;
+
+  return "";
+}
+
 export function truncateLine(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   return normalized.length <= maxLength
@@ -84,6 +161,109 @@ export function shouldRenderCompact(args: {
   const lineCount = args.body.split("\n").filter((l) => l.trim()).length;
   if (lineCount > FAST_TOOL_MAX_LINES) return false;
   return true;
+}
+
+/** Number of diff lines shown inline under a file-edit tool row. */
+export const DIFF_PREVIEW_LINES = 7;
+
+// Strip SGR color codes (chalk emits these) so we can re-style with the TUI theme.
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+
+export function stripAnsiCodes(text: string): string {
+  return text.replace(ANSI_SGR, "");
+}
+
+export type DiffLineKind = "meta" | "add" | "remove" | "context";
+
+export interface DiffPreviewLine {
+  text: string;
+  kind: DiffLineKind;
+}
+
+function classifyDiffLine(text: string): DiffLineKind {
+  if (text.startsWith("@@")) return "meta";
+  if (text.startsWith("+")) return "add";
+  if (text.startsWith("-")) return "remove";
+  return "context";
+}
+
+/** Count added/removed lines in a (possibly colored) unified diff. */
+export function parseDiffStat(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const raw of stripAnsiCodes(diff).split("\n")) {
+    if (raw.startsWith("@@")) continue;
+    if (raw.startsWith("+")) added++;
+    else if (raw.startsWith("-")) removed++;
+  }
+  return { added, removed };
+}
+
+/** Clip a line to a max width without collapsing leading indentation. */
+export function clipLine(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
+/**
+ * Turn a (possibly colored) unified diff into a short, structured preview:
+ * the first `maxLines` non-empty diff lines tagged by kind, plus the count of
+ * lines hidden after the cutoff. The caller colorizes using the TUI theme.
+ */
+export function buildDiffPreview(
+  diff: string,
+  maxLines: number = DIFF_PREVIEW_LINES
+): { lines: DiffPreviewLine[]; hiddenLines: number } {
+  const all = stripAnsiCodes(diff)
+    .split("\n")
+    .filter((line) => line.length > 0);
+  const preview = all.slice(0, maxLines).map((text): DiffPreviewLine => ({
+    text,
+    kind: classifyDiffLine(text),
+  }));
+  return { lines: preview, hiddenLines: Math.max(0, all.length - preview.length) };
+}
+
+/**
+ * Best-effort extraction of a tool argument from a *partial* JSON buffer (the
+ * args streaming in before the call is complete). Returns the value of the
+ * first recognized key, even if its closing quote hasn't arrived yet, so the
+ * row can show the command/path "building up" live.
+ */
+export function extractStreamingArgPreview(buffer: string): string {
+  const keys = ["command", "cmd", "script", "path", "filePath", "url", "query", "pattern", "message"];
+  for (const key of keys) {
+    const match = buffer.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`));
+    if (match) {
+      const value = match[1]
+        .replace(/\\"/g, '"')
+        .replace(/\\n/g, " ")
+        .replace(/\\t/g, " ")
+        .replace(/\\\\/g, "\\");
+      if (value.trim()) return value;
+    }
+  }
+  return "";
+}
+
+/** Lines of tool output shown inline under a (non-edit) tool row. */
+export const TOOL_OUTPUT_PREVIEW_LINES = 10;
+
+/**
+ * Build a compact preview of a tool's textual output for inline display under
+ * its row. Returns null when there's nothing worth showing: empty output, or a
+ * mutation tool (those render a diff via the result details instead).
+ */
+export function buildToolOutputPreview(
+  toolName: string,
+  content: string,
+  maxLines: number = TOOL_OUTPUT_PREVIEW_LINES
+): { lines: string[]; hiddenLines: number } | null {
+  if (classifyTool(toolName) === "mutation") return null;
+  const body = stripToolHeader(stripAnsiCodes(content)).replace(/\s+$/, "");
+  if (!body.trim()) return null;
+  const all = body.split("\n");
+  const lines = all.slice(0, maxLines).map((line) => clipLine(line, 120));
+  return { lines, hiddenLines: Math.max(0, all.length - lines.length) };
 }
 
 export function extractDiffPreview(content: string): string | null {

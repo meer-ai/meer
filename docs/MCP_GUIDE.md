@@ -273,6 +273,89 @@ Check connection status of all servers:
 meer mcp status
 ```
 
+### Add a Custom Server
+
+Add any MCP server that isn't in the defaults (e.g. Supabase) without hand-editing
+the config file. The target is positional — pass a **URL** for a remote server or
+a **command** for a stdio server:
+
+```bash
+# remote server (URL auto-detected) — transport accepts http/sse/ws/stdio aliases
+meer mcp add supabase "https://mcp.supabase.com/mcp?project_ref=YOUR_REF" --transport http
+
+# stdio server (command + args)
+meer mcp add fs npx @modelcontextprotocol/server-filesystem ~/code
+
+# if any command arg starts with a dash (e.g. -y), put `--` before the args
+meer mcp add fs -- npx -y @modelcontextprotocol/server-filesystem ~/code
+```
+
+You can also be explicit with `--url` or `--command`/`--args` instead of the
+positional target. Other options: `--transport` (`http`, `sse`, `ws`, `stdio`),
+`--env KEY=VALUE` (repeatable), `--header KEY=VALUE` (repeatable),
+`--description`, `--timeout <ms>`, `--oauth`/`--scope` (see below), and `--disabled`.
+
+> **Secrets:** `${VAR}` placeholders are resolved from environment variables, but
+> **only** inside `--env`, `--header`, and `--url` — never inside `--args`. Put
+> tokens in `--env` and export them in your shell. New servers are enabled by
+> default; pass `--disabled` to add without enabling.
+
+### Remove a Server
+
+```bash
+meer mcp remove <server-name>   # alias: meer mcp rm
+```
+
+### Authenticate with OAuth (remote servers)
+
+Many hosted MCP servers (Supabase, Notion, Linear, GitHub's remote server, …)
+require an OAuth sign-in instead of a static token. Add the server with `--oauth`,
+then run `login`:
+
+```bash
+# 1. Add the remote server and mark it OAuth-backed
+meer mcp add notion \
+  --url https://mcp.notion.com/mcp \
+  --oauth \
+  --description "Notion workspace"
+
+# 2. Sign in — opens your browser, captures the redirect, stores tokens
+meer mcp login notion
+
+# Later, to revoke locally:
+meer mcp logout notion
+```
+
+How it works:
+- `login` starts a temporary loopback server, opens the consent page in your
+  browser, performs OAuth 2.1 with PKCE and Dynamic Client Registration, and
+  stores the resulting tokens at `~/.meer/mcp-auth/<server>.json` (permissions `0600`).
+- Subsequent connections attach the stored token automatically and refresh it
+  when it expires — no re-login needed until the refresh token is revoked.
+- If an OAuth server is used before you log in, Meer fails with a clear message
+  telling you to run `meer mcp login <server>`.
+- `meer mcp list` shows whether each OAuth server is currently signed in.
+
+> Use `--scope "<scopes>"` on `meer mcp add` to request specific OAuth scopes.
+> OAuth applies only to remote (`--url`) servers, not stdio (`--command`) servers.
+
+**Scopes are provider-specific.** Each server defines its own valid scope values
+and they are space-separated. For example, Supabase expects scopes like
+`projects:read projects:write database:read database:write storage:read` — not a
+single generic value. If you pass an unsupported scope, login fails with the
+server's message listing the accepted values. When unsure, omit `--scope` and
+grant access on the consent screen.
+
+To change a server's scope (or any field) without removing it, use `edit`:
+
+```bash
+meer mcp edit supabase --scope "projects:read projects:write database:read"
+meer mcp login supabase   # re-run after changing OAuth settings
+```
+
+Changing the scope clears any stored credentials so the next `login` re-registers
+cleanly.
+
 ### Enable/Disable Servers
 
 ```bash

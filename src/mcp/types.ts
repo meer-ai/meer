@@ -26,6 +26,15 @@ export interface MCPServerConfig {
   /** Additional HTTP headers (streaming-http transport) */
   headers?: Record<string, string>;
 
+  /**
+   * Use OAuth for this remote server. When true, connections attach the stored
+   * OAuth credentials and require `meer mcp login <server>` to sign in first.
+   */
+  oauth?: boolean;
+
+  /** OAuth scopes to request during login, space-separated. */
+  oauthScope?: string;
+
   /** Whether this server is enabled */
   enabled: boolean;
 

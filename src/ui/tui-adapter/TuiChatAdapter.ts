@@ -387,6 +387,10 @@ export class TuiChatAdapter implements ChatAdapter {
     }
     if (isError) {
       row.setStatus("error", content);
+    } else {
+      // Surface the tool's output (run_command stdout, grep matches, …) in the
+      // transcript. No-op for edits, which render a diff instead.
+      row.setOutput(content, metadata?.details);
     }
     this.ui.requestRender();
   }
@@ -551,15 +555,16 @@ export class TuiChatAdapter implements ChatAdapter {
     return id;
   }
 
-  previewToolCall(id: string, toolName?: string, _inputTextDelta?: string): void {
-    const row = this.toolRows.get(id);
+  previewToolCall(id: string, toolName?: string, inputTextDelta?: string): void {
+    let row = this.toolRows.get(id);
     if (row) {
       if (toolName) row.setName(toolName);
     } else if (toolName) {
       this.currentAssistant = null;
-      this.createToolRow(id, toolName);
+      row = this.createToolRow(id, toolName);
       this.ensureTicker();
     }
+    if (inputTextDelta) row?.appendStreamingArgs(inputTextDelta);
     this.ui.requestRender();
   }
 
@@ -569,15 +574,17 @@ export class TuiChatAdapter implements ChatAdapter {
     this.ui.requestRender();
   }
 
-  updateToolProgress(id: string, _partial?: string): void {
-    // The spinner row already animates; detailed progress stays out of the
-    // transcript to keep the work log quiet.
-    this.resolveRow(id)?.refresh();
+  updateToolProgress(id: string, partial?: string): void {
+    const row = this.resolveRow(id);
+    if (partial) row?.setOutput(partial);
+    row?.refresh();
     this.ui.requestRender();
   }
 
-  completeTool(id: string, _result?: string, _details?: Record<string, unknown>): void {
-    this.resolveRow(id)?.setStatus("success");
+  completeTool(id: string, _result?: string, details?: Record<string, unknown>): void {
+    const row = this.resolveRow(id);
+    row?.setStatus("success");
+    row?.setResult(details);
     this.checkTicker();
     if (this.turnActive) this.setLoaderMessage("Thinking");
     this.ui.requestRender();
@@ -634,6 +641,9 @@ export class TuiChatAdapter implements ChatAdapter {
   // ── ChatAdapter: turn lifecycle ────────────────────────────────────────────
 
   beginTurn(): void {
+    // A new user turn means any finished plan from the previous turn should stop
+    // sticking to the input. (An unfinished plan stays — it spans turns.)
+    this.dismissCompletedPlan();
     this.turnActive = true;
     this.turnAssistantParts = [];
     this.currentAssistant = null;
@@ -724,8 +734,8 @@ export class TuiChatAdapter implements ChatAdapter {
     this.ui.requestRender();
   }
 
-  updateTokens(used: number, limit?: number): void {
-    this.footer.update({ tokens: { used, limit } });
+  updateTokens(used: number, limit?: number, estimated = false): void {
+    this.footer.update({ tokens: { used, limit }, tokensEstimated: estimated });
     this.ui.requestRender();
   }
 
@@ -883,28 +893,67 @@ export class TuiChatAdapter implements ChatAdapter {
     this.refreshFooter();
   }
 
+  /** A plan with at least one task and none left pending/in-progress. */
+  private isPlanComplete(plan: Plan | null): boolean {
+    return (
+      !!plan &&
+      plan.tasks.length > 0 &&
+      plan.tasks.every((t) => t.status === "completed" || t.status === "skipped")
+    );
+  }
+
+  /**
+   * Drop the sticky plan panel once the work is finished and the user has moved
+   * on. A completed plan that keeps hugging the input is just noise — but an
+   * in-progress plan must persist across turns, so only a fully-done plan is
+   * cleared here.
+   */
+  private dismissCompletedPlan(): void {
+    if (this.isPlanComplete(this.plan)) {
+      this.plan = null;
+      this.planContainer.clear();
+    }
+  }
+
   setPlan(plan: Plan | null): void {
     this.plan = plan;
     this.planContainer.clear();
     if (plan && plan.tasks.length > 0) {
       const s = getTuiStyles();
+      const done = plan.tasks.filter((t) => t.status === "completed").length;
+      const title = plan.title?.trim() ? ` ${plan.title.trim()}` : "";
       this.planContainer.addChild(new Spacer(1));
+      this.planContainer.addChild(
+        new Text(s.bold(s.text(`Plan${title}`)) + s.muted(` (${done}/${plan.tasks.length})`), 1, 0)
+      );
       for (const task of plan.tasks.slice(0, 8)) {
-        const icon =
-          task.status === "completed"
-            ? s.success("✓")
-            : task.status === "in_progress"
-              ? s.accent("›")
-              : s.muted("○");
-        this.planContainer.addChild(new Text(`${icon} ${s.muted(task.description)}`, 1, 0));
+        const { icon, label } = this.renderPlanTask(s, task);
+        this.planContainer.addChild(new Text(`${icon} ${label}`, 1, 0));
       }
       if (plan.tasks.length > 8) {
         this.planContainer.addChild(
-          new Text(getTuiStyles().muted(`… ${plan.tasks.length - 8} more tasks`), 1, 0)
+          new Text(s.muted(`… ${plan.tasks.length - 8} more tasks`), 1, 0)
         );
       }
     }
     this.ui.requestRender();
+  }
+
+  /** Status glyph + styled description for one plan task. */
+  private renderPlanTask(
+    s: ReturnType<typeof getTuiStyles>,
+    task: { status: string; description: string }
+  ): { icon: string; label: string } {
+    switch (task.status) {
+      case "completed":
+        return { icon: s.success("✓"), label: s.muted(task.description) };
+      case "in_progress":
+        return { icon: s.accent("◐"), label: s.text(task.description) };
+      case "skipped":
+        return { icon: s.muted("⊘"), label: s.muted(task.description) };
+      default:
+        return { icon: s.muted("○"), label: s.muted(task.description) };
+    }
   }
 
   // ── ChatAdapter: environment ───────────────────────────────────────────────

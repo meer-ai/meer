@@ -531,6 +531,17 @@ export function createCLI(): Command {
           },
           onToolEnd: () => chatUI?.clearTools(),
           onError: () => {},
+          onUsage: ({ promptTokens, completionTokens }: { promptTokens?: number; completionTokens?: number }) => {
+            // Real billed usage reported by the provider. Accumulate into the
+            // tracker (each request bills its full prompt) and show real
+            // tokens + cost in the footer.
+            if (promptTokens) sessionTracker.trackPromptTokens(promptTokens);
+            if (completionTokens) sessionTracker.trackCompletionTokens(completionTokens);
+            const usage = sessionTracker.getTokenUsage();
+            chatUI?.updateTokens(usage.total, sessionTracker.getMaxTokens(), false);
+            const cost = sessionTracker.getCostUsage().total;
+            if (cost > 0) chatUI?.updateCost(cost);
+          },
           // Always wired so an untrusted (restricted) project can prompt before
           // shell commands even when approvals are otherwise off. Whether a
           // prompt actually appears is decided inside the agent based on
@@ -646,7 +657,12 @@ export function createCLI(): Command {
         }
 
         // ── Plan subscriptions ────────────────────────────────────────────────
+        // The plan store drives the live task panel: render it into the TUI and
+        // mirror it onto the event bus for recorders/timeline. Without the
+        // chatUI.setPlan call the panel never updates, so set_plan /
+        // update_plan_task were invisible.
         const pushPlanSnapshot = (plan = planStore.getSnapshot()) => {
+          chatUI?.setPlan(plan);
           eventBus.emitPlan(plan);
         };
         pushPlanSnapshot();
@@ -813,6 +829,15 @@ export function createCLI(): Command {
             const start = Date.now();
             await session.prompt(userInput, { attachments: userAttachments });
             sessionTracker.trackApiCall(Date.now() - start);
+            // If the provider reported real usage this turn (onUsage), the
+            // footer already shows billed tokens + cost. Otherwise fall back to
+            // a char-based estimate of context size, clearly marked with "~ctx".
+            if (sessionTracker.getTokenUsage().total === 0) {
+              const ctxTokens = sessionTracker.getContextTokens();
+              if (ctxTokens > 0) {
+                chatUI?.updateTokens(ctxTokens, sessionTracker.getMaxTokens(), true);
+              }
+            }
           } catch (error) {
             const message =
               error instanceof Error ? error.message : String(error);

@@ -126,6 +126,8 @@ export type AgentEvent =
       isError: boolean;
     }
   | { type: "error"; error: Error }
+  | { type: "usage"; promptTokens?: number; completionTokens?: number }
+  | { type: "reasoning"; content: string }
   | { type: "aborted" };
 
 export type AgentEventSink = (event: AgentEvent) => void | Promise<void>;

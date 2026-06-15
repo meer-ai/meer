@@ -242,6 +242,11 @@ export class SessionTracker {
     return this.stats.apiTime + this.stats.toolTime;
   }
 
+  /** Estimated tokens currently held in the live context window (char-based). */
+  getContextTokens(): number {
+    return this.stats.currentPromptTokens;
+  }
+
   getTokenUsage(): { prompt: number; completion: number; total: number } {
     return {
       prompt: this.stats.promptTokens,

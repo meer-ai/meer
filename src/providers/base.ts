@@ -47,13 +47,19 @@ export interface ProviderStructuredTurn {
   reasoningContent?: string;
 }
 
+/** Token usage reported by a provider for a single response, when available. */
+export interface ProviderUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+}
+
 export type ProviderEvent =
   | { type: 'text-delta'; text: string }
   | { type: 'assistant-message'; text: string }
   | { type: 'tool-call-delta'; toolCallId: string; toolName?: string; inputTextDelta: string }
   | { type: 'tool-call'; toolCall: ProviderToolCall }
   | { type: 'final-answer'; text: string }
-  | { type: 'done'; rawText: string; turn?: ProviderStructuredTurn; reasoningContent?: string };
+  | { type: 'done'; rawText: string; turn?: ProviderStructuredTurn; reasoningContent?: string; usage?: ProviderUsage };
 
 export interface Provider {
   /**
