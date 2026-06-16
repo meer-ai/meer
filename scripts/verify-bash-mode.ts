@@ -51,9 +51,11 @@ assert(
 
 // --- Successful command captures output -----------------------------------
 {
-  const result = await runCommand("printf 'hello bash mode\\n'", process.cwd(), {
-    silent: true,
-  });
+  const result = await runCommand(
+    "node -e \"console.log('hello bash mode')\"",
+    process.cwd(),
+    { silent: true }
+  );
   assert(!result.error, "no error on successful command");
   assert(
     (result.result ?? "").includes("hello bash mode"),
@@ -76,9 +78,11 @@ assert(
 
 // --- Pipes and redirects work ---------------------------------------------
 {
-  const result = await runCommand("echo one && echo two", process.cwd(), {
-    silent: true,
-  });
+  const result = await runCommand(
+    "node -e \"console.log('one')\" && node -e \"console.log('two')\"",
+    process.cwd(),
+    { silent: true }
+  );
   assert(!result.error, "chained commands succeed");
   assert(
     (result.result ?? "").includes("one") && (result.result ?? "").includes("two"),

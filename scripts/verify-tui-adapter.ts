@@ -17,14 +17,27 @@ const stripAnsi = stripAnsiImport as unknown as (text: string) => string;
 class FakeTerminal implements Terminal {
   written = "";
   private inputHandler: ((data: string) => void) | null = null;
+  private resizeHandler: (() => void) | null = null;
+  startCount = 0;
+  stopCount = 0;
+  drainCount = 0;
+  hideCursorCount = 0;
+  showCursorCount = 0;
+  progressStates: boolean[] = [];
 
-  start(onInput: (data: string) => void, _onResize: () => void): void {
+  start(onInput: (data: string) => void, onResize: () => void): void {
+    this.startCount++;
     this.inputHandler = onInput;
+    this.resizeHandler = onResize;
   }
   stop(): void {
+    this.stopCount++;
     this.inputHandler = null;
+    this.resizeHandler = null;
   }
-  async drainInput(): Promise<void> {}
+  async drainInput(): Promise<void> {
+    this.drainCount++;
+  }
   write(data: string): void {
     this.written += data;
   }
@@ -38,16 +51,30 @@ class FakeTerminal implements Terminal {
     return false;
   }
   moveBy(): void {}
-  hideCursor(): void {}
-  showCursor(): void {}
+  hideCursor(): void {
+    this.hideCursorCount++;
+  }
+  showCursor(): void {
+    this.showCursorCount++;
+  }
   clearLine(): void {}
   clearFromCursor(): void {}
   clearScreen(): void {}
   setTitle(): void {}
-  setProgress(): void {}
+  setProgress(active: boolean): void {
+    this.progressStates.push(active);
+  }
 
   type(data: string): void {
     this.inputHandler?.(data);
+  }
+
+  resize(): void {
+    this.resizeHandler?.();
+  }
+
+  get acceptingInput(): boolean {
+    return this.inputHandler !== null;
   }
 }
 
@@ -340,6 +367,67 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   console.log("");
 }
 
+// ── Terminal lifecycle: release/resume/destroy cleanup ──────────────────────
+{
+  const originalLog = console.log;
+  const resizeListenersBefore = process.stdout.listenerCount("resize");
+  const { adapter, terminal } = makeAdapter();
+  let submissions = 0;
+  adapter.enableContinuousChat(() => submissions++);
+
+  assert.equal(terminal.startCount, 1, "constructor starts the terminal once");
+  assert.equal(terminal.stopCount, 0, "terminal is not stopped initially");
+  assert.equal(terminal.acceptingInput, true, "terminal accepts input after start");
+  assert.equal(
+    process.stdout.listenerCount("resize"),
+    resizeListenersBefore + 1,
+    "adapter installs one resize listener"
+  );
+  assert.notEqual(console.log, originalLog, "console is captured while TUI owns terminal");
+
+  const value = await adapter.runWithTerminal(async () => {
+    assert.equal(console.log, originalLog, "console restored while terminal is released");
+    assert.equal(terminal.stopCount, 1, "runWithTerminal stops the TUI");
+    assert.equal(terminal.acceptingInput, false, "released terminal ignores TUI input");
+    terminal.type("ignored while stopped\r");
+    assert.equal(submissions, 0, "input while released is not submitted");
+    return "released-ok";
+  });
+  assert.equal(value, "released-ok", "runWithTerminal returns task result");
+  assert.equal(terminal.startCount, 2, "runWithTerminal restarts the TUI after success");
+  assert.equal(terminal.acceptingInput, true, "terminal accepts input after resume");
+  assert.notEqual(console.log, originalLog, "console recaptured after resume");
+
+  await assert.rejects(
+    adapter.runWithTerminal(async () => {
+      assert.equal(console.log, originalLog, "console restored during failing released task");
+      throw new Error("released-boom");
+    }),
+    /released-boom/,
+    "runWithTerminal propagates task errors"
+  );
+  assert.equal(terminal.startCount, 3, "runWithTerminal restarts the TUI after failure");
+  assert.equal(terminal.stopCount, 2, "failing runWithTerminal still stopped once");
+
+  terminal.resize();
+  adapter.destroy();
+  assert.equal(terminal.stopCount, 3, "destroy stops the terminal once");
+  assert.equal(terminal.acceptingInput, false, "destroyed terminal ignores input");
+  assert.equal(console.log, originalLog, "destroy restores console");
+  assert.equal(
+    process.stdout.listenerCount("resize"),
+    resizeListenersBefore,
+    "destroy removes adapter resize listener"
+  );
+  assert.equal(terminal.hideCursorCount, terminal.startCount, "cursor hidden on every start");
+  assert.equal(terminal.showCursorCount, terminal.stopCount, "cursor shown on every stop");
+
+  adapter.destroy();
+  assert.equal(terminal.stopCount, 3, "destroy is idempotent");
+  terminal.type("ignored after destroy\r");
+  assert.equal(submissions, 0, "input after destroy is ignored");
+}
+
 // ── Inline prompt strips markdown ─────────────────────────────────────────────
 {
   const { adapter } = makeAdapter();
@@ -502,6 +590,31 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   text = renderedText(adapter);
   assert.ok(/12\.4k\/200\.0k tok/.test(text) && !text.includes("~12.4k"), "real usage shows 'tok' without ~");
   assert.ok(text.includes("$0.0089"), "footer shows real cost");
+  adapter.destroy();
+}
+
+// ── Renderer mode hooks update footer + local timeline ──────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.setScreenReaderMode("on");
+  adapter.setAlternateBufferMode("on");
+  let text = renderedText(adapter);
+  assert.ok(text.includes("sr:on"), "screen-reader mode appears in footer");
+  assert.ok(text.includes("alt:on"), "alternate-buffer preference appears in footer");
+
+  adapter.setAlternateBufferMode("auto");
+  text = renderedText(adapter);
+  assert.ok(!text.includes("alt:on"), "auto resets alternate-buffer preference to config default");
+
+  const toolId = adapter.addTool("run_command", { command: "npm test" }, "timeline-tool");
+  adapter.startTool(toolId);
+  adapter.completeTool(toolId, "ok");
+
+  const events = adapter.getTimelineEvents();
+  assert.ok(events.some((event) => event.type === "log" && event.message.includes("Screen reader mode set to on")), "screen-reader hook records timeline event");
+  assert.ok(events.some((event) => event.type === "task" && event.label === "Tool run_command" && event.status === "started"), "tool start recorded in local timeline");
+  assert.ok(events.some((event) => event.type === "task" && event.label === "Tool run_command" && event.status === "succeeded"), "tool completion recorded in local timeline");
+  assert.equal(adapter.getTimelineEvents(1).length, 1, "timeline limit returns bounded tail");
   adapter.destroy();
 }
 

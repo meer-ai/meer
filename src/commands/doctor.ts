@@ -110,18 +110,18 @@ async function checkNodeVersion(): Promise<HealthCheckResult> {
     const version = process.version;
     const major = parseInt(version.slice(1).split('.')[0]);
 
-    if (major >= 18) {
+    if (major >= 20) {
       return {
         name: 'Node.js Version',
         status: 'pass',
-        message: `Node.js ${version} (>= 18.0.0)`,
+        message: `Node.js ${version} (>= 20.0.0)`,
       };
     } else {
       return {
         name: 'Node.js Version',
         status: 'fail',
-        message: `Node.js ${version} (< 18.0.0)`,
-        fix: 'Install Node.js >= 18.0.0 from https://nodejs.org',
+        message: `Node.js ${version} (< 20.0.0)`,
+        fix: 'Install Node.js >= 20.0.0 from https://nodejs.org',
       };
     }
   } catch (error) {

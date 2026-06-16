@@ -71,9 +71,11 @@ import { runCommand } from "../src/tools/index.js";
 
 // --- runCommand still works end-to-end with bounded buffers ---
 {
-  const result = await runCommand("printf bounded-ok", process.cwd(), {
-    silent: true,
-  });
+  const result = await runCommand(
+    "node -e \"process.stdout.write('bounded-ok')\"",
+    process.cwd(),
+    { silent: true }
+  );
   assert.equal(result.error, undefined);
   assert.equal(result.result.trim(), "bounded-ok");
 }

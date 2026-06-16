@@ -449,6 +449,7 @@ export function createCLI(): Command {
               provider: providerType,
               model: config.model,
               cwd: currentCwd,
+              ui: config.ui,
             })
           : null;
 

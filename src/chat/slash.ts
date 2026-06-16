@@ -279,6 +279,65 @@ function printTimelinePreview(events: UITimelineEvent[], limit = 10): void {
   console.log("");
 }
 
+function timelineEventKey(event: UITimelineEvent): string {
+  switch (event.type) {
+    case "task":
+      return [
+        event.type,
+        event.status,
+        event.label,
+        event.detail ?? "",
+      ].join("\u0000");
+    case "log":
+      return [event.type, event.level, event.message].join("\u0000");
+    case "queue":
+      return [
+        event.type,
+        event.action,
+        event.mode,
+        event.message,
+        String(event.pendingSteering),
+        String(event.pendingFollowUp),
+      ].join("\u0000");
+  }
+}
+
+export function mergeTimelineEvents(
+  ...sources: Array<UITimelineEvent[] | undefined | null>
+): UITimelineEvent[] {
+  const events = sources
+    .flatMap((source) => source ?? [])
+    .map((event, sourceIndex) => ({ event, sourceIndex }))
+    .sort((a, b) => {
+      const byTime = a.event.timestamp - b.event.timestamp;
+      if (byTime !== 0) return byTime;
+      return a.sourceIndex - b.sourceIndex;
+    });
+
+  const seen = new Map<string, number>();
+  const merged: UITimelineEvent[] = [];
+  for (const { event } of events) {
+    const key = timelineEventKey(event);
+    const previousTimestamp = seen.get(key);
+    if (
+      previousTimestamp !== undefined &&
+      Math.abs(event.timestamp - previousTimestamp) <= 1000
+    ) {
+      continue;
+    }
+    seen.set(key, event.timestamp);
+    merged.push(event);
+  }
+  return merged;
+}
+
+function collectTimelineEvents(context: SlashCommandContext): UITimelineEvent[] {
+  return mergeTimelineEvents(
+    context.eventRecorder?.getTimelineEvents(),
+    context.tui?.getTimelineEvents()
+  );
+}
+
 function prepareTimelineOutputPath(requested?: string): string {
   if (requested?.trim()) {
     const resolved = resolvePath(process.cwd(), requested);
@@ -1361,10 +1420,10 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     tui.setScreenReaderMode(mode);
     tui.appendSystemMessage(
       mode === "on"
-        ? "Screen reader layout enabled."
+        ? "Screen reader preference set to on."
         : mode === "off"
-        ? "Screen reader layout disabled."
-        : "Screen reader layout reset to config defaults."
+        ? "Screen reader preference set to off."
+        : "Screen reader preference reset to config defaults."
     );
     return continueResult();
   },
@@ -1397,10 +1456,10 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     tui.setAlternateBufferMode(mode);
     tui.appendSystemMessage(
       mode === "on"
-        ? "Alternate screen buffer enabled."
+        ? "Alternate screen buffer preference set to on."
         : mode === "off"
-        ? "Alternate screen buffer disabled."
-        : "Alternate screen buffer reset to config defaults."
+        ? "Alternate screen buffer preference set to off."
+        : "Alternate screen buffer preference reset to config defaults."
     );
     return continueResult();
   },
@@ -1408,10 +1467,7 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
   "/timeline": async (context) => {
     const [actionArg, targetArg] = context.args;
     const action = actionArg ? actionArg.toLowerCase() : "show";
-    const events =
-      context.eventRecorder?.getTimelineEvents() ??
-      context.tui?.getTimelineEvents() ??
-      [];
+    const events = collectTimelineEvents(context);
 
     if (events.length === 0) {
       console.log(chalk.gray("Timeline is empty for this session."));

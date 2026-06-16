@@ -26,6 +26,7 @@ import type { Plan } from "../../plan/types.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
 import type { UITimelineEvent } from "../shared/timelineTypes.js";
 import { collapseWhitespace } from "../shared/streamCommit.js";
+import type { UISettings } from "../ui-settings.js";
 import { getAllCommands } from "../../slash/registry.js";
 import { isSlashCommandInput } from "../../slash/utils.js";
 import { setToolConsoleQuiet } from "../../tools/index.js";
@@ -55,11 +56,13 @@ export interface TuiChatConfig {
   provider: string;
   model: string;
   cwd: string;
+  ui?: UISettings;
   /** Injected for tests; defaults to a real ProcessTerminal. */
   terminal?: Terminal;
 }
 
 const EXIT_CONFIRM_WINDOW_MS = 1500;
+const MAX_TIMELINE_EVENTS = 400;
 
 /**
  * Reduce the small amount of Markdown that callers put in prompt messages
@@ -127,6 +130,8 @@ export class TuiChatAdapter implements ChatAdapter {
   private loader: Loader | null = null;
 
   private mode: ChatMode = "normal";
+  private screenReaderMode: "auto" | "on" | "off";
+  private alternateBufferMode: "on" | "off";
   private turnActive = false;
   private destroyed = false;
   private messageCount = 0;
@@ -158,6 +163,8 @@ export class TuiChatAdapter implements ChatAdapter {
   private lastCtrlCAt = 0;
   private plan: Plan | null = null;
   private onTerminalResize?: () => void;
+  private timelineEvents: UITimelineEvent[] = [];
+  private timelineSeq = 0;
   /** Images pasted (Ctrl+V) that will ride along with the next submitted message. */
   private pendingAttachments: MessageAttachment[] = [];
 
@@ -168,6 +175,8 @@ export class TuiChatAdapter implements ChatAdapter {
 
   constructor(config: TuiChatConfig) {
     this.config = config;
+    this.screenReaderMode = config.ui?.screenReaderMode ?? "auto";
+    this.alternateBufferMode = config.ui?.useAlternateBuffer ? "on" : "off";
     // Tool functions must not write raw progress lines while the TUI owns
     // the terminal — the differential renderer can't account for them.
     setToolConsoleQuiet(true);
@@ -200,6 +209,8 @@ export class TuiChatAdapter implements ChatAdapter {
       model: config.model,
       cwd: config.cwd,
       mode: this.mode,
+      screenReaderMode: this.screenReaderMode,
+      alternateBufferMode: this.alternateBufferMode,
       messageCount: 0,
       queued: 0,
     });
@@ -382,6 +393,7 @@ export class TuiChatAdapter implements ChatAdapter {
         : normalized;
     this.lastUserMessage = { content: normalized, at: Date.now() };
     this.chat.addChild(new UserMessageComponent(displayed));
+    this.recordLog("note", `User message${attachmentCount > 0 ? ` (${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"})` : ""}`);
     this.messageCount++;
     this.refreshFooter();
     this.ui.requestRender();
@@ -390,6 +402,7 @@ export class TuiChatAdapter implements ChatAdapter {
   appendSystemMessage(content: string): void {
     if (!content.trim()) return;
     this.chat.addChild(new SystemMessageComponent(content));
+    this.recordLog("info", content);
     this.ui.requestRender();
   }
 
@@ -414,10 +427,12 @@ export class TuiChatAdapter implements ChatAdapter {
     }
     if (isError) {
       row.setStatus("error", content);
+      this.recordLog("error", `Tool ${toolName} failed: ${content.split("\n")[0] ?? ""}`);
     } else {
       // Surface the tool's output (run_command stdout, grep matches, …) in the
       // transcript. No-op for edits, which render a diff instead.
       row.setOutput(content, metadata?.details);
+      this.recordLog("note", `Tool ${toolName} output updated`);
     }
     this.ui.requestRender();
   }
@@ -442,6 +457,7 @@ export class TuiChatAdapter implements ChatAdapter {
         }
         case "system":
           this.chat.addChild(new SystemMessageComponent(content));
+          this.recordLog("info", content);
           break;
         case "tool": {
           const row = this.createToolRow(
@@ -449,6 +465,7 @@ export class TuiChatAdapter implements ChatAdapter {
             entry.metadata?.toolName ?? "tool"
           );
           row.setStatus("success");
+          this.recordLog("note", `Tool ${entry.metadata?.toolName ?? "tool"} replayed`);
           break;
         }
       }
@@ -464,6 +481,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.turnAssistantParts = [];
     this.lastSettledContent = null;
     this.messageCount = 0;
+    this.timelineEvents = [];
     this.refreshFooter();
     this.ui.requestRender();
   }
@@ -492,6 +510,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.currentAssistant = component;
     this.turnAssistantParts.push(component);
     this.setLoaderMessage("Writing response");
+    this.recordTask("assistant-stream", "started", "Assistant response");
     this.ui.requestRender();
   }
 
@@ -518,6 +537,9 @@ export class TuiChatAdapter implements ChatAdapter {
     const settled = content.trim();
     this.lastSettledContent = settled.length > 0 ? settled : this.lastSettledContent;
     this.messageCount++;
+    if (settled) {
+      this.recordTask("assistant-message", "succeeded", "Assistant response");
+    }
 
     const streamed = this.turnAssistantParts
       .map((part) => part.getContent())
@@ -577,6 +599,7 @@ export class TuiChatAdapter implements ChatAdapter {
       this.createToolRow(id, toolName, args);
     }
     this.setLoaderMessage(`Running ${toolName}`);
+    this.recordTask(id, "started", `Tool ${toolName}`, getToolTimelineDetail(args));
     this.ensureTicker();
     this.ui.requestRender();
     return id;
@@ -592,11 +615,14 @@ export class TuiChatAdapter implements ChatAdapter {
       this.ensureTicker();
     }
     if (inputTextDelta) row?.appendStreamingArgs(inputTextDelta);
+    if (row) this.recordTask(id, "updated", `Tool ${row.name}`, "receiving arguments");
     this.ui.requestRender();
   }
 
   startTool(id: string): void {
-    this.resolveRow(id)?.setStatus("running");
+    const row = this.resolveRow(id);
+    row?.setStatus("running");
+    if (row) this.recordTask(id, "updated", `Tool ${row.name}`, "running");
     this.ensureTicker();
     this.ui.requestRender();
   }
@@ -605,6 +631,7 @@ export class TuiChatAdapter implements ChatAdapter {
     const row = this.resolveRow(id);
     if (partial) row?.setOutput(partial);
     row?.refresh();
+    if (row && partial) this.recordTask(id, "updated", `Tool ${row.name}`, partial.split("\n")[0]);
     this.ui.requestRender();
   }
 
@@ -612,13 +639,16 @@ export class TuiChatAdapter implements ChatAdapter {
     const row = this.resolveRow(id);
     row?.setStatus("success");
     row?.setResult(details);
+    if (row) this.recordTask(id, "succeeded", `Tool ${row.name}`, getToolTimelineDetail(details));
     this.checkTicker();
     if (this.turnActive) this.setLoaderMessage("Thinking");
     this.ui.requestRender();
   }
 
   failTool(id: string, error: string, _details?: Record<string, unknown>): void {
-    this.resolveRow(id)?.setStatus("error", error);
+    const row = this.resolveRow(id);
+    row?.setStatus("error", error);
+    if (row) this.recordTask(id, "failed", `Tool ${row.name}`, error.split("\n")[0]);
     this.checkTicker();
     this.ui.requestRender();
   }
@@ -678,6 +708,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.statusText = null;
     this.iteration = null;
     this.startLoader("Thinking");
+    this.recordTask("turn", "started", "Turn started");
     this.ui.requestRender();
   }
 
@@ -686,6 +717,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.currentAssistant = null;
     this.stopLoader();
     this.checkTicker();
+    this.recordTask("turn", "succeeded", "Turn finished");
     this.refreshFooter();
     this.ui.requestRender();
   }
@@ -735,12 +767,19 @@ export class TuiChatAdapter implements ChatAdapter {
 
   // ── ChatAdapter: workflow stages / status ──────────────────────────────────
 
-  addWorkflowStage(_name: string): void {}
+  addWorkflowStage(name: string): void {
+    this.recordTask(`stage-${name}`, "started", name);
+  }
   startWorkflowStage(name: string): void {
+    this.recordTask(`stage-${name}`, "updated", name, "running");
     this.setLoaderMessage(name);
   }
-  completeWorkflowStage(_name: string): void {}
-  failWorkflowStage(_name: string): void {}
+  completeWorkflowStage(name: string): void {
+    this.recordTask(`stage-${name}`, "succeeded", name);
+  }
+  failWorkflowStage(name: string): void {
+    this.recordTask(`stage-${name}`, "failed", name);
+  }
 
   setIteration(current: number, max?: number): void {
     this.iteration = { current, max };
@@ -779,6 +818,8 @@ export class TuiChatAdapter implements ChatAdapter {
   private refreshFooter(): void {
     this.footer.update({
       mode: this.mode,
+      screenReaderMode: this.screenReaderMode,
+      alternateBufferMode: this.alternateBufferMode,
       messageCount: this.messageCount,
       queued: this.queueState.steering + this.queueState.followUp,
       attachments: this.pendingAttachments.length,
@@ -991,6 +1032,49 @@ export class TuiChatAdapter implements ChatAdapter {
     }
   }
 
+  private recordLog(
+    level: "info" | "note" | "warn" | "error",
+    message: string
+  ): void {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    this.recordTimelineEvent({
+      id: this.nextTimelineId("log"),
+      type: "log",
+      level,
+      message: trimmed.slice(0, 500),
+      timestamp: Date.now(),
+    });
+  }
+
+  private recordTask(
+    id: string,
+    status: "started" | "updated" | "succeeded" | "failed",
+    label: string,
+    detail?: string
+  ): void {
+    this.recordTimelineEvent({
+      id: this.nextTimelineId(id),
+      type: "task",
+      status,
+      label,
+      detail: detail?.trim().slice(0, 300),
+      timestamp: Date.now(),
+    });
+  }
+
+  private nextTimelineId(prefix: string): string {
+    this.timelineSeq += 1;
+    return `${prefix}-${this.timelineSeq}`;
+  }
+
+  private recordTimelineEvent(event: UITimelineEvent): void {
+    this.timelineEvents.push(event);
+    if (this.timelineEvents.length > MAX_TIMELINE_EVENTS) {
+      this.timelineEvents.splice(0, this.timelineEvents.length - MAX_TIMELINE_EVENTS);
+    }
+  }
+
   // ── ChatAdapter: environment ───────────────────────────────────────────────
 
   setBackgroundSessions(sessions: BackgroundTerminalSession[]): void {
@@ -1006,7 +1090,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.consolePatched = true;
     const levels = ["log", "info", "warn", "error", "debug"] as const;
     for (const level of levels) {
-      this.savedConsole[level] = console[level].bind(console);
+      this.savedConsole[level] = console[level];
       console[level] = (...args: unknown[]) => {
         // Raw console writes would corrupt the differential renderer's view
         // of the terminal; route them into the transcript as system lines.
@@ -1029,26 +1113,38 @@ export class TuiChatAdapter implements ChatAdapter {
 
   async runWithTerminal<T>(task: () => Promise<T>): Promise<T> {
     this.restoreConsole();
+    setToolConsoleQuiet(false);
     this.ui.stop();
     try {
       return await task();
     } finally {
-      this.captureConsole();
-      this.ui.start();
-      this.ui.requestRender(true);
+      if (!this.destroyed) {
+        setToolConsoleQuiet(true);
+        this.captureConsole();
+        this.ui.start();
+        this.ui.requestRender(true);
+      }
     }
   }
 
-  setScreenReaderMode(_mode: "auto" | "on" | "off"): void {
-    // The differential renderer emits plain lines; no separate SR layout yet.
+  setScreenReaderMode(mode: "auto" | "on" | "off"): void {
+    this.screenReaderMode = mode;
+    this.recordLog("info", `Screen reader mode set to ${mode}`);
+    this.refreshFooter();
   }
 
-  setAlternateBufferMode(_mode: "on" | "off" | "auto"): void {
-    // pi-tui renders in the main buffer by design (scrollback is the point).
+  setAlternateBufferMode(mode: "on" | "off" | "auto"): void {
+    this.alternateBufferMode =
+      mode === "auto" ? (this.config.ui?.useAlternateBuffer ? "on" : "off") : mode;
+    this.recordLog("info", `Alternate buffer preference set to ${mode}`);
+    this.refreshFooter();
   }
 
-  getTimelineEvents(_limit?: number): UITimelineEvent[] {
-    return [];
+  getTimelineEvents(limit?: number): UITimelineEvent[] {
+    if (typeof limit === "number" && limit > 0) {
+      return this.timelineEvents.slice(-limit);
+    }
+    return [...this.timelineEvents];
   }
 
   destroy(): void {
@@ -1061,8 +1157,23 @@ export class TuiChatAdapter implements ChatAdapter {
     this.stopTicker();
     this.stopLoader();
     this.restoreConsole();
+    setToolConsoleQuiet(false);
     this.ui.stop();
   }
 }
 
 export default TuiChatAdapter;
+
+function getToolTimelineDetail(value?: Record<string, unknown>): string | undefined {
+  if (!value) return undefined;
+  const path = typeof value.path === "string" ? value.path : undefined;
+  if (path) return path;
+  const command = typeof value.command === "string" ? value.command : undefined;
+  if (command) return command;
+  const diff = typeof value.diff === "string" ? value.diff : undefined;
+  if (diff) {
+    const lines = diff.split("\n").filter((line) => line.startsWith("+") || line.startsWith("-"));
+    return `${lines.length} changed line${lines.length === 1 ? "" : "s"}`;
+  }
+  return undefined;
+}

@@ -167,10 +167,14 @@ for (const taskId of updateVariants) {
 }
 
 const commandUpdates: string[] = [];
-const commandResult = await runCommand("printf meer-command-ok", process.cwd(), {
+const commandResult = await runCommand(
+  "node -e \"process.stdout.write('meer-command-ok')\"",
+  process.cwd(),
+  {
   silent: true,
   onUpdate: (partial) => commandUpdates.push(partial),
-});
+  }
+);
 assert.equal(commandResult.error, undefined);
 assert.equal(commandResult.result.trim(), "meer-command-ok");
 assert(commandUpdates.some((update) => update.includes("starting")));

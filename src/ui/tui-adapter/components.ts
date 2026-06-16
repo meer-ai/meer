@@ -354,6 +354,8 @@ export interface FooterState {
   model: string;
   cwd: string;
   mode: "normal" | "auto-accept" | "plan";
+  screenReaderMode?: "auto" | "on" | "off";
+  alternateBufferMode?: "on" | "off";
   messageCount: number;
   tokens?: { used: number; limit?: number };
   /** When true, the token figure is a char-based context estimate, not billed usage. */
@@ -392,6 +394,12 @@ export class FooterComponent implements Component {
       s.muted(`${st.provider}/${st.model}`),
       st.mode === "plan" ? s.accent(modeLabel) : s.muted(modeLabel),
     ];
+    if (st.screenReaderMode === "on") {
+      parts.push(s.accent("sr:on"));
+    }
+    if (st.alternateBufferMode === "on") {
+      parts.push(s.muted("alt:on"));
+    }
     if (st.tokens && st.tokens.used > 0) {
       const limit = st.tokens.limit ? `/${formatCompact(st.tokens.limit)}` : "";
       // Real billed usage renders as "12k tok"; a char-based context estimate
