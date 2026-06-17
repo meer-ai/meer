@@ -10,6 +10,7 @@ import { isKeyRelease, matchesKey } from "./keys.js";
 import type { Terminal } from "./terminal.js";
 import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
 import { extractSegments, normalizeTerminalOutput, sliceByColumn, sliceWithWidth, visibleWidth } from "./utils.js";
+import { recordDiagnostic } from "../../utils/diagnostics.js";
 
 const KITTY_SEQUENCE_PREFIX = "\x1b_G";
 
@@ -1356,6 +1357,11 @@ export class TUI extends Container {
 			if (!isImage && visibleWidth(line) > width) {
 				// Log all lines to crash file for debugging
 				const crashLogPath = path.join(os.homedir(), ".pi", "agent", "pi-crash.log");
+				const snapshotDir = path.join(os.homedir(), ".meer", "renderer-snapshots");
+				const snapshotPath = path.join(
+					snapshotDir,
+					`tui-width-overflow-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+				);
 				const crashData = [
 					`Crash at ${new Date().toISOString()}`,
 					`Terminal width: ${width}`,
@@ -1367,6 +1373,40 @@ export class TUI extends Container {
 				].join("\n");
 				fs.mkdirSync(path.dirname(crashLogPath), { recursive: true });
 				fs.writeFileSync(crashLogPath, crashData);
+				fs.mkdirSync(snapshotDir, { recursive: true });
+				fs.writeFileSync(
+					snapshotPath,
+					JSON.stringify(
+						{
+							schemaVersion: 1,
+							reason: "width-overflow",
+							capturedAt: new Date().toISOString(),
+							terminal: { width, height },
+							overflow: { lineIndex: i, visibleWidth: visibleWidth(line) },
+							render: {
+								firstChanged,
+								lastChanged,
+								viewportTop,
+								previousViewportTop: prevViewportTop,
+								cursorRow: this.cursorRow,
+								hardwareCursorRow,
+								newLines,
+								previousLines: this.previousLines,
+							},
+						},
+						null,
+						2,
+					),
+					"utf8",
+				);
+				recordDiagnostic("tui.render.width_overflow", new Error("Rendered line exceeds terminal width"), {
+					width,
+					height,
+					lineIndex: i,
+					lineWidth: visibleWidth(line),
+					crashLogPath,
+					snapshotPath,
+				});
 
 				// Clean up terminal state before throwing
 				this.stop();
@@ -1378,6 +1418,7 @@ export class TUI extends Container {
 					"Use visibleWidth() to measure and truncateToWidth() to truncate lines.",
 					"",
 					`Debug log written to: ${crashLogPath}`,
+					`Renderer snapshot written to: ${snapshotPath}`,
 				].join("\n");
 				throw new Error(errorMsg);
 			}

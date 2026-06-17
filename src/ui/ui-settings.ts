@@ -1,21 +1,42 @@
 export type ScreenReaderMode = "auto" | "on" | "off";
 export type VirtualizedHistoryMode = "auto" | "always" | "never";
 export type ScrollMode = "auto" | "manual";
+export type ToolDisplayMode = "compact" | "auto" | "expanded";
+
+export interface ToolOutputSettings {
+  maxPreviewLines: number;
+  maxPreviewLineWidth: number;
+  maxDetailLines: number;
+  maxDiffPreviewLines: number;
+}
 
 export interface UISettings {
   useAlternateBuffer: boolean;
   screenReaderMode: ScreenReaderMode;
   virtualizedHistory: VirtualizedHistoryMode;
   scrollMode: ScrollMode;
+  toolDisplay: ToolDisplayMode;
+  toolOutput: ToolOutputSettings;
 }
 
-export type UISettingsInput = Partial<UISettings> | undefined;
+export type UISettingsInput =
+  | (Partial<Omit<UISettings, "toolOutput">> & {
+      toolOutput?: Partial<ToolOutputSettings>;
+    })
+  | undefined;
 
 export const DEFAULT_UI_SETTINGS: UISettings = {
   useAlternateBuffer: false, // Disabled by default to prevent blank screen issues
   screenReaderMode: "auto",
   virtualizedHistory: "auto",
   scrollMode: "auto",
+  toolDisplay: "compact",
+  toolOutput: {
+    maxPreviewLines: 10,
+    maxPreviewLineWidth: 120,
+    maxDetailLines: 12,
+    maxDiffPreviewLines: 7,
+  },
 };
 
 export function resolveUISettings(input?: UISettingsInput): UISettings {
@@ -27,6 +48,11 @@ export function resolveUISettings(input?: UISettingsInput): UISettings {
     virtualizedHistory:
       input?.virtualizedHistory ?? DEFAULT_UI_SETTINGS.virtualizedHistory,
     scrollMode: input?.scrollMode ?? DEFAULT_UI_SETTINGS.scrollMode,
+    toolDisplay: input?.toolDisplay ?? DEFAULT_UI_SETTINGS.toolDisplay,
+    toolOutput: {
+      ...DEFAULT_UI_SETTINGS.toolOutput,
+      ...(input?.toolOutput ?? {}),
+    },
   };
 }
 

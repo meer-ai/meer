@@ -69,6 +69,11 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
     protected: true,
   },
   {
+    command: "/settings",
+    description: "Open or update YAML-backed Meer settings",
+    protected: true,
+  },
+  {
     command: "/skills",
     description: "List loaded project and global agent skills",
   },
@@ -102,7 +107,11 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
   },
   {
     command: "/timeline",
-    description: "Show or save the agent timeline for this session",
+    description: "Show or save the agent/TUI timeline for this session",
+  },
+  {
+    command: "/tool",
+    description: "Show details for the latest or selected TUI tool row",
   },
   {
     command: "/clear",
@@ -118,7 +127,7 @@ export const BUILT_IN_SLASH_COMMANDS: BuiltInSlashCommand[] = [
   },
   {
     command: "/copy",
-    description: "Copy the last assistant message to the clipboard",
+    description: "Copy/export assistant, tool, or timeline output",
   },
   {
     command: "/budget",

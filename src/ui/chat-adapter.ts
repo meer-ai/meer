@@ -29,6 +29,52 @@ export interface TranscriptEntry {
   };
 }
 
+export interface ToolSnapshot {
+  id: string;
+  name: string;
+  status: string;
+  summary: string;
+  args?: Record<string, unknown>;
+  output?: string;
+  details?: Record<string, unknown>;
+  diff?: string;
+  error?: string;
+}
+
+export interface TuiDebugState {
+  renderer: "tui";
+  layoutMode: string;
+  terminal: {
+    columns: number;
+    rows: number;
+    kittyProtocolActive: boolean;
+  };
+  viewport: {
+    transcriptRows: number;
+    transcriptLines: number;
+    scrollOffset: number;
+    hiddenAbove: number;
+    hiddenBelow: number;
+  };
+  overlay: {
+    shortcutsVisible: boolean;
+    toolDetailVisible: boolean;
+    promptVisible: boolean;
+  };
+  modes: {
+    chat: ChatMode;
+    screenReader: "auto" | "on" | "off";
+    alternateBuffer: "on" | "off";
+    toolDisplay: "compact" | "auto" | "expanded";
+  };
+  counts: {
+    messages: number;
+    tools: number;
+    timelineEvents: number;
+  };
+  lastRendererSnapshotPath?: string;
+}
+
 export interface ChoiceOption<T extends string = string> {
   label: string;
   value: T;
@@ -139,5 +185,11 @@ export interface ChatAdapter {
   runWithTerminal<T>(task: () => Promise<T>): Promise<T>;
   setScreenReaderMode(mode: "auto" | "on" | "off"): void;
   setAlternateBufferMode(mode: "on" | "off" | "auto"): void;
+  setToolDisplayMode(mode: "compact" | "auto" | "expanded"): void;
+  showToolDetail(handle?: string): boolean;
+  hideToolDetail(): void;
   getTimelineEvents(limit?: number): UITimelineEvent[];
+  getToolSnapshot(handle?: string): ToolSnapshot | null;
+  getDebugState(): TuiDebugState;
+  saveRendererSnapshot(reason?: string): string;
 }

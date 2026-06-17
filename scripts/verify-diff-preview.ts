@@ -3,14 +3,15 @@
  *
  * - parseDiffStat counts +/- lines (ignoring @@ headers), tolerant of ANSI color.
  * - buildDiffPreview returns the first N tagged lines + a hidden count.
- * - A completed file-edit tool row shows a +N/-M stat and the diff body, while a
- *   non-edit tool row stays a single line.
+ * - In expanded display mode, a completed file-edit tool row shows a +N/-M stat
+ *   and the diff body, while a non-edit tool row stays stat-free.
  */
 
 import assert from "node:assert/strict";
 import stripAnsiImport from "strip-ansi";
 import type { Terminal } from "../src/ui/tui/terminal.js";
 import { TuiChatAdapter } from "../src/ui/tui-adapter/TuiChatAdapter.js";
+import { DEFAULT_UI_SETTINGS } from "../src/ui/ui-settings.js";
 import {
   parseDiffStat,
   buildDiffPreview,
@@ -67,6 +68,8 @@ const DIFF = [
   const out = buildToolOutputPreview("run_command", "line1\nline2\nline3", 2);
   assert.ok(out && out.lines.length === 2, "caps output lines");
   assert.equal(out?.hiddenLines, 1, "reports hidden output lines");
+  const narrow = buildToolOutputPreview("run_command", "abcdefghijklmnopqrstuvwxyz", 1, 8);
+  assert.equal(narrow?.lines[0], "abcdefg…", "caps output line width");
 
   // ANSI-colored output is stripped.
   const colored = buildToolOutputPreview("grep", "\x1b[1msrc/a.ts\x1b[0m:1 hit");
@@ -142,6 +145,14 @@ function renderedText(adapter: TuiChatAdapter): string {
     provider: "test",
     model: "test-model",
     cwd: process.cwd(),
+    ui: {
+      ...DEFAULT_UI_SETTINGS,
+      toolDisplay: "expanded",
+      toolOutput: {
+        ...DEFAULT_UI_SETTINGS.toolOutput,
+        maxDiffPreviewLines: 3,
+      },
+    },
     terminal: new FakeTerminal(),
   });
 
@@ -153,7 +164,7 @@ function renderedText(adapter: TuiChatAdapter): string {
   assert.ok(text.includes("edit_file"), "edit row renders");
   assert.ok(/\+6\s+-1/.test(text), `stat +6 -1 shown (got: ${text.replace(/\n/g, "⏎")})`);
   assert.ok(text.includes("const port = process.env.PORT"), "diff body rendered");
-  assert.ok(text.includes("more line"), "hidden-lines footer rendered");
+  assert.ok(text.includes("6 more lines"), "configured diff line budget controls hidden-lines footer");
 
   // A non-edit tool stays a single line (no diff body).
   adapter.addTool("read_file", { path: "src/server.ts" }, "tc-2");

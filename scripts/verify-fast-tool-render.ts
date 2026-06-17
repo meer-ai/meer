@@ -12,7 +12,7 @@
  * result the user might care about.
  */
 
-import { shouldRenderCompact } from "../src/ui/shared/tool-utils.js";
+import { getToolSummary, shouldRenderCompact } from "../src/ui/shared/tool-utils.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -76,6 +76,25 @@ assert(
 assert(
   shouldRenderCompact({ duration: 50, body: "   \n   \n" }),
   "blank lines don't count toward FAST_TOOL_MAX_LINES"
+);
+
+// --- Tool row summaries stay concise and specific -------------------------
+assert(
+  getToolSummary("read_file", { path: "src/index.ts", startLine: 2, endLine: 18 }) ===
+    "src/index.ts:2-18",
+  "read_file summary includes line range"
+);
+assert(
+  getToolSummary("find_files", { pattern: "*.ts", path: "src" }) === '"*.ts" in src',
+  "search summary includes query and scope"
+);
+assert(
+  getToolSummary("list_files", { path: "src", pattern: "*.ts" }) === "src · *.ts",
+  "list summary includes path and pattern"
+);
+assert(
+  getToolSummary("run_command", { command: "pnpm test" }) === "$ pnpm test",
+  "shell summary keeps command"
 );
 
 console.log("fast-tool render verification passed");

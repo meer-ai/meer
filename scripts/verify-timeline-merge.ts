@@ -84,6 +84,7 @@ const laterTuiTask: UITimelineEvent = {
       recorder
     );
     const payload = JSON.parse(readFileSync(outputPath, "utf8")) as {
+      limit: number | null;
       events: UITimelineEvent[];
       plan: { title?: string } | null;
     };
@@ -92,11 +93,74 @@ const laterTuiTask: UITimelineEvent = {
       ["agent-1", "tui-1", "tui-2"],
       "/timeline save includes merged agent and TUI events in order"
     );
+    assert.equal(payload.limit, null, "timeline save without limit records null limit");
     assert.equal(payload.plan?.title, "Agent plan", "timeline save keeps recorder plan snapshot");
     assert.ok(
-      logs.some((line) => line.includes("Saved timeline to")),
+      logs.some((line) => line.includes("Saved 3 timeline events to")),
       "timeline save reports output path"
     );
+
+    const limitedPath = join(tempRoot, "timeline-limited.json");
+    await handleSlashCommand(
+      `/timeline save ${limitedPath} 2`,
+      {},
+      undefined,
+      tui,
+      recorder
+    );
+    const limitedPayload = JSON.parse(readFileSync(limitedPath, "utf8")) as {
+      limit: number | null;
+      events: UITimelineEvent[];
+    };
+    assert.equal(limitedPayload.limit, 2, "timeline save records explicit limit");
+    assert.deepEqual(
+      limitedPayload.events.map((event) => event.id),
+      ["tui-1", "tui-2"],
+      "timeline save limit exports bounded tail"
+    );
+
+    const copyMessages: string[] = [];
+    const copyTui = {
+      getTimelineEvents: () => [tuiLog, laterTuiTask],
+      getToolSnapshot: () => ({
+        id: "tool-copy",
+        name: "run_command",
+        status: "success",
+        summary: "$ npm test",
+        output: "copyable output",
+      }),
+      appendSystemMessage: (message: string) => copyMessages.push(message),
+    } as unknown as ChatAdapter;
+    const toolExportPath = join(tempRoot, "tool.json");
+    await handleSlashCommand(
+      `/copy export tool ${toolExportPath}`,
+      {},
+      undefined,
+      copyTui,
+      recorder
+    );
+    const toolPayload = JSON.parse(readFileSync(toolExportPath, "utf8")) as { id?: string; output?: string };
+    assert.equal(toolPayload.id, "tool-copy", "/copy export tool writes selected tool snapshot");
+    assert.equal(toolPayload.output, "copyable output", "/copy export tool preserves output");
+    assert.ok(
+      copyMessages.some((message) => message.includes("Exported tool run_command")),
+      "/copy export tool reports output path"
+    );
+
+    const copyTimelinePath = join(tempRoot, "copy-timeline.json");
+    await handleSlashCommand(
+      `/copy export timeline ${copyTimelinePath} 1`,
+      {},
+      undefined,
+      copyTui,
+      recorder
+    );
+    const copyTimelinePayload = JSON.parse(readFileSync(copyTimelinePath, "utf8")) as {
+      limit: number;
+      events: UITimelineEvent[];
+    };
+    assert.equal(copyTimelinePayload.limit, 1, "/copy export timeline records limit");
+    assert.equal(copyTimelinePayload.events.length, 1, "/copy export timeline writes bounded slice");
   } finally {
     console.log = originalLog;
     rmSync(tempRoot, { recursive: true, force: true });

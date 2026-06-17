@@ -11,14 +11,19 @@
  */
 
 import { format as formatArgs } from "node:util";
+import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   ChatAdapter,
   ChatMode,
   ChoiceOption,
   FormQuestion,
+  ToolSnapshot,
   TranscriptEntry,
+  TuiDebugState,
 } from "../chat-adapter.js";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { MessageAttachment } from "../../agent/core/types.js";
 import { readClipboardImage } from "../../utils/clipboard-image.js";
 import { saveAttachmentBytes } from "../../utils/attachments.js";
@@ -27,6 +32,7 @@ import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminal
 import type { UITimelineEvent } from "../shared/timelineTypes.js";
 import { collapseWhitespace } from "../shared/streamCommit.js";
 import type { UISettings } from "../ui-settings.js";
+import type { ToolDisplayMode } from "../ui-settings.js";
 import { getAllCommands } from "../../slash/registry.js";
 import { isSlashCommandInput } from "../../slash/utils.js";
 import { setToolConsoleQuiet } from "../../tools/index.js";
@@ -37,16 +43,22 @@ import { Loader } from "../tui/components/loader.js";
 import { SelectList, type SelectItem } from "../tui/components/select-list.js";
 import { Spacer } from "../tui/components/spacer.js";
 import { Text } from "../tui/components/text.js";
+import { getKeybindings, type Keybinding } from "../tui/keybindings.js";
 import { matchesKey } from "../tui/keys.js";
 import { ProcessTerminal, type Terminal } from "../tui/terminal.js";
-import { type Component, Container, TUI } from "../tui/tui.js";
+import { type Component, Container, type OverlayHandle, TUI } from "../tui/tui.js";
 import {
   AssistantMessageComponent,
+  ChatViewportComponent,
   CotMessageComponent,
   FooterComponent,
   HeaderComponent,
+  ShortcutsOverlayComponent,
+  type ShortcutSection,
   SystemMessageComponent,
+  ToolDetailPanelComponent,
   ToolRowComponent,
+  TurnSummaryComponent,
   UserMessageComponent,
 } from "./components.js";
 import { getEditorTheme, getSelectListTheme, getTuiStyles } from "./theme.js";
@@ -117,21 +129,46 @@ function describeMode(mode: ChatMode): string {
   }
 }
 
+function gitOutput(cwd: string, args: string[]): string {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    timeout: 1000,
+    windowsHide: true,
+  });
+  return result.status === 0 ? result.stdout.trim() : "";
+}
+
+function detectGitBranch(cwd: string): string | undefined {
+  const branch = gitOutput(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (branch && branch !== "HEAD") return branch;
+  const commit = gitOutput(cwd, ["rev-parse", "--short", "HEAD"]);
+  return commit ? `detached:${commit}` : undefined;
+}
+
 export class TuiChatAdapter implements ChatAdapter {
   private config: TuiChatConfig;
   private ui: TUI;
   private chat = new Container();
+  private header: HeaderComponent;
+  private chatViewport: ChatViewportComponent;
   private statusContainer = new Container();
+  private toolDetailContainer = new Container();
   private planContainer = new Container();
   private promptContainer = new Container();
   private editor: Editor;
   private readonly history = new PromptHistoryStore();
   private footer: FooterComponent;
   private loader: Loader | null = null;
+  private shortcutsOverlay: OverlayHandle | null = null;
+  private lastRendererSnapshotPath: string | undefined;
+  private resizeEvents: number[] = [];
 
   private mode: ChatMode = "normal";
   private screenReaderMode: "auto" | "on" | "off";
   private alternateBufferMode: "on" | "off";
+  private toolDisplayMode: ToolDisplayMode;
+  private transcriptScrollOffset = 0;
   private turnActive = false;
   private destroyed = false;
   private messageCount = 0;
@@ -139,6 +176,15 @@ export class TuiChatAdapter implements ChatAdapter {
   private queueMode: "steer" | "followUp" = "steer";
   private statusText: string | null = null;
   private iteration: { current: number; max?: number } | null = null;
+  private lastTokenUsage: { used: number; estimated: boolean } | null = null;
+  private turnSummary:
+    | {
+        startedAt: number;
+        toolCount: number;
+        startTokens?: number;
+        tokensEstimated?: boolean;
+      }
+    | null = null;
 
   // Streaming state — one component per uninterrupted assistant block.
   private currentAssistant: AssistantMessageComponent | null = null;
@@ -177,15 +223,28 @@ export class TuiChatAdapter implements ChatAdapter {
     this.config = config;
     this.screenReaderMode = config.ui?.screenReaderMode ?? "auto";
     this.alternateBufferMode = config.ui?.useAlternateBuffer ? "on" : "off";
+    this.toolDisplayMode = config.ui?.toolDisplay ?? "compact";
     // Tool functions must not write raw progress lines while the TUI owns
     // the terminal — the differential renderer can't account for them.
     setToolConsoleQuiet(true);
 
     this.ui = new TUI(config.terminal ?? new ProcessTerminal());
 
-    this.ui.addChild(new HeaderComponent(config.provider, config.model, config.cwd));
-    this.ui.addChild(this.chat);
+    this.header = new HeaderComponent({
+      provider: config.provider,
+      model: config.model,
+      cwd: config.cwd,
+      branch: detectGitBranch(config.cwd),
+    });
+    this.chatViewport = new ChatViewportComponent(
+      this.chat,
+      () => this.getTranscriptViewportRows(),
+      () => this.transcriptScrollOffset
+    );
+    this.ui.addChild(this.header);
+    this.ui.addChild(this.chatViewport);
     this.ui.addChild(this.statusContainer);
+    this.ui.addChild(this.toolDetailContainer);
     this.ui.addChild(this.planContainer);
     this.ui.addChild(this.promptContainer);
 
@@ -197,7 +256,10 @@ export class TuiChatAdapter implements ChatAdapter {
     // default of 5 rows — meer's slash registry has far more than 5 commands,
     // so a tiny window made the list feel un-scrollable. Track resizes too.
     this.applyAutocompleteHeight();
-    this.onTerminalResize = () => this.applyAutocompleteHeight();
+    this.onTerminalResize = () => {
+      this.applyAutocompleteHeight();
+      this.recordResizeDiagnostic();
+    };
     process.stdout.on("resize", this.onTerminalResize);
     const editorContainer = new Container();
     editorContainer.addChild(new Spacer(1));
@@ -211,6 +273,7 @@ export class TuiChatAdapter implements ChatAdapter {
       mode: this.mode,
       screenReaderMode: this.screenReaderMode,
       alternateBufferMode: this.alternateBufferMode,
+      toolDisplay: this.toolDisplayMode,
       messageCount: 0,
       queued: 0,
     });
@@ -234,6 +297,18 @@ export class TuiChatAdapter implements ChatAdapter {
     this.editor.setAutocompleteMaxVisible(visible);
   }
 
+  private getTranscriptViewportRows(): number {
+    const rows = this.ui.terminal.rows || 24;
+    const width = this.ui.terminal.columns || 80;
+    const dynamicRows =
+      this.statusContainer.render(width).length +
+      this.toolDetailContainer.render(width).length +
+      this.planContainer.render(width).length +
+      this.promptContainer.render(width).length;
+    // Header + editor chrome + footer. Keep a useful transcript even on tiny terminals.
+    return Math.max(6, rows - 7 - dynamicRows);
+  }
+
   private installAutocomplete(): void {
     let commands: SlashCommand[] = [];
     try {
@@ -250,6 +325,17 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   private handleGlobalInput(data: string): { consume?: boolean } | undefined {
+    if (isShortcutHelpKey(data)) {
+      this.toggleShortcutsOverlay();
+      return { consume: true };
+    }
+    if (matchesKey(data, "escape") && this.shortcutsOverlay) {
+      this.hideShortcutsOverlay();
+      return { consume: true };
+    }
+    if (!this.shortcutsOverlay && this.handleTranscriptScrollInput(data)) {
+      return { consume: true };
+    }
     // Match via matchesKey, not a raw "\x03" byte: with the Kitty keyboard
     // protocol active (disambiguate flag) Ctrl+C arrives as "\x1b[99;5u", so a
     // raw-byte check would never fire and Ctrl+C wouldn't interrupt or exit.
@@ -269,6 +355,10 @@ export class TuiChatAdapter implements ChatAdapter {
     }
     if (this.turnActive && this.interruptHandler && matchesKey(data, "escape") && !this.activePrompt) {
       this.interruptHandler();
+      return { consume: true };
+    }
+    if (matchesKey(data, "escape") && !this.activePrompt && this.toolDetailContainer.children.length > 0) {
+      this.hideToolDetail();
       return { consume: true };
     }
     // Shift+Tab: cycle the permission mode (normal → auto-accept → plan).
@@ -314,6 +404,100 @@ export class TuiChatAdapter implements ChatAdapter {
       );
     }
     return true;
+  }
+
+  private handleTranscriptScrollInput(data: string): boolean {
+    if (this.activePrompt) return false;
+    const page = this.getTranscriptScrollPageRows();
+    if (matchesKey(data, "shift+pageUp")) {
+      this.scrollTranscript(page);
+      return true;
+    }
+    if (matchesKey(data, "shift+pageDown")) {
+      this.scrollTranscript(-page);
+      return true;
+    }
+    if (matchesKey(data, "shift+home")) {
+      this.scrollTranscriptToTop();
+      return true;
+    }
+    if (matchesKey(data, "shift+end")) {
+      this.scrollTranscriptToBottom();
+      return true;
+    }
+    return false;
+  }
+
+  private getTranscriptScrollPageRows(): number {
+    return Math.max(3, this.getTranscriptViewportRows() - 2);
+  }
+
+  private getTranscriptLineCount(): number {
+    const width = this.ui.terminal.columns || 80;
+    return this.chat.render(width).length;
+  }
+
+  private getLayoutMode(): string {
+    const width = this.ui.terminal.columns || 80;
+    if (width < 60) return "narrow";
+    if (width < 100) return "standard";
+    return "wide";
+  }
+
+  private getMaxTranscriptScrollOffset(): number {
+    return Math.max(0, this.getTranscriptLineCount() - 1);
+  }
+
+  private clampTranscriptScroll(): void {
+    this.transcriptScrollOffset = Math.max(
+      0,
+      Math.min(this.transcriptScrollOffset, this.getMaxTranscriptScrollOffset())
+    );
+  }
+
+  private scrollTranscript(deltaRows: number): void {
+    const previous = this.transcriptScrollOffset;
+    this.transcriptScrollOffset += deltaRows;
+    this.clampTranscriptScroll();
+    if (this.transcriptScrollOffset !== previous) {
+      this.recordLog("info", `Transcript scrolled ${this.transcriptScrollOffset} rows from bottom`);
+      this.refreshFooter();
+      return;
+    }
+    this.ui.requestRender();
+  }
+
+  private recordResizeDiagnostic(): void {
+    const now = Date.now();
+    this.resizeEvents.push(now);
+    this.resizeEvents = this.resizeEvents.filter((at) => now - at <= 2000);
+    this.recordTimelineEvent(this.buildDebugTimelineEvent("resize"));
+    if (this.resizeEvents.length >= 6) {
+      const path = this.saveRendererSnapshot("resize-churn");
+      this.recordLog("warn", `Renderer snapshot saved after resize churn: ${path}`);
+      this.resizeEvents = [];
+    }
+  }
+
+  private scrollTranscriptToTop(): void {
+    const previous = this.transcriptScrollOffset;
+    this.transcriptScrollOffset = this.getMaxTranscriptScrollOffset();
+    if (this.transcriptScrollOffset !== previous) {
+      this.recordLog("info", "Transcript scrolled to top");
+      this.refreshFooter();
+      return;
+    }
+    this.ui.requestRender();
+  }
+
+  private scrollTranscriptToBottom(): void {
+    if (this.transcriptScrollOffset === 0) {
+      this.ui.requestRender();
+      return;
+    }
+    this.transcriptScrollOffset = 0;
+    this.recordLog("info", "Transcript scrolled to bottom");
+    this.refreshFooter();
   }
 
   private handleSubmit(rawText: string): void {
@@ -391,6 +575,7 @@ export class TuiChatAdapter implements ChatAdapter {
       attachmentCount > 0
         ? `${normalized}${normalized ? "\n\n" : ""}📎 ${attachmentCount} image${attachmentCount === 1 ? "" : "s"} attached`
         : normalized;
+    this.transcriptScrollOffset = 0;
     this.lastUserMessage = { content: normalized, at: Date.now() };
     this.chat.addChild(new UserMessageComponent(displayed));
     this.recordLog("note", `User message${attachmentCount > 0 ? ` (${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"})` : ""}`);
@@ -580,9 +765,15 @@ export class TuiChatAdapter implements ChatAdapter {
     toolName: string,
     args?: Record<string, unknown>
   ): ToolRowComponent {
-    const row = new ToolRowComponent(id, toolName, args);
+    const row = new ToolRowComponent(id, toolName, args, {
+      displayMode: this.toolDisplayMode,
+      outputSettings: this.config.ui?.toolOutput,
+    });
     this.toolRows.set(id, row);
     this.chat.addChild(row);
+    if (this.turnActive && this.turnSummary) {
+      this.turnSummary.toolCount++;
+    }
     return row;
   }
 
@@ -707,6 +898,12 @@ export class TuiChatAdapter implements ChatAdapter {
     this.lastSettledContent = null;
     this.statusText = null;
     this.iteration = null;
+    this.turnSummary = {
+      startedAt: Date.now(),
+      toolCount: 0,
+      startTokens: this.lastTokenUsage?.used,
+      tokensEstimated: this.lastTokenUsage?.estimated,
+    };
     this.startLoader("Thinking");
     this.recordTask("turn", "started", "Turn started");
     this.ui.requestRender();
@@ -717,6 +914,8 @@ export class TuiChatAdapter implements ChatAdapter {
     this.currentAssistant = null;
     this.stopLoader();
     this.checkTicker();
+    this.addTurnSummary();
+    this.turnSummary = null;
     this.recordTask("turn", "succeeded", "Turn finished");
     this.refreshFooter();
     this.ui.requestRender();
@@ -724,6 +923,23 @@ export class TuiChatAdapter implements ChatAdapter {
 
   forceResetWorkState(): void {
     this.endTurn();
+  }
+
+  private addTurnSummary(): void {
+    if (!this.turnSummary) return;
+    const endTokens = this.lastTokenUsage?.used;
+    const tokenDelta =
+      typeof endTokens === "number" && typeof this.turnSummary.startTokens === "number"
+        ? endTokens - this.turnSummary.startTokens
+        : undefined;
+    this.chat.addChild(
+      new TurnSummaryComponent({
+        durationMs: Date.now() - this.turnSummary.startedAt,
+        toolCount: this.turnSummary.toolCount,
+        tokenDelta,
+        tokensEstimated: this.lastTokenUsage?.estimated ?? this.turnSummary.tokensEstimated,
+      })
+    );
   }
 
   private startLoader(message: string): void {
@@ -801,6 +1017,8 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   updateTokens(used: number, limit?: number, estimated = false): void {
+    this.lastTokenUsage = { used, estimated };
+    this.header.update({ tokens: { used, limit }, tokensEstimated: estimated });
     this.footer.update({ tokens: { used, limit }, tokensEstimated: estimated });
     this.ui.requestRender();
   }
@@ -816,12 +1034,15 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   private refreshFooter(): void {
+    this.clampTranscriptScroll();
     this.footer.update({
       mode: this.mode,
       screenReaderMode: this.screenReaderMode,
       alternateBufferMode: this.alternateBufferMode,
+      toolDisplay: this.toolDisplayMode,
       messageCount: this.messageCount,
       queued: this.queueState.steering + this.queueState.followUp,
+      transcriptScrollOffset: this.transcriptScrollOffset,
       attachments: this.pendingAttachments.length,
     });
     this.ui.requestRender();
@@ -969,6 +1190,85 @@ export class TuiChatAdapter implements ChatAdapter {
     this.appendSystemMessage(`${describeMode(next)} (Shift+Tab to cycle)`);
   }
 
+  private toggleShortcutsOverlay(): void {
+    if (this.shortcutsOverlay) {
+      this.hideShortcutsOverlay();
+      return;
+    }
+    const overlay = new ShortcutsOverlayComponent(
+      this.buildShortcutSections(),
+      () => this.hideShortcutsOverlay()
+    );
+    this.shortcutsOverlay = this.ui.showOverlay(overlay, {
+      width: 74,
+      maxHeight: "95%",
+      anchor: "center",
+      margin: 2,
+    });
+    this.recordLog("info", "Shortcuts overlay shown");
+  }
+
+  private hideShortcutsOverlay(): void {
+    if (!this.shortcutsOverlay) return;
+    const handle = this.shortcutsOverlay;
+    this.shortcutsOverlay = null;
+    handle.hide();
+    this.recordLog("info", "Shortcuts overlay hidden");
+  }
+
+  private buildShortcutSections(): ShortcutSection[] {
+    return [
+      {
+        title: "Global",
+        entries: [
+          { keys: ["?"], description: "Show or hide this shortcuts overlay" },
+          { keys: ["ctrl+c"], description: "Interrupt active turn; press twice while idle to exit" },
+          { keys: ["escape"], description: "Stop active turn, close detail panels, or close overlays" },
+          { keys: ["shift+tab"], description: "Cycle permission mode" },
+          { keys: ["ctrl+v"], description: "Attach image from clipboard when available" },
+          { keys: ["shift+pageUp"], description: "Scroll transcript up" },
+          { keys: ["shift+pageDown"], description: "Scroll transcript down" },
+          { keys: ["shift+home"], description: "Jump transcript to top" },
+          { keys: ["shift+end"], description: "Jump transcript to latest" },
+        ],
+      },
+      {
+        title: "Commands",
+        entries: [
+          { keys: ["/"], description: "Open slash command autocomplete" },
+          { keys: ["/tool"], description: "Show latest tool detail" },
+          { keys: ["/settings show"], description: "Inspect YAML-backed UI settings" },
+        ],
+      },
+      {
+        title: "Composer",
+        entries: [
+          this.shortcutEntry("tui.input.submit", "Send message"),
+          this.shortcutEntry("tui.input.newLine", "Insert newline"),
+          this.shortcutEntry("tui.input.tab", "Accept or move through autocomplete"),
+          this.shortcutEntry("tui.editor.historySearch", "Search prompt history"),
+          this.shortcutEntry("tui.editor.cursorLineStart", "Move to line start"),
+          this.shortcutEntry("tui.editor.cursorLineEnd", "Move to line end"),
+        ],
+      },
+      {
+        title: "Lists And Prompts",
+        entries: [
+          this.shortcutEntry("tui.select.up", "Move selection up"),
+          this.shortcutEntry("tui.select.down", "Move selection down"),
+          this.shortcutEntry("tui.select.confirm", "Confirm selected option"),
+        ],
+      },
+    ];
+  }
+
+  private shortcutEntry(keybinding: Keybinding, description: string): { keys: string[]; description: string } {
+    return {
+      keys: getKeybindings().getKeys(keybinding),
+      description,
+    };
+  }
+
   /** A plan with at least one task and none left pending/in-progress. */
   private isPlanComplete(plan: Plan | null): boolean {
     return (
@@ -1075,6 +1375,20 @@ export class TuiChatAdapter implements ChatAdapter {
     }
   }
 
+  private buildDebugTimelineEvent(reason = "state"): UITimelineEvent {
+    const state = this.getDebugState();
+    return {
+      id: `tui-state-${reason}`,
+      type: "log",
+      level: "info",
+      message:
+        `TUI ${reason}: layout=${state.layoutMode}, terminal=${state.terminal.columns}x${state.terminal.rows}, ` +
+        `viewport=${state.viewport.transcriptRows}/${state.viewport.transcriptLines}, ` +
+        `scroll=${state.viewport.scrollOffset}, hiddenAbove=${state.viewport.hiddenAbove}, hiddenBelow=${state.viewport.hiddenBelow}`,
+      timestamp: Date.now(),
+    };
+  }
+
   // ── ChatAdapter: environment ───────────────────────────────────────────────
 
   setBackgroundSessions(sessions: BackgroundTerminalSession[]): void {
@@ -1140,16 +1454,133 @@ export class TuiChatAdapter implements ChatAdapter {
     this.refreshFooter();
   }
 
-  getTimelineEvents(limit?: number): UITimelineEvent[] {
-    if (typeof limit === "number" && limit > 0) {
-      return this.timelineEvents.slice(-limit);
+  setToolDisplayMode(mode: ToolDisplayMode): void {
+    this.toolDisplayMode = mode;
+    for (const row of this.toolRows.values()) {
+      row.setDisplayMode(mode);
     }
-    return [...this.timelineEvents];
+    this.recordLog("info", `Tool display mode set to ${mode}`);
+    this.refreshFooter();
+  }
+
+  showToolDetail(handle?: string): boolean {
+    const normalized = handle?.trim();
+    let row: ToolRowComponent | undefined;
+    if (!normalized || normalized === "last") {
+      row = [...this.toolRows.values()].at(-1);
+    } else {
+      row = this.resolveRow(normalized);
+    }
+    if (!row) return false;
+    this.toolDetailContainer.clear();
+    this.toolDetailContainer.addChild(new ToolDetailPanelComponent(row.getSnapshot()));
+    this.recordLog("info", `Tool detail shown for ${row.name}`);
+    this.ui.requestRender();
+    return true;
+  }
+
+  hideToolDetail(): void {
+    if (this.toolDetailContainer.children.length === 0) return;
+    this.toolDetailContainer.clear();
+    this.recordLog("info", "Tool detail hidden");
+    this.ui.requestRender();
+  }
+
+  getTimelineEvents(limit?: number): UITimelineEvent[] {
+    const events = [...this.timelineEvents, this.buildDebugTimelineEvent("current")];
+    if (typeof limit === "number" && limit > 0) {
+      return events.slice(-limit);
+    }
+    return events;
+  }
+
+  getToolSnapshot(handle?: string): ToolSnapshot | null {
+    const normalized = handle?.trim();
+    let row: ToolRowComponent | undefined;
+    if (!normalized || normalized === "last") {
+      row = [...this.toolRows.values()].at(-1);
+    } else {
+      row = this.resolveRow(normalized);
+    }
+    if (!row) return null;
+    const { outputSettings: _outputSettings, ...snapshot } = row.getSnapshot();
+    return snapshot;
+  }
+
+  getDebugState(): TuiDebugState {
+    const transcriptRows = this.getTranscriptViewportRows();
+    const transcriptLines = this.getTranscriptLineCount();
+    const hiddenBelow = Math.min(this.transcriptScrollOffset, Math.max(0, transcriptLines - 1));
+    const renderedContentRows = Math.max(1, transcriptRows - (hiddenBelow > 0 ? 1 : 0) - 1);
+    const hiddenAbove =
+      hiddenBelow > 0
+        ? Math.max(0, transcriptLines - hiddenBelow - renderedContentRows)
+        : Math.max(0, transcriptLines - Math.max(1, transcriptRows - 1));
+    return {
+      renderer: "tui",
+      layoutMode: this.getLayoutMode(),
+      terminal: {
+        columns: this.ui.terminal.columns || 80,
+        rows: this.ui.terminal.rows || 24,
+        kittyProtocolActive: Boolean(this.ui.terminal.kittyProtocolActive),
+      },
+      viewport: {
+        transcriptRows,
+        transcriptLines,
+        scrollOffset: this.transcriptScrollOffset,
+        hiddenAbove,
+        hiddenBelow,
+      },
+      overlay: {
+        shortcutsVisible: Boolean(this.shortcutsOverlay),
+        toolDetailVisible: this.toolDetailContainer.children.length > 0,
+        promptVisible: Boolean(this.activePrompt),
+      },
+      modes: {
+        chat: this.mode,
+        screenReader: this.screenReaderMode,
+        alternateBuffer: this.alternateBufferMode,
+        toolDisplay: this.toolDisplayMode,
+      },
+      counts: {
+        messages: this.messageCount,
+        tools: this.toolRows.size,
+        timelineEvents: this.timelineEvents.length,
+      },
+      lastRendererSnapshotPath: this.lastRendererSnapshotPath,
+    };
+  }
+
+  saveRendererSnapshot(reason = "manual"): string {
+    const snapshotDir = join(homedir(), ".meer", "renderer-snapshots");
+    mkdirSync(snapshotDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const safeReason = reason.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 48) || "snapshot";
+    const outputPath = join(snapshotDir, `tui-${safeReason}-${ts}.json`);
+    const width = this.ui.terminal.columns || 80;
+    const uiInternals = this.ui as unknown as { previousLines?: string[]; render(width: number): string[] };
+    const previousLines = Array.isArray(uiInternals.previousLines) ? uiInternals.previousLines : [];
+    const payload = {
+      schemaVersion: 1,
+      reason,
+      capturedAt: new Date().toISOString(),
+      debugState: this.getDebugState(),
+      rendered: {
+        width,
+        previousLines,
+        currentBaseLines: uiInternals.render(width),
+      },
+      timelineTail: this.timelineEvents.slice(-25),
+    };
+    writeFileSync(outputPath, JSON.stringify(payload, null, 2), "utf8");
+    this.lastRendererSnapshotPath = outputPath;
+    return outputPath;
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.hideShortcutsOverlay();
     if (this.onTerminalResize) {
       process.stdout.removeListener("resize", this.onTerminalResize);
       this.onTerminalResize = undefined;
@@ -1160,6 +1591,10 @@ export class TuiChatAdapter implements ChatAdapter {
     setToolConsoleQuiet(false);
     this.ui.stop();
   }
+}
+
+function isShortcutHelpKey(data: string): boolean {
+  return data === "?" || matchesKey(data, "?");
 }
 
 export default TuiChatAdapter;

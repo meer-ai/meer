@@ -65,6 +65,25 @@ function asList(value: unknown): string {
   return "";
 }
 
+function firstNumber(args: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && /^\d+$/.test(value.trim())) return Number(value);
+  }
+  return undefined;
+}
+
+function formatLineRange(args: Record<string, unknown>): string {
+  const start = firstNumber(args, ["startLine", "lineStart", "start", "from", "offset"]);
+  const end = firstNumber(args, ["endLine", "lineEnd", "end", "to"]);
+  const limit = firstNumber(args, ["limit", "lineCount", "lines"]);
+  if (start !== undefined && end !== undefined) return `:${start}-${end}`;
+  if (start !== undefined && limit !== undefined) return `:${start}-${start + Math.max(0, limit - 1)}`;
+  if (start !== undefined) return `:${start}`;
+  return "";
+}
+
 /**
  * A concise, human-readable summary of what a tool call is doing, shown after
  * the tool name in its worklog row. Falls back to file path / search pattern,
@@ -77,6 +96,22 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
   if (/run_command|bash|exec|package_run_script/.test(lower)) {
     const command = getCommand(args);
     return command ? `$ ${command}` : "";
+  }
+  if (/read_file|read_file_range|read/.test(lower)) {
+    const path = getFilePath(args);
+    if (path) return `${path}${formatLineRange(a)}`;
+  }
+  if (/list_files|read_folder|list_dir|directory/.test(lower)) {
+    const path = getFilePath(args) || firstString(a, ["cwd", "root"]);
+    const pattern = firstString(a, ["pattern", "glob", "includePattern"]);
+    if (path && pattern) return `${path} · ${pattern}`;
+    if (path) return path;
+  }
+  if (/grep|search|find_files|ripgrep|semantic/.test(lower)) {
+    const pattern = firstString(a, ["pattern", "term", "query", "search"]);
+    const path = getFilePath(args) || firstString(a, ["cwd", "root", "includePattern"]);
+    if (pattern && path) return `"${pattern}" in ${path}`;
+    if (pattern) return `"${pattern}"`;
   }
   if (/http_request|fetch|web_request|web_fetch|curl/.test(lower)) {
     const url = firstString(a, ["url", "endpoint", "uri"]);
@@ -211,13 +246,14 @@ export function clipLine(text: string, max: number): string {
  */
 export function buildDiffPreview(
   diff: string,
-  maxLines: number = DIFF_PREVIEW_LINES
+  maxLines: number = DIFF_PREVIEW_LINES,
+  maxLineWidth: number = 120
 ): { lines: DiffPreviewLine[]; hiddenLines: number } {
   const all = stripAnsiCodes(diff)
     .split("\n")
     .filter((line) => line.length > 0);
   const preview = all.slice(0, maxLines).map((text): DiffPreviewLine => ({
-    text,
+    text: clipLine(text, maxLineWidth),
     kind: classifyDiffLine(text),
   }));
   return { lines: preview, hiddenLines: Math.max(0, all.length - preview.length) };
@@ -256,13 +292,14 @@ export const TOOL_OUTPUT_PREVIEW_LINES = 10;
 export function buildToolOutputPreview(
   toolName: string,
   content: string,
-  maxLines: number = TOOL_OUTPUT_PREVIEW_LINES
+  maxLines: number = TOOL_OUTPUT_PREVIEW_LINES,
+  maxLineWidth: number = 120
 ): { lines: string[]; hiddenLines: number } | null {
   if (classifyTool(toolName) === "mutation") return null;
   const body = stripToolHeader(stripAnsiCodes(content)).replace(/\s+$/, "");
   if (!body.trim()) return null;
   const all = body.split("\n");
-  const lines = all.slice(0, maxLines).map((line) => clipLine(line, 120));
+  const lines = all.slice(0, maxLines).map((line) => clipLine(line, maxLineWidth));
   return { lines, hiddenLines: Math.max(0, all.length - lines.length) };
 }
 

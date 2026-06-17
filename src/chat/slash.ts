@@ -44,6 +44,7 @@ import type { SkillDiagnostic } from "../skills/index.js";
 import { getDiagnostics } from "../utils/diagnostics.js";
 import { spawnSync } from "child_process";
 import { writeClipboardText } from "../utils/clipboard-write.js";
+import { updateConfigYaml } from "../config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -204,6 +205,7 @@ const MEER_CLI_FACTORIES: Record<string, () => Command> = {
 };
 
 type ToggleMode = "on" | "off" | "auto";
+type ToolDisplayMode = "compact" | "auto" | "expanded";
 
 const parseToggleMode = (value?: string): ToggleMode | null => {
   if (!value) return null;
@@ -211,6 +213,81 @@ const parseToggleMode = (value?: string): ToggleMode | null => {
   if (n === "on" || n === "off" || n === "auto") return n;
   return null;
 };
+
+const parseToolDisplayMode = (value?: string): ToolDisplayMode | null => {
+  if (!value) return null;
+  const n = value.toLowerCase();
+  if (n === "compact" || n === "auto" || n === "expanded") return n;
+  return null;
+};
+
+const TOOL_OUTPUT_SETTING_KEYS = new Set([
+  "ui.toolOutput.maxPreviewLines",
+  "ui.toolOutput.maxPreviewLineWidth",
+  "ui.toolOutput.maxDetailLines",
+  "ui.toolOutput.maxDiffPreviewLines",
+]);
+
+type SettingsKey =
+  | "ui.toolDisplay"
+  | "ui.toolOutput.maxPreviewLines"
+  | "ui.toolOutput.maxPreviewLineWidth"
+  | "ui.toolOutput.maxDetailLines"
+  | "ui.toolOutput.maxDiffPreviewLines";
+
+interface SettingsDefinition {
+  key: SettingsKey;
+  label: string;
+  description: string;
+  kind: "choice" | "number";
+  defaultValue: string;
+  choices?: string[];
+}
+
+const SETTINGS_DEFINITIONS: SettingsDefinition[] = [
+  {
+    key: "ui.toolDisplay",
+    label: "Tool display",
+    description: "Compact, automatic, or expanded tool output in the transcript",
+    kind: "choice",
+    defaultValue: "compact",
+    choices: ["compact", "auto", "expanded"],
+  },
+  {
+    key: "ui.toolOutput.maxPreviewLines",
+    label: "Preview lines",
+    description: "Maximum lines shown in inline tool output previews",
+    kind: "number",
+    defaultValue: "10",
+  },
+  {
+    key: "ui.toolOutput.maxPreviewLineWidth",
+    label: "Preview line width",
+    description: "Maximum width for inline tool output preview lines",
+    kind: "number",
+    defaultValue: "120",
+  },
+  {
+    key: "ui.toolOutput.maxDetailLines",
+    label: "Detail lines",
+    description: "Maximum lines shown in /tool detail output",
+    kind: "number",
+    defaultValue: "12",
+  },
+  {
+    key: "ui.toolOutput.maxDiffPreviewLines",
+    label: "Diff preview lines",
+    description: "Maximum diff lines shown in compact previews",
+    kind: "number",
+    defaultValue: "7",
+  },
+];
+
+function parsePositiveInteger(value?: string): number | null {
+  if (!value || !/^\d+$/.test(value.trim())) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
 
 const ensureTui = (
   context: SlashCommandContext,
@@ -350,6 +427,25 @@ function prepareTimelineOutputPath(requested?: string): string {
   return join(logsDir, `timeline-${ts}.json`);
 }
 
+function prepareExportOutputPath(kind: string, requested?: string): string {
+  if (requested?.trim()) {
+    const resolved = resolvePath(process.cwd(), requested);
+    mkdirSync(dirname(resolved), { recursive: true });
+    return resolved;
+  }
+  const logsDir = join(homedir(), ".meer", "logs");
+  mkdirSync(logsDir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  return join(logsDir, `${kind}-${ts}.json`);
+}
+
+function formatToolSnapshotForClipboard(snapshot: NonNullable<ReturnType<ChatAdapter["getToolSnapshot"]>>): string {
+  if (snapshot.output) return snapshot.output;
+  if (snapshot.diff) return snapshot.diff;
+  if (snapshot.error) return snapshot.error;
+  return JSON.stringify(snapshot, null, 2);
+}
+
 function formatSkillDiagnostic(diagnostic: SkillDiagnostic): string {
   return `${diagnostic.source}:${diagnostic.code} ${diagnostic.path} - ${diagnostic.message}`;
 }
@@ -436,6 +532,15 @@ async function writeDiagnosticsDump(args: {
     tui
       ?.getTimelineEvents?.(50)
       ?.map((event) => ({ ...event, timestamp: event.timestamp })) ?? [];
+  const tuiDebug = tui?.getDebugState?.() ?? null;
+  let rendererSnapshotPath: string | null = null;
+  if (tui) {
+    try {
+      rendererSnapshotPath = tui.saveRendererSnapshot("diagnose");
+    } catch {
+      rendererSnapshotPath = null;
+    }
+  }
 
   const payload = {
     schemaVersion: 1,
@@ -472,6 +577,12 @@ async function writeDiagnosticsDump(args: {
           ? process.stdout.getColorDepth()
           : null,
     },
+    tui: tuiDebug
+      ? {
+          ...tuiDebug,
+          rendererSnapshotPath,
+        }
+      : null,
     recentTimeline,
     recentDiagnostics,
   };
@@ -1058,6 +1169,241 @@ async function handleSetupCommand(): Promise<void> {
   }
 }
 
+function ensureRecordField(
+  obj: Record<string, unknown>,
+  key: string
+): Record<string, unknown> {
+  const current = obj[key];
+  if (current && typeof current === "object" && !Array.isArray(current)) {
+    return current as Record<string, unknown>;
+  }
+  const next: Record<string, unknown> = {};
+  obj[key] = next;
+  return next;
+}
+
+function emitSlashMessage(tui: ChatAdapter | null | undefined, message: string): void {
+  if (tui) tui.appendSystemMessage(message);
+  else console.log(message);
+}
+
+function getSettingsDefinition(key: string): SettingsDefinition | undefined {
+  return SETTINGS_DEFINITIONS.find((definition) => definition.key === key);
+}
+
+function getCurrentSettingValue(config: any, definition: SettingsDefinition): string {
+  const ui = config?.ui ?? {};
+  const toolOutput = ui.toolOutput ?? {};
+  switch (definition.key) {
+    case "ui.toolDisplay":
+      return String(ui.toolDisplay ?? definition.defaultValue);
+    case "ui.toolOutput.maxPreviewLines":
+      return String(toolOutput.maxPreviewLines ?? definition.defaultValue);
+    case "ui.toolOutput.maxPreviewLineWidth":
+      return String(toolOutput.maxPreviewLineWidth ?? definition.defaultValue);
+    case "ui.toolOutput.maxDetailLines":
+      return String(toolOutput.maxDetailLines ?? definition.defaultValue);
+    case "ui.toolOutput.maxDiffPreviewLines":
+      return String(toolOutput.maxDiffPreviewLines ?? definition.defaultValue);
+  }
+}
+
+function formatSettingsSummary(config: any): string {
+  const lines = ["Settings:"];
+  for (const definition of SETTINGS_DEFINITIONS) {
+    lines.push(`  ${definition.key}: ${getCurrentSettingValue(config, definition)}`);
+  }
+  lines.push("");
+  lines.push("Usage:");
+  lines.push("  /settings                    interactive settings editor");
+  lines.push("  /settings show               show current settings");
+  lines.push("  /settings ui.toolDisplay compact|auto|expanded");
+  lines.push("  /settings ui.toolOutput.maxPreviewLines 6");
+  lines.push("  /settings ui.toolOutput.maxPreviewLineWidth 100");
+  lines.push("  /settings ui.toolOutput.maxDetailLines 20");
+  lines.push("  /settings ui.toolOutput.maxDiffPreviewLines 8");
+  return lines.join("\n");
+}
+
+function setLoadedConfigSetting(config: any, definition: SettingsDefinition, value: string | number): void {
+  if (definition.key === "ui.toolDisplay") {
+    config.ui = { ...(config.ui ?? {}), toolDisplay: value };
+    return;
+  }
+  const field = definition.key.replace("ui.toolOutput.", "");
+  config.ui = {
+    ...(config.ui ?? {}),
+    toolOutput: {
+      ...((config.ui?.toolOutput ?? {}) as Record<string, unknown>),
+      [field]: value,
+    },
+  };
+}
+
+function writeYamlSetting(definition: SettingsDefinition, value: string | number): void {
+  updateConfigYaml((config) => {
+    const ui = ensureRecordField(config, "ui");
+    if (definition.key === "ui.toolDisplay") {
+      ui.toolDisplay = value;
+      return;
+    }
+    const toolOutput = ensureRecordField(ui, "toolOutput");
+    const field = definition.key.replace("ui.toolOutput.", "");
+    toolOutput[field] = value;
+  });
+}
+
+function applySettingsValue(
+  context: SlashCommandContext,
+  definition: SettingsDefinition,
+  rawValue: string | undefined
+): boolean {
+  if (definition.kind === "number") {
+    const parsed = parsePositiveInteger(rawValue);
+    if (parsed === null) {
+      emitSlashMessage(context.tui, `Usage: /settings ${definition.key} <positive integer>`);
+      return false;
+    }
+    writeYamlSetting(definition, parsed);
+    setLoadedConfigSetting(context.config, definition, parsed);
+    emitSlashMessage(
+      context.tui,
+      `${definition.key} set to ${parsed}. Saved to config.yaml; new tool rows use this budget.`
+    );
+    return true;
+  }
+
+  const mode = parseToolDisplayMode(rawValue);
+  if (!mode) {
+    emitSlashMessage(
+      context.tui,
+      "Usage: /settings ui.toolDisplay <compact|auto|expanded>"
+    );
+    return false;
+  }
+  writeYamlSetting(definition, mode);
+  setLoadedConfigSetting(context.config, definition, mode);
+  context.tui?.setToolDisplayMode(mode);
+  emitSlashMessage(
+    context.tui,
+    `ui.toolDisplay set to ${mode}. Saved to config.yaml and applied to this TUI session.`
+  );
+  return true;
+}
+
+async function handleInteractiveSettingsCommand(
+  context: SlashCommandContext
+): Promise<void> {
+  const tui = ensureTui(context, "Interactive settings");
+  if (!tui) return;
+  const settingItems = [
+    ...SETTINGS_DEFINITIONS.map((definition) => ({
+      label: `${definition.label} (${getCurrentSettingValue(context.config, definition)})`,
+      value: definition.key,
+      description: definition.description,
+    })),
+    { label: "Cancel", value: "__cancel__", description: "Leave settings unchanged" },
+  ];
+  const selectedKey = await tui.promptChoice(
+    "Settings",
+    settingItems,
+    "__cancel__"
+  );
+  if (selectedKey === "__cancel__") {
+    tui.appendSystemMessage("Settings unchanged.");
+    return;
+  }
+  const definition = getSettingsDefinition(selectedKey);
+  if (!definition) return;
+
+  if (definition.kind === "choice") {
+    const current = getCurrentSettingValue(context.config, definition);
+    const value = await tui.promptChoice(
+      definition.label,
+      (definition.choices ?? []).map((choice) => ({
+        label: choice === current ? `${choice} (current)` : choice,
+        value: choice,
+      })),
+      current
+    );
+    applySettingsValue(context, definition, value);
+    return;
+  }
+
+  const presets = [
+    definition.defaultValue,
+    getCurrentSettingValue(context.config, definition),
+    "custom",
+    "__cancel__",
+  ].filter((value, index, values) => values.indexOf(value) === index);
+  const picked = await tui.promptChoice(
+    definition.label,
+    presets.map((value) => ({
+      label:
+        value === "__cancel__"
+          ? "Cancel"
+          : value === "custom"
+          ? "Custom value"
+          : value === getCurrentSettingValue(context.config, definition)
+          ? `${value} (current)`
+          : value,
+      value,
+    })),
+    "__cancel__"
+  );
+  if (picked === "__cancel__") {
+    tui.appendSystemMessage("Settings unchanged.");
+    return;
+  }
+  const value = picked === "custom" ? (await tui.prompt()).trim() : picked;
+  applySettingsValue(context, definition, value);
+}
+
+async function handleSettingsCommand(
+  context: SlashCommandContext
+): Promise<SlashCommandResult> {
+  const [firstRaw, secondRaw, thirdRaw] = context.args;
+  const first = firstRaw?.toLowerCase();
+  const isSet = first === "set";
+  const key = isSet ? secondRaw : firstRaw;
+  const value = isSet ? thirdRaw : secondRaw;
+
+  if (!key || first === "edit") {
+    if (context.tui) {
+      await handleInteractiveSettingsCommand(context);
+    } else {
+      emitSlashMessage(context.tui, formatSettingsSummary(context.config));
+    }
+    return continueResult();
+  }
+
+  if (first === "show" || first === "list") {
+    emitSlashMessage(context.tui, formatSettingsSummary(context.config));
+    return continueResult();
+  }
+
+  const definition = getSettingsDefinition(key);
+  if (!definition) {
+    emitSlashMessage(
+      context.tui,
+      [
+        `Unknown setting: ${key}`,
+        "",
+        "Supported settings:",
+        "  ui.toolDisplay compact|auto|expanded",
+        "  ui.toolOutput.maxPreviewLines <positive integer>",
+        "  ui.toolOutput.maxPreviewLineWidth <positive integer>",
+        "  ui.toolOutput.maxDetailLines <positive integer>",
+        "  ui.toolOutput.maxDiffPreviewLines <positive integer>",
+      ].join("\n")
+    );
+    return continueResult();
+  }
+
+  applySettingsValue(context, definition, value);
+  return continueResult();
+}
+
 // ─── Custom slash command executors ──────────────────────────────────────────
 
 async function executePromptSlashCommand(
@@ -1404,6 +1750,8 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     return restartResult();
   },
 
+  "/settings": async (context) => handleSettingsCommand(context),
+
   "/skills": async ({ tui }) => {
     await handleSkillsCommand(tui);
     return continueResult();
@@ -1465,7 +1813,7 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
   },
 
   "/timeline": async (context) => {
-    const [actionArg, targetArg] = context.args;
+    const [actionArg, targetArg, limitArg] = context.args;
     const action = actionArg ? actionArg.toLowerCase() : "show";
     const events = collectTimelineEvents(context);
 
@@ -1480,19 +1828,41 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     }
 
     if (action === "save") {
+      const limit = parsePositiveInteger(limitArg);
+      const exportedEvents = limit ? events.slice(-limit) : events;
       const outputPath = prepareTimelineOutputPath(targetArg);
       const payload = {
         generatedAt: new Date().toISOString(),
         cwd: process.cwd(),
-        events,
+        limit: limit ?? null,
+        events: exportedEvents,
         plan: context.eventRecorder?.getPlanSnapshot() ?? null,
       };
       writeFileSync(outputPath, JSON.stringify(payload, null, 2), "utf8");
-      console.log(chalk.green(`Saved timeline to ${outputPath}`));
+      console.log(chalk.green(`Saved ${exportedEvents.length} timeline events to ${outputPath}`));
       return continueResult();
     }
 
-    console.log(chalk.gray("Usage: /timeline [show|save [filename]]"));
+    console.log(chalk.gray("Usage: /timeline [show|save [filename] [limit]]"));
+    return continueResult();
+  },
+
+  "/tool": async (context) => {
+    const tui = ensureTui(context, "Tool detail");
+    if (!tui) return continueResult();
+    const target = context.args[0]?.trim();
+    if (target === "hide" || target === "close" || target === "clear") {
+      tui.hideToolDetail();
+      return continueResult();
+    }
+    const shown = tui.showToolDetail(target || "last");
+    if (!shown) {
+      tui.appendSystemMessage(
+        target
+          ? `No tool row found for "${target}".`
+          : "No tool rows available yet."
+      );
+    }
     return continueResult();
   },
 
@@ -1598,15 +1968,92 @@ const builtInSlashHandlers: Record<string, SlashCommandHandler> = {
     return continueResult();
   },
 
-  "/copy": async ({ tui }) => {
+  "/copy": async ({ tui, args, eventRecorder }) => {
     if (!tui) {
       console.log(
         chalk.yellow(
-          "/copy needs the interactive TUI to find the last assistant message."
+          "/copy needs the interactive TUI to find assistant, tool, or timeline context."
         )
       );
       return continueResult();
     }
+
+    const target = (args[0] ?? "assistant").toLowerCase();
+    if (target === "tool") {
+      const handle = args[1] ?? "last";
+      const snapshot = tui.getToolSnapshot(handle);
+      if (!snapshot) {
+        tui.appendSystemMessage(`No tool row found for "${handle}".`);
+        return continueResult();
+      }
+      const content = formatToolSnapshotForClipboard(snapshot);
+      const ok = writeClipboardText(content);
+      tui.appendSystemMessage(
+        ok
+          ? `Copied tool ${snapshot.name} (${snapshot.id}) to clipboard (${content.length} chars).`
+          : `Couldn't write tool output to clipboard. Use /copy export tool <file> ${handle} instead.`
+      );
+      return continueResult();
+    }
+
+    if (target === "timeline") {
+      const limit = parsePositiveInteger(args[1]) ?? 50;
+      const events = mergeTimelineEvents(
+        eventRecorder?.getTimelineEvents(),
+        tui.getTimelineEvents()
+      ).slice(-limit);
+      const content = JSON.stringify({ generatedAt: new Date().toISOString(), limit, events }, null, 2);
+      const ok = writeClipboardText(content);
+      tui.appendSystemMessage(
+        ok
+          ? `Copied ${events.length} timeline events to clipboard.`
+          : `Couldn't write timeline to clipboard. Use /copy export timeline <file> ${limit} instead.`
+      );
+      return continueResult();
+    }
+
+    if (target === "export") {
+      const exportKind = (args[1] ?? "").toLowerCase();
+      if (exportKind === "tool") {
+        const outputPath = prepareExportOutputPath("tool", args[2]);
+        const handle = args[3] ?? "last";
+        const snapshot = tui.getToolSnapshot(handle);
+        if (!snapshot) {
+          tui.appendSystemMessage(`No tool row found for "${handle}".`);
+          return continueResult();
+        }
+        writeFileSync(outputPath, JSON.stringify(snapshot, null, 2), "utf8");
+        tui.appendSystemMessage(`Exported tool ${snapshot.name} (${snapshot.id}) to ${outputPath}`);
+        return continueResult();
+      }
+      if (exportKind === "timeline") {
+        const outputPath = prepareExportOutputPath("timeline", args[2]);
+        const limit = parsePositiveInteger(args[3]) ?? 50;
+        const events = mergeTimelineEvents(
+          eventRecorder?.getTimelineEvents(),
+          tui.getTimelineEvents()
+        ).slice(-limit);
+        writeFileSync(
+          outputPath,
+          JSON.stringify({ generatedAt: new Date().toISOString(), limit, events }, null, 2),
+          "utf8"
+        );
+        tui.appendSystemMessage(`Exported ${events.length} timeline events to ${outputPath}`);
+        return continueResult();
+      }
+      tui.appendSystemMessage(
+        "Usage: /copy [assistant|tool [id|name|last]|timeline [limit]|export tool <file> [id|name|last]|export timeline <file> [limit]]"
+      );
+      return continueResult();
+    }
+
+    if (target !== "assistant" && target !== "last") {
+      tui.appendSystemMessage(
+        "Usage: /copy [assistant|tool [id|name|last]|timeline [limit]|export tool <file> [id|name|last]|export timeline <file> [limit]]"
+      );
+      return continueResult();
+    }
+
     const content = tui.getLastAssistantContent();
     if (!content) {
       tui.appendSystemMessage("Nothing to copy yet — no assistant message in this session.");

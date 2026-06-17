@@ -7,9 +7,11 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import stripAnsiImport from "strip-ansi";
 import type { Terminal } from "../src/ui/tui/terminal.js";
 import { TuiChatAdapter } from "../src/ui/tui-adapter/TuiChatAdapter.js";
+import { DEFAULT_UI_SETTINGS, type UISettingsInput } from "../src/ui/ui-settings.js";
 
 const stripAnsi = stripAnsiImport as unknown as (text: string) => string;
 
@@ -78,12 +80,13 @@ class FakeTerminal implements Terminal {
   }
 }
 
-function makeAdapter(): { adapter: TuiChatAdapter; terminal: FakeTerminal } {
+function makeAdapter(options?: { ui?: UISettingsInput }): { adapter: TuiChatAdapter; terminal: FakeTerminal } {
   const terminal = new FakeTerminal();
   const adapter = new TuiChatAdapter({
     provider: "test",
     model: "test-model",
     cwd: process.cwd(),
+    ui: options?.ui ? { ...DEFAULT_UI_SETTINGS, ...options.ui } : undefined,
     terminal,
   });
   return { adapter, terminal };
@@ -99,6 +102,13 @@ function renderedText(adapter: TuiChatAdapter): string {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
+  const ui = (adapter as unknown as { ui: { requestRender(force?: boolean): void; previousLines: string[] } }).ui;
+  ui.requestRender(true);
+  await sleep(0);
+  return ui.previousLines.map((line) => stripAnsi(line)).join("\n");
+}
 
 // ── Transcript basics ────────────────────────────────────────────────────────
 {
@@ -137,6 +147,52 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   const secondIdx = text.indexOf("delta-prompt-9d24");
   assert.ok(firstIdx < replyIdx && replyIdx < secondIdx, "transcript order preserved");
 
+  adapter.destroy();
+}
+
+// ── Long transcript is viewported, with hidden-history marker ────────────────
+{
+  const { adapter, terminal } = makeAdapter();
+  for (let i = 0; i < 40; i++) {
+    adapter.appendSystemMessage(`viewport-marker-${i}`);
+  }
+  let text = renderedText(adapter);
+  assert.ok(text.includes("earlier transcript lines"), "viewport shows hidden-history marker");
+  assert.ok(!text.includes("viewport-marker-0"), "old transcript head is hidden from active viewport");
+  assert.ok(text.includes("viewport-marker-39"), "latest transcript tail remains visible");
+  assert.ok(text.includes("test/test-model"), "status header remains visible with long transcript");
+
+  terminal.type("\x1b[5;2~"); // Shift+PageUp
+  text = renderedText(adapter);
+  assert.ok(text.includes("viewport-marker-0"), "Shift+PageUp scrolls to older transcript rows");
+  assert.ok(text.includes("newer transcript lines"), "scrolled transcript shows hidden-newer marker");
+  assert.ok(text.includes("scroll:"), "footer shows transcript scroll offset");
+
+  terminal.type("\x1b[1;2F"); // Shift+End
+  text = renderedText(adapter);
+  assert.ok(text.includes("viewport-marker-39"), "Shift+End returns to latest transcript rows");
+  assert.ok(!text.includes("newer transcript lines"), "latest transcript has no hidden-newer marker");
+
+  terminal.type("\x1b[5;2~"); // Shift+PageUp
+  adapter.appendUserMessage("viewport-user-reset");
+  text = renderedText(adapter);
+  assert.ok(text.includes("viewport-user-reset"), "new user message resets transcript to latest");
+  assert.ok(!text.includes("newer transcript lines"), "new user message clears scrolled-back state");
+  adapter.destroy();
+}
+
+// ── Turn summary records duration, tool count, and token delta ───────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.updateTokens(1000, 200000, false);
+  adapter.beginTurn();
+  adapter.addTool("read_file", { path: "src/x.ts" }, "tc-turn-summary");
+  adapter.completeTool("tc-turn-summary", "ok");
+  adapter.updateTokens(1600, 200000, false);
+  await sleep(5);
+  adapter.endTurn();
+  const text = renderedText(adapter);
+  assert.ok(/Turn · \d+ms · 1 tool · \+600 tok/.test(text), "turn summary shows duration, tool count, and token delta");
   adapter.destroy();
 }
 
@@ -241,6 +297,35 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.equal(calls[1].text.trim(), "", "image-only submit carries empty text");
   assert.ok(calls[1].attachments?.length === 1, "image-only submit carries the attachment");
 
+  adapter.destroy();
+}
+
+// ── Shortcuts overlay lists active keys and closes predictably ───────────────
+{
+  const { adapter, terminal } = makeAdapter();
+  terminal.type("?");
+  let text = await renderedScreenText(adapter);
+  assert.ok(text.includes("Shortcuts"), "? opens shortcuts overlay");
+  assert.ok(text.includes("Ctrl+C"), "overlay lists global shortcuts");
+  assert.ok(text.includes("Shift+Enter"), "overlay lists composer keybindings");
+  assert.ok(text.includes("/tool"), "overlay lists tool detail slash command");
+
+  terminal.type("?");
+  text = await renderedScreenText(adapter);
+  assert.ok(!text.includes("Shortcuts"), "? toggles shortcuts overlay closed");
+
+  let interrupted = 0;
+  adapter.setInterruptHandler(() => interrupted++);
+  adapter.beginTurn();
+  terminal.type("?");
+  terminal.type("\x1b");
+  text = await renderedScreenText(adapter);
+  assert.ok(!text.includes("Shortcuts"), "Esc closes shortcuts overlay");
+  assert.equal(interrupted, 0, "Esc closes shortcuts overlay before interrupting active turn");
+
+  terminal.type("\x1b");
+  assert.equal(interrupted, 1, "Esc still interrupts after overlay is closed");
+  adapter.endTurn();
   adapter.destroy();
 }
 
@@ -552,7 +637,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ── Tool output renders (live progress + final result) ───────────────────────
 {
-  const { adapter } = makeAdapter();
+  const { adapter } = makeAdapter({ ui: { toolDisplay: "expanded" } });
   adapter.addTool("run_command", { command: "npm test" }, "tc-out");
   adapter.startTool("tc-out");
 
@@ -577,11 +662,104 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   adapter.destroy();
 }
 
+// ── Compact tool display suppresses noisy previews by default ────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.addTool("run_command", { command: "npm test" }, "tc-compact");
+  adapter.startTool("tc-compact");
+  adapter.updateToolProgress("tc-compact", "compiling…\nPASS 12 passed");
+  adapter.completeTool("tc-compact", "ok");
+  let text = renderedText(adapter);
+  assert.ok(text.includes("run_command") && text.includes("$ npm test"), "compact row keeps command summary");
+  assert.ok(!text.includes("compiling…"), "compact mode hides command output preview");
+
+  adapter.setToolDisplayMode("expanded");
+  adapter.addTool("run_command", { command: "npm run build" }, "tc-expanded");
+  adapter.startTool("tc-expanded");
+  adapter.updateToolProgress("tc-expanded", "building…");
+  adapter.completeTool("tc-expanded", "ok");
+  text = renderedText(adapter);
+  assert.ok(text.includes("tools:expanded"), "expanded mode appears in footer");
+  assert.ok(text.includes("building…"), "expanded mode shows command output preview");
+  adapter.destroy();
+}
+
+// ── Tool detail panel expands on demand outside transcript ──────────────────
+{
+  const { adapter, terminal } = makeAdapter({
+    ui: {
+      toolOutput: {
+        ...DEFAULT_UI_SETTINGS.toolOutput,
+        maxPreviewLines: 1,
+        maxPreviewLineWidth: 18,
+        maxDetailLines: 1,
+      },
+    },
+  });
+  adapter.addTool("run_command", { command: "pnpm test" }, "tc-detail");
+  adapter.startTool("tc-detail");
+  adapter.updateToolProgress("tc-detail", "detail-output-line-1-is-long\ndetail-output-line-2");
+  adapter.completeTool("tc-detail", "ok");
+  let text = renderedText(adapter);
+  assert.ok(!text.includes("detail-output-line-1"), "compact transcript hides output preview");
+
+  assert.equal(adapter.showToolDetail("tc-detail"), true, "tool detail can be shown by id");
+  text = renderedText(adapter);
+  assert.ok(text.includes("Tool detail: run_command"), "tool detail panel renders");
+  assert.ok(text.includes("detail-output-lin…"), "tool detail panel applies configured line width");
+  assert.ok(text.includes("1 more line"), "tool detail panel applies configured line count");
+  assert.ok(!text.includes("detail-output-line-2"), "tool detail panel hides lines beyond configured detail budget");
+  assert.ok(text.includes("Esc or /tool hide"), "tool detail panel explains dismissal");
+
+  terminal.type("\x1b");
+  text = renderedText(adapter);
+  assert.ok(!text.includes("Tool detail: run_command"), "Esc hides tool detail panel");
+  adapter.destroy();
+}
+
+// ── Tool detail preserves structured media/artifact metadata ────────────────
+{
+  const { adapter } = makeAdapter({
+    ui: {
+      toolOutput: {
+        ...DEFAULT_UI_SETTINGS.toolOutput,
+        maxPreviewLines: 1,
+        maxPreviewLineWidth: 80,
+        maxDetailLines: 6,
+      },
+    },
+  });
+  adapter.addTool("generate_image", { prompt: "terminal lifecycle diagram" }, "tc-media");
+  adapter.startTool("tc-media");
+  adapter.appendToolMessage("generate_image", "render complete", false, {
+    toolCallId: "tc-media",
+    details: { seed: 42 },
+  });
+  adapter.completeTool("tc-media", "ok", {
+    artifacts: [{ type: "image", mimeType: "image/png", path: "artifacts/tui-lifecycle.png" }],
+    metadata: { width: 1024, height: 768 },
+  });
+
+  let text = renderedText(adapter);
+  assert.ok(!text.includes("artifacts/tui-lifecycle.png"), "compact transcript hides artifact details");
+
+  assert.equal(adapter.showToolDetail("tc-media"), true, "tool detail opens for structured tool");
+  text = renderedText(adapter);
+  assert.ok(text.includes("render complete"), "detail panel keeps textual output");
+  assert.ok(text.includes("artifacts/tui-lifecycle.png"), "detail panel keeps artifact path");
+  assert.ok(text.includes("image/png"), "detail panel keeps media type");
+  assert.ok(text.includes("seed: 42"), "detail panel merges streamed metadata");
+  assert.ok(text.includes('"width":1024'), "detail panel keeps structured metadata");
+  adapter.destroy();
+}
+
 // ── Footer shows estimated context tokens ────────────────────────────────────
 {
   const { adapter } = makeAdapter();
   adapter.updateTokens(12400, 200000, true);
   let text = renderedText(adapter);
+  assert.ok(text.includes("test/test-model"), "status header shows provider/model");
+  assert.ok(text.includes(process.cwd()), "status header shows cwd");
   assert.ok(/~12\.4k\/200\.0k ctx/.test(text), `footer shows ~ctx estimate (got: ${text.split("\n").find((l) => l.includes("ctx")) ?? "no ctx line"})`);
 
   // Real billed usage renders without the ~ and as "tok", plus cost.
@@ -614,7 +792,35 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.ok(events.some((event) => event.type === "log" && event.message.includes("Screen reader mode set to on")), "screen-reader hook records timeline event");
   assert.ok(events.some((event) => event.type === "task" && event.label === "Tool run_command" && event.status === "started"), "tool start recorded in local timeline");
   assert.ok(events.some((event) => event.type === "task" && event.label === "Tool run_command" && event.status === "succeeded"), "tool completion recorded in local timeline");
+  assert.ok(events.some((event) => event.type === "log" && event.message.includes("layout=") && event.message.includes("terminal=")), "timeline includes current TUI layout diagnostics");
   assert.equal(adapter.getTimelineEvents(1).length, 1, "timeline limit returns bounded tail");
+  adapter.destroy();
+}
+
+// ── TUI debug state and renderer snapshots are exportable ───────────────────
+{
+  const { adapter, terminal } = makeAdapter();
+  for (let i = 0; i < 35; i++) {
+    adapter.appendSystemMessage(`debug-marker-${i}`);
+  }
+  terminal.type("\x1b[5;2~"); // Shift+PageUp
+  const state = adapter.getDebugState();
+  assert.equal(state.renderer, "tui", "debug state identifies TUI renderer");
+  assert.equal(state.terminal.columns, 100, "debug state records terminal width");
+  assert.ok(state.viewport.transcriptLines > state.viewport.transcriptRows, "debug state records viewport pressure");
+  assert.ok(state.viewport.scrollOffset > 0, "debug state records transcript scroll offset");
+  assert.equal(state.layoutMode, "wide", "debug state records layout mode");
+
+  const snapshotPath = adapter.saveRendererSnapshot("verify");
+  assert.ok(snapshotPath.includes("renderer-snapshots"), "renderer snapshot path uses diagnostic directory");
+  const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as {
+    reason?: string;
+    debugState?: { renderer?: string };
+    rendered?: { currentBaseLines?: string[] };
+  };
+  assert.equal(snapshot.reason, "verify", "renderer snapshot records reason");
+  assert.equal(snapshot.debugState?.renderer, "tui", "renderer snapshot embeds debug state");
+  assert.ok((snapshot.rendered?.currentBaseLines?.length ?? 0) > 0, "renderer snapshot includes rendered lines");
   adapter.destroy();
 }
 
@@ -630,6 +836,18 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   adapter.startTool("tc-stream");
   text = renderedText(adapter);
   assert.ok(text.includes("$ npm run build"), "finalized command summary replaces the partial");
+  adapter.destroy();
+}
+
+// ── Completed tool rows keep elapsed duration visible ───────────────────────
+{
+  const { adapter } = makeAdapter();
+  adapter.addTool("run_command", { command: "npm test" }, "tc-duration");
+  adapter.startTool("tc-duration");
+  await sleep(130);
+  adapter.completeTool("tc-duration", "ok");
+  const text = renderedText(adapter);
+  assert.ok(/\(1\d\dms\)/.test(text), "completed tool row shows elapsed duration");
   adapter.destroy();
 }
 

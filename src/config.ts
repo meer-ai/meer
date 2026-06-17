@@ -142,6 +142,13 @@ const ConfigSchema = z.object({
     screenReaderMode: z.enum(["auto", "on", "off"]).optional(),
     virtualizedHistory: z.enum(["auto", "always", "never"]).optional(),
     scrollMode: z.enum(["auto", "manual"]).optional(),
+    toolDisplay: z.enum(["compact", "auto", "expanded"]).optional(),
+    toolOutput: z.object({
+      maxPreviewLines: z.number().int().positive().optional(),
+      maxPreviewLineWidth: z.number().int().positive().optional(),
+      maxDetailLines: z.number().int().positive().optional(),
+      maxDiffPreviewLines: z.number().int().positive().optional(),
+    }).optional(),
   }).optional(),
   approvals: z.object({
     alwaysAsk: z.boolean().optional(),
@@ -149,6 +156,34 @@ const ConfigSchema = z.object({
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+export function getConfigPath(): string {
+  return process.env.MEER_CONFIG_PATH || join(homedir(), ".meer", "config.yaml");
+}
+
+export function readConfigYaml(): Record<string, unknown> {
+  const configPath = getConfigPath();
+  if (!existsSync(configPath)) return {};
+  const parsed = parse(readFileSync(configPath, "utf-8"));
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+}
+
+export function writeConfigYaml(config: Record<string, unknown>): void {
+  const configPath = getConfigPath();
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, stringify(config), "utf-8");
+}
+
+export function updateConfigYaml(
+  updater: (config: Record<string, unknown>) => void
+): Record<string, unknown> {
+  const config = readConfigYaml();
+  updater(config);
+  writeConfigYaml(config);
+  return config;
+}
 
 export interface LoadedConfig {
   provider: Provider;
@@ -183,12 +218,12 @@ export interface LoadedConfig {
 }
 
 export function configExists(): boolean {
-  const configPath = join(homedir(), '.meer', 'config.yaml');
+  const configPath = getConfigPath();
   return existsSync(configPath);
 }
 
 export function loadConfig(): LoadedConfig {
-  const configPath = join(homedir(), '.meer', 'config.yaml');
+  const configPath = getConfigPath();
 
   let config: Config;
 
@@ -268,6 +303,13 @@ export function loadConfig(): LoadedConfig {
         screenReaderMode: "auto",
         virtualizedHistory: "auto",
         scrollMode: "auto",
+        toolDisplay: "compact",
+        toolOutput: {
+          maxPreviewLines: 10,
+          maxPreviewLineWidth: 120,
+          maxDetailLines: 12,
+          maxDiffPreviewLines: 7,
+        },
       },
       approvals: {
         alwaysAsk: false,
