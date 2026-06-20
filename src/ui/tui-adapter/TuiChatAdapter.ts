@@ -75,6 +75,13 @@ export interface TuiChatConfig {
 
 const EXIT_CONFIRM_WINDOW_MS = 1500;
 const MAX_TIMELINE_EVENTS = 400;
+/**
+ * Upper bound on transcript components kept in memory. The viewport only ever
+ * shows a screen's worth, and old settled messages are never re-read, so a long
+ * session would otherwise grow `this.chat` (and the per-frame render cost)
+ * without limit. Generous enough that an active turn's rows are never trimmed.
+ */
+const MAX_TRANSCRIPT_COMPONENTS = 800;
 
 /**
  * Reduce the small amount of Markdown that callers put in prompt messages
@@ -91,6 +98,43 @@ function stripPromptMarkdown(input: string): string {
     .replace(/^#{1,6}\s+/gm, "") // # headers
     .replace(/\n{3,}/g, "\n\n") // collapse excess blank lines
     .trim();
+}
+
+/**
+ * Transcript container that caps how many child components it retains. When the
+ * cap is exceeded the oldest (always settled) components are dropped from the
+ * front; a callback lets the owner prune any side tables that referenced them.
+ */
+class BoundedTranscriptContainer extends Container {
+  constructor(
+    private readonly max: number,
+    private readonly onTrim: (removed: Component[]) => void
+  ) {
+    super();
+  }
+
+  addChild(component: Component): void {
+    super.addChild(component);
+    if (this.children.length > this.max) {
+      const removed = this.children.splice(0, this.children.length - this.max);
+      this.onTrim(removed);
+    }
+  }
+}
+
+/**
+ * Container that remembers how many lines it produced on its last render.
+ * Used to reserve the composer's real height when sizing the transcript
+ * viewport, so a tall input area never overflows the screen.
+ */
+class HeightTrackingContainer extends Container {
+  lastHeight = 0;
+
+  render(width: number): string[] {
+    const lines = super.render(width);
+    this.lastHeight = lines.length;
+    return lines;
+  }
 }
 
 /** Inline prompt (choice/form question) shown above the editor. */
@@ -149,13 +193,14 @@ function detectGitBranch(cwd: string): string | undefined {
 export class TuiChatAdapter implements ChatAdapter {
   private config: TuiChatConfig;
   private ui: TUI;
-  private chat = new Container();
+  private chat: BoundedTranscriptContainer;
   private header: HeaderComponent;
   private chatViewport: ChatViewportComponent;
   private statusContainer = new Container();
   private toolDetailContainer = new Container();
   private planContainer = new Container();
   private promptContainer = new Container();
+  private editorChrome = new HeightTrackingContainer();
   private editor: Editor;
   private readonly history = new PromptHistoryStore();
   private footer: FooterComponent;
@@ -230,6 +275,19 @@ export class TuiChatAdapter implements ChatAdapter {
 
     this.ui = new TUI(config.terminal ?? new ProcessTerminal());
 
+    // Drop tool-row bookkeeping for any components trimmed out of the
+    // transcript so the toolRows map can't outlive its rows.
+    this.chat = new BoundedTranscriptContainer(
+      MAX_TRANSCRIPT_COMPONENTS,
+      (removed) => {
+        for (const component of removed) {
+          if (component instanceof ToolRowComponent) {
+            this.toolRows.delete(component.id);
+          }
+        }
+      }
+    );
+
     this.header = new HeaderComponent({
       provider: config.provider,
       model: config.model,
@@ -261,10 +319,9 @@ export class TuiChatAdapter implements ChatAdapter {
       this.recordResizeDiagnostic();
     };
     process.stdout.on("resize", this.onTerminalResize);
-    const editorContainer = new Container();
-    editorContainer.addChild(new Spacer(1));
-    editorContainer.addChild(this.editor as unknown as Component);
-    this.ui.addChild(editorContainer);
+    this.editorChrome.addChild(new Spacer(1));
+    this.editorChrome.addChild(this.editor as unknown as Component);
+    this.ui.addChild(this.editorChrome);
 
     this.footer = new FooterComponent({
       provider: config.provider,
@@ -305,8 +362,18 @@ export class TuiChatAdapter implements ChatAdapter {
       this.toolDetailContainer.render(width).length +
       this.planContainer.render(width).length +
       this.promptContainer.render(width).length;
-    // Header + editor chrome + footer. Keep a useful transcript even on tiny terminals.
-    return Math.max(6, rows - 7 - dynamicRows);
+    // Reserve the composer's *actual* height instead of a fixed guess. A
+    // multi-line draft, an open slash/file autocomplete dropdown, or the
+    // reverse-search line all make the editor grow; with a fixed reservation
+    // that overflow scrolled the input area off-screen during long turns. The
+    // height is measured from the previous frame (the composer renders after the
+    // viewport in the child list), defaulting to its minimal 4 rows before then.
+    const editorRows = this.editorChrome.lastHeight || 4;
+    const HEADER_ROWS = 1;
+    const FOOTER_ROWS = 2;
+    const chromeRows = HEADER_ROWS + FOOTER_ROWS + editorRows + dynamicRows;
+    // Keep a useful transcript even on tiny terminals.
+    return Math.max(6, rows - chromeRows);
   }
 
   private installAutocomplete(): void {
@@ -367,6 +434,13 @@ export class TuiChatAdapter implements ChatAdapter {
       this.cycleMode();
       return { consume: true };
     }
+    // Ctrl+O: cycle how much tool detail the work log shows inline
+    // (compact → auto → expanded), so output and diffs can be revealed or
+    // hidden without leaving the transcript or opening /settings.
+    if (matchesKey(data, "ctrl+o") && !this.activePrompt) {
+      this.cycleToolDisplayMode();
+      return { consume: true };
+    }
     // Ctrl+V: attach an image from the clipboard if there is one. When the
     // clipboard holds no image we DON'T consume the event, so normal
     // text-paste behaviour is unaffected.
@@ -376,6 +450,14 @@ export class TuiChatAdapter implements ChatAdapter {
       }
     }
     return undefined;
+  }
+
+  /** Cycle the inline tool-output verbosity (Ctrl+O) and announce the change. */
+  private cycleToolDisplayMode(): void {
+    const order: ToolDisplayMode[] = ["compact", "auto", "expanded"];
+    const next = order[(order.indexOf(this.toolDisplayMode) + 1) % order.length];
+    this.setToolDisplayMode(next);
+    this.appendSystemMessage(`Tool output: ${next} (Ctrl+O to cycle)`);
   }
 
   /**
@@ -449,6 +531,14 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   private clampTranscriptScroll(): void {
+    // Fast path for the common live case: when following the tail (offset 0)
+    // the clamp is a no-op, so skip getMaxTranscriptScrollOffset() — it renders
+    // the entire transcript just to count lines, which we'd otherwise pay on
+    // every refreshFooter() (i.e. every streamed chunk and ticker frame).
+    if (this.transcriptScrollOffset <= 0) {
+      this.transcriptScrollOffset = 0;
+      return;
+    }
     this.transcriptScrollOffset = Math.max(
       0,
       Math.min(this.transcriptScrollOffset, this.getMaxTranscriptScrollOffset())
@@ -667,8 +757,14 @@ export class TuiChatAdapter implements ChatAdapter {
     this.lastSettledContent = null;
     this.messageCount = 0;
     this.timelineEvents = [];
+    // Drop any scrollback position — the transcript is empty, so the next
+    // content must render from the bottom. Without this the offset survives the
+    // clear and new messages render scrolled away from the input ("/clear stops
+    // scrolling to new content"). Force a full redraw so the large→empty
+    // transition leaves no ghost lines behind from the differential renderer.
+    this.transcriptScrollOffset = 0;
     this.refreshFooter();
-    this.ui.requestRender();
+    this.ui.requestRender(true);
   }
 
   getLastAssistantContent(): string | null {
@@ -913,6 +1009,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.turnActive = false;
     this.currentAssistant = null;
     this.stopLoader();
+    this.finalizeActiveToolRows();
     this.checkTicker();
     this.addTurnSummary();
     this.turnSummary = null;
@@ -923,6 +1020,21 @@ export class TuiChatAdapter implements ChatAdapter {
 
   forceResetWorkState(): void {
     this.endTurn();
+  }
+
+  /**
+   * Any tool row still pending/running when the turn ends never received its
+   * completion (interrupt, provider error, or an abandoned tool). Mark them as
+   * interrupted so the work log stops showing an eternal spinner with a frozen
+   * timer and reads truthfully about what actually finished.
+   */
+  private finalizeActiveToolRows(): void {
+    for (const row of this.toolRows.values()) {
+      if (row.isActive()) {
+        row.setStatus("interrupted");
+        this.recordTask(row.id, "failed", `Tool ${row.name}`, "interrupted");
+      }
+    }
   }
 
   private addTurnSummary(): void {
@@ -1226,6 +1338,7 @@ export class TuiChatAdapter implements ChatAdapter {
           { keys: ["escape"], description: "Stop active turn, close detail panels, or close overlays" },
           { keys: ["shift+tab"], description: "Cycle permission mode" },
           { keys: ["ctrl+v"], description: "Attach image from clipboard when available" },
+          { keys: ["ctrl+o"], description: "Cycle inline tool output: compact → auto → expanded" },
           { keys: ["shift+pageUp"], description: "Scroll transcript up" },
           { keys: ["shift+pageDown"], description: "Scroll transcript down" },
           { keys: ["shift+home"], description: "Jump transcript to top" },

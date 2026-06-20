@@ -878,6 +878,65 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   adapter.destroy();
 }
 
+// ── Ctrl+O cycles inline tool-output verbosity ───────────────────────────────
+{
+  const { adapter, terminal } = makeAdapter(); // defaults to compact
+  const modeOf = () =>
+    (adapter as unknown as { toolDisplayMode: string }).toolDisplayMode;
+  assert.equal(modeOf(), "compact", "starts in compact tool display");
+
+  terminal.type("\x0f"); // Ctrl+O (raw control byte)
+  assert.equal(modeOf(), "auto", "Ctrl+O advances compact → auto");
+  terminal.type("\x0f");
+  assert.equal(modeOf(), "expanded", "Ctrl+O advances auto → expanded");
+  terminal.type("\x0f");
+  assert.equal(modeOf(), "compact", "Ctrl+O wraps expanded → compact");
+
+  const text = renderedText(adapter);
+  assert.ok(text.includes("Tool output:"), "mode change is announced in the transcript");
+  adapter.destroy();
+}
+
+// ── A tool still running at turn end is marked interrupted (not eternal) ─────
+{
+  const { adapter } = makeAdapter({ ui: { toolDisplay: "expanded" } });
+  adapter.beginTurn();
+  adapter.addTool("run_command", { command: "sleep 999" }, "tc-orphan");
+  adapter.startTool("tc-orphan");
+  let text = renderedText(adapter);
+  assert.ok(!text.includes("interrupted"), "row is live while the turn is active");
+
+  // Turn ends without the tool ever completing (interrupt / provider error).
+  adapter.endTurn();
+  text = renderedText(adapter);
+  assert.ok(text.includes("interrupted"), "orphaned running row is finalized as interrupted");
+
+  // The shared ticker must stop once nothing is active and the turn is over.
+  const ticker = (adapter as unknown as { ticker: NodeJS.Timeout | null }).ticker;
+  assert.equal(ticker, null, "ticker stops after the orphaned row is finalized");
+  adapter.destroy();
+}
+
+// ── Transcript is bounded; trimmed tool rows are pruned from bookkeeping ──────
+{
+  const { adapter } = makeAdapter();
+  const chat = (adapter as unknown as { chat: { children: unknown[] } }).chat;
+  const toolRows = (adapter as unknown as { toolRows: Map<string, unknown> }).toolRows;
+
+  // Seed a tool row that will later be pushed past the retention window.
+  adapter.addTool("read_file", { path: "src/old.ts" }, "tc-evictee");
+  adapter.completeTool("tc-evictee", "ok");
+  assert.ok(toolRows.has("tc-evictee"), "tool row is tracked before eviction");
+
+  // Flood well past the cap so the early component is trimmed from the front.
+  for (let i = 0; i < 900; i++) {
+    adapter.appendSystemMessage(`bound-marker-${i}`);
+  }
+  assert.ok(chat.children.length <= 800, "transcript components stay within the cap");
+  assert.ok(!toolRows.has("tc-evictee"), "trimmed tool row is pruned from the toolRows map");
+  adapter.destroy();
+}
+
 // Allow any stray loader/ticker callbacks to settle, then confirm clean exit.
 await sleep(50);
 console.log("tui-adapter verification passed");

@@ -135,16 +135,20 @@ export function buildRecentEvidenceSummary(
     )
     .slice(-4);
 
-  const recentAssistantMessages = history
-    .filter(
-      (message): message is Extract<AgentMessage, { role: "assistant" }> =>
-        message.role === "assistant"
-    )
-    .slice(-2)
-    .map((message) => truncateForSummary(message.content, 220))
-    .filter(Boolean);
-
-  if (recentToolResults.length === 0 && recentAssistantMessages.length === 0) {
+  // Only inject this block when the recent history actually involved tool
+  // calls. Its entire purpose is to stop the model repeating broad inspection
+  // tools and to nudge it toward turning gathered evidence into findings —
+  // none of which applies to a plain conversational follow-up.
+  //
+  // It used to also re-feed the previous assistant answer here (a "Latest
+  // assistant conclusions" section). That made a follow-up question look like a
+  // continuation of the previous one — on Anthropic the mid-conversation system
+  // message is replayed as a *user* message (see anthropic.ts), so the prior
+  // answer landed right before the new question and the model would re-answer
+  // the previous question first. The assistant reply is already present as a
+  // proper assistant turn in the history, so restating it here is both
+  // redundant and harmful; it has been removed.
+  if (recentToolResults.length === 0) {
     return null;
   }
 
@@ -167,21 +171,11 @@ export function buildRecentEvidenceSummary(
   const sections: string[] = [
     "## Recent Evidence",
     "Use this as a compact memory of the latest verified context. Do not repeat the same broad tool calls unless the latest evidence clearly requires it.",
+    "Latest tool results:",
+    toolSummaryLines.join("\n"),
+    `Next-step guidance: ${focusHint}`,
   ];
 
-  if (toolSummaryLines.length > 0) {
-    sections.push("Latest tool results:");
-    sections.push(toolSummaryLines.join("\n"));
-  }
-
-  if (recentAssistantMessages.length > 0) {
-    sections.push("Latest assistant conclusions:");
-    sections.push(
-      recentAssistantMessages.map((message) => `- ${message}`).join("\n")
-    );
-  }
-
-  sections.push(`Next-step guidance: ${focusHint}`);
   return sections.join("\n\n");
 }
 

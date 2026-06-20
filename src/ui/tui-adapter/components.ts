@@ -251,7 +251,7 @@ export class AssistantMessageComponent extends Container {
 
 // ── Tool rows ────────────────────────────────────────────────────────────────
 
-export type ToolRowStatus = "pending" | "running" | "success" | "error";
+export type ToolRowStatus = "pending" | "running" | "success" | "error" | "interrupted";
 
 export interface ToolDetailSnapshot {
   id: string;
@@ -467,7 +467,7 @@ export class ToolRowComponent extends Container {
 
   setStatus(status: ToolRowStatus, errorText?: string): void {
     this.status = status;
-    if (status === "success" || status === "error") {
+    if (status === "success" || status === "error" || status === "interrupted") {
       this.endTime = Date.now();
     }
     if (status === "error" && errorText) {
@@ -517,6 +517,10 @@ export class ToolRowComponent extends Container {
       case "error":
         icon = s.danger("✗");
         label = s.danger(this.name);
+        break;
+      case "interrupted":
+        icon = s.warning("⊘");
+        label = s.muted(`${this.name} (interrupted)`);
         break;
     }
 

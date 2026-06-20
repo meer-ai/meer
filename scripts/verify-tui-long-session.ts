@@ -232,4 +232,38 @@ for (const width of widths) {
   }
 }
 
+// A tall composer (multi-line draft) must steal rows from the transcript so the
+// input area and footer stay on-screen. Regression for "the message input
+// disappears during long turns": the viewport used to reserve a fixed chrome
+// height, so a grown composer overflowed the terminal and scrolled the input off.
+{
+  const height = 24;
+  const width = 80;
+  const term = new FakeTerminal(width, height);
+  const adapter = new TuiChatAdapter({
+    provider: "stress",
+    model: "stress-model",
+    cwd: process.cwd(),
+    terminal: term,
+  });
+  try {
+    buildLargeTranscript(adapter, 120);
+    // Type a long draft that wraps to many composer lines.
+    term.type("draft ".repeat(80));
+    // Two renders: the viewport reserves the composer height measured on the
+    // previous frame, so the second render reflects the now-tall composer.
+    renderLines(adapter, width);
+    const lines = renderLines(adapter, width);
+    assert.ok(
+      lines.length <= height,
+      `a tall composer must keep the shell within height ${height}, got ${lines.length}`
+    );
+    const footerHints = findLine(lines, (line) => line.includes("Enter send"));
+    assert.ok(footerHints !== -1, "footer/input must stay visible when the composer grows");
+    assert.ok(footerHints <= height - 1, "footer must sit on the last visible row");
+  } finally {
+    adapter.destroy();
+  }
+}
+
 console.log("tui long-session stress verification passed");
