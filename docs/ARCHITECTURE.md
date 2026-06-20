@@ -109,9 +109,14 @@ map, and no custom conditions:
         `@meer/core` + `chalk`. `src/providers/` is gone; ~22 consumers repointed
         to `@meer/ai/providers/*` / `@meer/ai/base.js`. Build + tsc + 25-test
         slice green.
-  - [ ] Collapse the per-provider `convertAgentMessages` duplication into one
-        shared `transform-messages` (the Anthropic mid-conversation-system quirk
-        lives here — fix it once).
+  - [x] **Unified the OpenAI-format conversion.** `@meer/ai/providers/transform-messages.ts`
+        now owns `buildOpenAIUserContent` + `convertAgentMessagesToOpenAI`
+        (with a `reasoningReplay` option). `OpenAIProvider` and `OpenRouterProvider`
+        both delegate to it; the two copy-pasted `convertAgentMessages` bodies are
+        gone (DeepSeek/Together/Opencode already inherit OpenAI's). The subtle
+        rules — orphan tool_result → `user` (never inline `system`), reasoning
+        replay — are in one place, locked by `scripts/verify-transform-messages.ts`.
+        (Anthropic/Gemini keep their own format-specific converters.)
   - [ ] Generated model catalog (context windows / costs / capabilities).
 
   - [x] **Base-layer decision: `@meer/core`** (chosen over absorbing into ai).

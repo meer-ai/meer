@@ -11,42 +11,13 @@ import type {
 } from "../base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 import { createProviderToolNameRegistry } from "./toolNames.js";
-import type { MessageAttachment } from "../types.js";
-import { readAttachmentBase64 } from "../attachments.js";
-
-/**
- * Build the `content` field for an OpenAI-format user message. Returns a
- * plain string when there are no attachments (the Chat Completions API
- * accepts it), otherwise emits multi-part content with image_url parts:
- *   [{ type: "text", text }, { type: "image_url", image_url: { url: "data:..." } }, ...]
- *
- * This shape is shared by the standard OpenAI API and any OpenAI-compatible
- * gateway (OpenRouter, Z.ai, Opencode) so the same helper plugs into each.
- */
-export function buildOpenAIUserContent(
-  text: string,
-  attachments?: MessageAttachment[]
-): unknown {
-  if (!attachments?.length) {
-    return text;
-  }
-  const parts: unknown[] = [];
-  if (text) {
-    parts.push({ type: "text", text });
-  }
-  for (const attachment of attachments) {
-    if (attachment.kind !== "image") continue;
-    const { mimeType, data } = readAttachmentBase64(attachment);
-    parts.push({
-      type: "image_url",
-      image_url: { url: `data:${mimeType};base64,${data}` },
-    });
-  }
-  if (parts.length === 0) {
-    return text;
-  }
-  return parts;
-}
+import {
+  buildOpenAIUserContent,
+  convertAgentMessagesToOpenAI,
+} from "./transform-messages.js";
+// Re-exported so existing importers (OpenRouter, Z.ai, tests) keep their import
+// site; the implementation lives in the shared transform module.
+export { buildOpenAIUserContent };
 
 export interface OpenAIConfig {
   apiKey: string;
@@ -209,8 +180,9 @@ export class OpenAIProvider implements Provider {
     signal?: AbortSignal
   ): AsyncIterable<ProviderEvent> {
     const toolRegistry = createProviderToolNameRegistry(tools);
-    const converted = this.convertAgentMessages(
-      toolRegistry.convertAgentMessages(messages)
+    const converted = convertAgentMessagesToOpenAI(
+      toolRegistry.convertAgentMessages(messages),
+      { reasoningReplay: this.requiresReasoningReplay() }
     );
 
     const body: Record<string, unknown> = {
@@ -440,82 +412,6 @@ export class OpenAIProvider implements Provider {
       reasoningContent: rawReasoningContent || undefined,
       usage,
     };
-  }
-
-  private convertAgentMessages(messages: AgentMessage[]): unknown[] {
-    const converted: unknown[] = [];
-    const pendingToolCallIds = new Set<string>();
-
-    for (const msg of messages) {
-      if (msg.role === "system") {
-        pendingToolCallIds.clear();
-        converted.push({ role: "system", content: msg.content });
-      } else if (msg.role === "user") {
-        pendingToolCallIds.clear();
-        converted.push({
-          role: "user",
-          content: buildOpenAIUserContent(msg.content, msg.attachments),
-        });
-      } else if (msg.role === "assistant") {
-        pendingToolCallIds.clear();
-        if (
-          this.requiresReasoningReplay() &&
-          !msg.reasoningContent &&
-          !msg.toolCalls?.length
-        ) {
-          converted.push({
-            role: "system",
-            content: `Previous assistant response:\n${msg.content}`,
-          });
-          continue;
-        }
-        if (msg.toolCalls?.length) {
-          for (const tc of msg.toolCalls) {
-            pendingToolCallIds.add(tc.id);
-          }
-          converted.push({
-            role: "assistant",
-            content: msg.content || null,
-            ...(msg.reasoningContent
-              ? { reasoning_content: msg.reasoningContent }
-              : {}),
-            tool_calls: msg.toolCalls.map((tc) => ({
-              id: tc.id,
-              type: "function",
-              function: { name: tc.name, arguments: JSON.stringify(tc.input) },
-            })),
-          });
-        } else {
-          converted.push({
-            role: "assistant",
-            content: msg.content,
-            ...(msg.reasoningContent
-              ? { reasoning_content: msg.reasoningContent }
-              : {}),
-          });
-        }
-      } else if (msg.role === "tool_result") {
-        if (!msg.toolCallId || !pendingToolCallIds.has(msg.toolCallId)) {
-          // Orphan tool result (no matching tool_call in the preceding
-          // assistant turn). Use a USER message rather than a mid-conversation
-          // "system" message — inline system is rejected by Anthropic-family
-          // backends (and by OpenAI-compatible proxies that front them).
-          converted.push({
-            role: "user",
-            content: `Previous tool result (${msg.toolName}${msg.isError ? ", error" : ""}):\n${msg.content}`,
-          });
-          continue;
-        }
-        pendingToolCallIds.delete(msg.toolCallId);
-        converted.push({
-          role: "tool",
-          content: msg.content,
-          tool_call_id: msg.toolCallId,
-        });
-      }
-    }
-
-    return converted;
   }
 
   async metadata(): Promise<ProviderMetadata> {

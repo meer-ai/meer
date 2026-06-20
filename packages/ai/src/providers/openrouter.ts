@@ -12,7 +12,10 @@ import type {
 } from "../base.js";
 import { parseStructuredTurn, textStreamToStructuredEvents } from "./structured.js";
 import { createProviderToolNameRegistry } from "./toolNames.js";
-import { buildOpenAIUserContent } from "./openai.js";
+import {
+  buildOpenAIUserContent,
+  convertAgentMessagesToOpenAI,
+} from "./transform-messages.js";
 
 export interface OpenRouterConfig {
   apiKey: string;
@@ -172,7 +175,7 @@ export class OpenRouterProvider implements Provider {
     const toolRegistry = createProviderToolNameRegistry(tools);
     const body: Record<string, unknown> = {
       model: this.config.model,
-      messages: this.convertAgentMessages(
+      messages: convertAgentMessagesToOpenAI(
         toolRegistry.convertAgentMessages(messages)
       ),
       temperature: this.config.temperature,
@@ -487,77 +490,6 @@ export class OpenRouterProvider implements Provider {
           ? buildOpenAIUserContent(msg.content, msg.attachments)
           : msg.content,
     }));
-  }
-
-  private convertAgentMessages(messages: AgentMessage[]): unknown[] {
-    const converted: unknown[] = [];
-    const pendingToolCallIds = new Set<string>();
-
-    for (const msg of messages) {
-      if (msg.role === "system") {
-        pendingToolCallIds.clear();
-        converted.push({ role: "system", content: msg.content });
-      } else if (msg.role === "user") {
-        pendingToolCallIds.clear();
-        converted.push({
-          role: "user",
-          content: buildOpenAIUserContent(msg.content, msg.attachments),
-        });
-      } else if (msg.role === "assistant") {
-        pendingToolCallIds.clear();
-        if (msg.toolCalls?.length) {
-          for (const tc of msg.toolCalls) {
-            pendingToolCallIds.add(tc.id);
-          }
-          converted.push({
-            role: "assistant",
-            content: msg.content || null,
-            ...(msg.reasoningContent
-              ? { reasoning_content: msg.reasoningContent }
-              : {}),
-            tool_calls: msg.toolCalls.map((tc) => ({
-              id: tc.id,
-              type: "function",
-              function: {
-                name: tc.name,
-                arguments: JSON.stringify(tc.input),
-              },
-            })),
-          });
-        } else {
-          converted.push({
-            role: "assistant",
-            content: msg.content,
-            ...(msg.reasoningContent
-              ? { reasoning_content: msg.reasoningContent }
-              : {}),
-          });
-        }
-      } else if (msg.role === "tool_result") {
-        if (!msg.toolCallId || !pendingToolCallIds.has(msg.toolCallId)) {
-          // Orphan tool result (no matching tool_call in the preceding
-          // assistant turn — happens after history compaction or injected
-          // context). Represent it as a USER message, not a mid-conversation
-          // "system" message: OpenAI tolerates inline system, but Anthropic /
-          // Bedrock / Vertex (reachable through OpenRouter) reject it with
-          // "role 'system' must follow a 'user' message...". A user message is
-          // accepted by every backend.
-          converted.push({
-            role: "user",
-            content: `Previous tool result (${msg.toolName}${msg.isError ? ", error" : ""}):\n${msg.content}`,
-          });
-          continue;
-        }
-        pendingToolCallIds.delete(msg.toolCallId);
-        converted.push({
-          role: "tool",
-          content: msg.content,
-          tool_call_id: msg.toolCallId,
-        });
-      }
-    }
-
-    return converted;
   }
 
   private async makeRequest(
