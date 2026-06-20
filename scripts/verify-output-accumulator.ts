@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { BoundedOutputBuffer } from "../src/tools/output-accumulator.js";
-import { runCommand } from "../src/tools/index.js";
+import { BoundedOutputBuffer } from "@meer/coding-agent/tools/output-accumulator.js";
+import { runCommand } from "@meer/coding-agent/tools/index.js";
 
 // --- Small output stays fully in memory, no spill file ---
 {

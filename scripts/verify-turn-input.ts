@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@meer/agent/types.js";
-import { prepareTurnInput } from "../src/agent/session-heuristics.js";
+import { prepareTurnInput } from "@meer/coding-agent/agent/session-heuristics.js";
 
 function userMsg(content: string): AgentMessage {
   return { role: "user", content, timestamp: Date.now() };

@@ -13,10 +13,10 @@ const tempHome = mkdtempSync(join(tmpdir(), "meer-agent-queue-home-"));
 process.env.HOME = tempHome;
 process.env.USERPROFILE = tempHome;
 
-const { MeerAgent } = await import("../src/agent/meer-agent.js");
-const { AgentSession } = await import("../src/agent/agent-session.js");
-const { memory } = await import("../src/memory/index.js");
-const { MCPManager } = await import("../src/mcp/manager.js");
+const { MeerAgent } = await import("@meer/coding-agent/agent/meer-agent.js");
+const { AgentSession } = await import("@meer/coding-agent/agent/agent-session.js");
+const { memory } = await import("@meer/coding-agent/memory/index.js");
+const { MCPManager } = await import("@meer/coding-agent/mcp/manager.js");
 
 const manager = MCPManager.getInstance() as any;
 manager.initialized = true;

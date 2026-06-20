@@ -18,6 +18,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "chalk": "^5.3.0",
     "undici": "^6.27.0",
     "yaml": "^2.9.0"
   }

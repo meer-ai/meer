@@ -8,8 +8,8 @@
  *    reports remaining budget.
  */
 
-import { parseTokenBudget } from "../src/chat/slash.js";
-import { SessionTracker } from "../src/session/tracker.js";
+import { parseTokenBudget } from "@meer/coding-agent/chat/slash.js";
+import { SessionTracker } from "@meer/coding-agent/session/tracker.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

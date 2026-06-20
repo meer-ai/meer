@@ -1,8 +1,29 @@
 # meer architecture & migration plan
 
-> Status: **in progress.** This document tracks the multi-phase restructuring of
-> meer from a single package into a layered monorepo. It is the source of truth
-> for the target shape and the migration sequence — update it as phases land.
+> Status: **structural migration complete.** meer is now a layered pnpm monorepo
+> — five packages with an enforced dependency DAG, a thin root launcher, and a
+> fully green test suite. What remains (Phases 4b–5) are *feature* additions
+> (headless modes, generated model catalog), not structural work. This document
+> is the source of truth for the shape and the remaining roadmap.
+
+## Current shape (achieved)
+
+```
+packages/
+  @meer/core           fetch, auth/OAuth, retry, errors, provider-errors
+  @meer/ai             types, Provider contract, attachments, faux, providers/,
+                       transform-messages
+  @meer/agent          loop (with transformContext seam) + orchestration types
+  @meer/tui            differential renderer
+  @meer/coding-agent   the assistant: tools, slash, config, trust, skills, MCP,
+                       the interactive TUI app (117 files) — has the `meer` bin
+meerai (root)          thin launcher: bin/meer.js → @meer/coding-agent
+```
+
+Dependency DAG (lower may not import higher): `core ← ai ← agent ← coding-agent`;
+`tui` independent. Build order: core → ai → agent → tui → coding-agent. The full
+build is clean, the shipped `meer` bin works through the launcher, and `pnpm test`
+(the whole suite) is green.
 
 ## Why
 
@@ -144,11 +165,27 @@ map, and no custom conditions:
         first bug is gone at the root; the seam above is where any future
         context shaping goes. (`verify-turn-input` now asserts *zero* synthesized
         blocks for any history.)
-  - [ ] (Later) Decouple session/compaction into the package once the app split
-        (Phase 4) clarifies the boundary.
-- **Phase 4 — `@meer/coding-agent` + explicit modes.** Add `print`/JSON mode
-  (unlocks scripting and true end-to-end tests without the TUI).
-- **Phase 5 — RPC mode, generated model catalog, polish.**
+  - [ ] (Later) Decouple session/compaction into `@meer/agent` — it's currently
+        in `@meer/coding-agent` (app-coupled to memory/config). Optional.
+- **Phase 4a — Extract `@meer/coding-agent`.** ✅ **DONE.** Moved the whole app
+  (`src/` → `packages/coding-agent/src/`, 117 files). It owns the `meer` bin;
+  the root `meerai` package is now a thin launcher (`bin/meer.js` →
+  `@meer/coding-agent`). The app's npm deps moved with it; latent
+  hoisting-masked deps were made explicit (`chalk` in core; `typescript`,
+  `zod-to-json-schema` in coding-agent). Root `tsconfig.json` type-checks the
+  whole app from source via `paths`; `pnpm test` (all ~45 scripts) is green.
+
+### Remaining — feature additions, not structural (optional roadmap)
+
+The harness restructuring is finished. These build *on* the now-clean layering:
+
+- **Phase 4b — `print`/JSON headless mode.** `meer -p "prompt"` (text) and
+  `--mode json` (event stream). Unlocks scripting/CI and true end-to-end tests
+  driven through `@meer/coding-agent` without the TUI. Highest value next step.
+- **Phase 5 — RPC mode** (jsonl protocol to drive the agent programmatically)
+  and the **generated model catalog** (`@meer/ai/models.generated.ts`: context
+  windows / costs / capabilities from an upstream source, replacing the
+  hand-rolled `maxTokens`/`DEFAULT_MODELS` scraps).
 
 ## Reference
 

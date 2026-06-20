@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { AgentSession } from "../src/agent/agent-session.js";
+import { AgentSession } from "@meer/coding-agent/agent/agent-session.js";
 
 class RetryRuntime {
   attempts = 0;
@@ -42,10 +42,10 @@ class QueueRuntime {
 }
 
 class LifecycleRuntime {
-  private sink?: (event: import("../src/agent/agent-session.js").AgentSessionEvent) => void;
+  private sink?: (event: import("@meer/coding-agent/agent/agent-session.js").AgentSessionEvent) => void;
 
   setSessionEventSink(
-    sink: (event: import("../src/agent/agent-session.js").AgentSessionEvent) => void
+    sink: (event: import("@meer/coding-agent/agent/agent-session.js").AgentSessionEvent) => void
   ): void {
     this.sink = sink;
   }

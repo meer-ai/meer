@@ -15,7 +15,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const SRC_DIR = fileURLToPath(new URL("../src", import.meta.url));
+const SRC_DIR = fileURLToPath(new URL("../packages/coding-agent/src", import.meta.url));
 
 // `require(` followed by a string/backtick — i.e. an actual module load.
 const REQUIRE_CALL = /(^|[^.\w])require\s*\(\s*["'`]/;

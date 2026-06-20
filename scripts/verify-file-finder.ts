@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { findFilesFuzzy, isFdAvailable } from "../src/utils/file-finder.js";
+import { findFilesFuzzy, isFdAvailable } from "@meer/coding-agent/utils/file-finder.js";
 
 const repoRoot = process.cwd();
 

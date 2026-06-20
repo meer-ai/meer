@@ -12,8 +12,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MeerAgent, type PermissionMode } from "../src/agent/meer-agent.js";
-import { TrustStore } from "../src/trust/store.js";
+import { MeerAgent, type PermissionMode } from "@meer/coding-agent/agent/meer-agent.js";
+import { TrustStore } from "@meer/coding-agent/trust/store.js";
 
 const dir = mkdtempSync(join(tmpdir(), "meer-perm-"));
 

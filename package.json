@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9.12.3",
   "bin": {
-    "meer": "./dist/index.js"
+    "meer": "./bin/meer.js"
   },
   "repository": {
     "type": "git",
@@ -16,8 +16,8 @@
   },
   "homepage": "https://github.com/meer-ai/meer#readme",
   "scripts": {
-    "build": "pnpm -C packages/core run build && pnpm -C packages/ai run build && pnpm -C packages/agent run build && pnpm -C packages/tui run build && tsc -p tsconfig.build.json",
-    "dev": "tsx src/index.ts",
+    "build": "pnpm -C packages/core run build && pnpm -C packages/ai run build && pnpm -C packages/agent run build && pnpm -C packages/tui run build && pnpm -C packages/coding-agent run build",
+    "dev": "tsx packages/coding-agent/src/index.ts",
     "preflight": "pnpm run build && pnpm test",
     "prepublishOnly": "pnpm run preflight",
     "test": "tsx scripts/verify-no-bare-require.ts && tsx scripts/verify-faux-provider.ts && tsx scripts/verify-agent-tools.ts && tsx scripts/verify-slash-commands.ts && tsx scripts/verify-settings-command.ts && tsx scripts/verify-timeline-merge.ts && tsx scripts/verify-slash-detection.ts && tsx scripts/verify-agent-queue.ts && tsx scripts/verify-agent-session.ts && tsx scripts/verify-turn-input.ts && tsx scripts/verify-session-branches.ts && tsx scripts/verify-session-compaction.ts && tsx scripts/verify-session-migrate.ts && tsx scripts/verify-skills.ts && tsx scripts/verify-attachments.ts && tsx scripts/verify-message-multimodal.ts && tsx scripts/verify-tool-output-ceiling.ts && tsx scripts/verify-bash-mode.ts && tsx scripts/verify-file-expansion.ts && tsx scripts/verify-output-sanitize.ts && tsx scripts/verify-trust-store.ts && tsx scripts/verify-trust-gate.ts && tsx scripts/verify-command-classifier.ts && tsx scripts/verify-fast-tool-render.ts && tsx scripts/verify-context-window.ts && tsx scripts/verify-budget.ts && tsx scripts/verify-shell-cd.ts && tsx scripts/verify-agent-loop-limits.ts && tsx scripts/verify-error-context.ts && tsx scripts/verify-edit-engine.ts && tsx scripts/verify-read-truncation.ts && tsx scripts/verify-provider-errors.ts && tsx scripts/verify-transform-messages.ts && tsx scripts/verify-output-accumulator.ts && tsx scripts/verify-file-finder.ts && tsx scripts/verify-autocomplete-injection.ts && tsx scripts/verify-tui-adapter.ts && tsx scripts/verify-tui-long-session.ts && tsx scripts/verify-diff-preview.ts && tsx scripts/verify-usage-tracking.ts && tsx scripts/verify-mcp-oauth.ts && tsx scripts/verify-prompt-history.ts && tsx scripts/verify-history-search.ts && tsx scripts/verify-permission-mode.ts",
@@ -41,46 +41,16 @@
   "author": "MeerAI Contributors",
   "license": "MIT",
   "dependencies": {
-    "@babel/parser": "^7.28.4",
-    "@babel/traverse": "^7.28.4",
-    "@meer/agent": "workspace:*",
-    "@meer/ai": "workspace:*",
-    "@meer/core": "workspace:*",
-    "@meer/tui": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@types/inquirer": "^9.0.9",
-    "ansi-escapes": "^7.1.1",
-    "boxen": "^8.0.1",
-    "chalk": "^5.3.0",
-    "cli-boxes": "^4.0.1",
-    "cli-highlight": "^2.1.11",
-    "cli-table3": "^0.6.5",
-    "commander": "^12.0.0",
-    "diff": "^5.2.2",
-    "dotenv": "^16.4.0",
-    "get-east-asian-width": "1.6.0",
-    "glob": "^11.1.0",
-    "gpt-tokenizer": "^3.0.1",
-    "inquirer": "^12.9.6",
-    "marked": "^15.0.12",
-    "marked-terminal": "^7.3.0",
-    "open": "^10.2.0",
-    "ora": "^8.0.0",
-    "prom-client": "^15.1.3",
-    "undici": "^6.27.0",
-    "vscode-languageclient": "^9.0.1",
-    "vscode-languageserver-protocol": "^3.17.5",
-    "vscode-languageserver-types": "^3.17.5",
-    "winston": "^3.18.3",
-    "yaml": "^2.9.0",
-    "zod": "^3.23.0"
+    "@meer/coding-agent": "workspace:*"
   },
   "devDependencies": {
     "@types/babel__traverse": "^7.28.0",
     "@types/diff": "^7.0.2",
     "@types/node": "^20.0.0",
+    "strip-ansi": "^6.0.1",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "yaml": "^2.9.0"
   },
   "pnpm": {
     "overrides": {
@@ -95,7 +65,7 @@
     "node": ">=20.0.0"
   },
   "files": [
-    "dist",
+    "bin",
     "README.md",
     "LICENSE"
   ]

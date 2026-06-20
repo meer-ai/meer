@@ -12,7 +12,7 @@
  * result the user might care about.
  */
 
-import { getToolSummary, shouldRenderCompact } from "../src/ui/shared/tool-utils.js";
+import { getToolSummary, shouldRenderCompact } from "@meer/coding-agent/ui/shared/tool-utils.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

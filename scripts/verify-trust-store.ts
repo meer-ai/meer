@@ -13,8 +13,8 @@
 import { mkdtempSync, writeFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { normalizeCommand, isCommandInAllowlist } from "../src/trust/match.js";
-import { TrustStore } from "../src/trust/store.js";
+import { normalizeCommand, isCommandInAllowlist } from "@meer/coding-agent/trust/match.js";
+import { TrustStore } from "@meer/coding-agent/trust/store.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

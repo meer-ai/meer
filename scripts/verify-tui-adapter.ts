@@ -10,8 +10,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import stripAnsiImport from "strip-ansi";
 import type { Terminal } from "@meer/tui/terminal.js";
-import { TuiChatAdapter } from "../src/ui/tui-adapter/TuiChatAdapter.js";
-import { DEFAULT_UI_SETTINGS, type UISettingsInput } from "../src/ui/ui-settings.js";
+import { TuiChatAdapter } from "@meer/coding-agent/ui/tui-adapter/TuiChatAdapter.js";
+import { DEFAULT_UI_SETTINGS, type UISettingsInput } from "@meer/coding-agent/ui/ui-settings.js";
 
 const stripAnsi = stripAnsiImport as unknown as (text: string) => string;
 

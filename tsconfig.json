@@ -18,9 +18,11 @@
       "@meer/core/*": ["./packages/core/src/*"],
       "@meer/ai/*": ["./packages/ai/src/*"],
       "@meer/agent/*": ["./packages/agent/src/*"],
-      "@meer/tui/*": ["./packages/tui/src/*"]
+      "@meer/tui/*": ["./packages/tui/src/*"],
+      "@meer/coding-agent/*": ["./packages/coding-agent/src/*"]
     }
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+  "//": "Dev/test type-checking config: resolves every @meer/* to package SOURCE so tsc --noEmit and tsx run build-free. Each package builds itself to dist via its own tsconfig (consumed at runtime / by the bin).",
+  "include": ["packages/coding-agent/src/**/*"],
+  "exclude": ["node_modules", "dist", "**/dist/**", "**/*.test.ts"]
 }

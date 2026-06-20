@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { CombinedAutocompleteProvider } from "@meer/tui/autocomplete.js";
-import { findFilesFuzzy } from "../src/utils/file-finder.js";
+import { findFilesFuzzy } from "@meer/coding-agent/utils/file-finder.js";
 
 const repoRoot = process.cwd();
 

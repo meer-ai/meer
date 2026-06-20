@@ -7,7 +7,7 @@ const tempHome = mkdtempSync(join(tmpdir(), "meer-session-branch-home-"));
 process.env.HOME = tempHome;
 process.env.USERPROFILE = tempHome;
 
-const { Memory } = await import("../src/memory/index.js");
+const { Memory } = await import("@meer/coding-agent/memory/index.js");
 
 const memory = new Memory();
 
