@@ -4,7 +4,7 @@ import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ProjectContextManager } from "../context/manager.js";
-import { AuthStorage } from "../auth/storage.js";
+import { AuthStorage } from "@meer/core/auth/storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

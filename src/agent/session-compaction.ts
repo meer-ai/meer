@@ -1,4 +1,4 @@
-import type { Provider, ChatMessage } from "../providers/base.js";
+import type { Provider, ChatMessage } from "@meer/ai/base.js";
 import type { CompactionSummaryInput } from "../session/store.js";
 
 export async function generateCompactionSummaryWithProvider(

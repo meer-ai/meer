@@ -26,7 +26,7 @@ import type {
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { MessageAttachment } from "../../agent/core/types.js";
 import { readClipboardImage } from "../../utils/clipboard-image.js";
-import { saveAttachmentBytes } from "../../utils/attachments.js";
+import { saveAttachmentBytes } from "@meer/ai/attachments.js";
 import type { Plan } from "../../plan/types.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
 import type { UITimelineEvent } from "../shared/timelineTypes.js";
@@ -36,17 +36,20 @@ import type { ToolDisplayMode } from "../ui-settings.js";
 import { getAllCommands } from "../../slash/registry.js";
 import { isSlashCommandInput } from "../../slash/utils.js";
 import { setToolConsoleQuiet } from "../../tools/index.js";
-import { CombinedAutocompleteProvider, type SlashCommand } from "../tui/autocomplete.js";
-import { Editor } from "../tui/components/editor.js";
+import { CombinedAutocompleteProvider, type SlashCommand } from "@meer/tui/autocomplete.js";
+import { setTuiDiagnosticReporter } from "@meer/tui/diagnostics.js";
+import { recordDiagnostic } from "../../utils/diagnostics.js";
+import { findFilesFuzzy } from "../../utils/file-finder.js";
+import { Editor } from "@meer/tui/components/editor.js";
 import { PromptHistoryStore } from "../promptHistory.js";
-import { Loader } from "../tui/components/loader.js";
-import { SelectList, type SelectItem } from "../tui/components/select-list.js";
-import { Spacer } from "../tui/components/spacer.js";
-import { Text } from "../tui/components/text.js";
-import { getKeybindings, type Keybinding } from "../tui/keybindings.js";
-import { matchesKey } from "../tui/keys.js";
-import { ProcessTerminal, type Terminal } from "../tui/terminal.js";
-import { type Component, Container, type OverlayHandle, TUI } from "../tui/tui.js";
+import { Loader } from "@meer/tui/components/loader.js";
+import { SelectList, type SelectItem } from "@meer/tui/components/select-list.js";
+import { Spacer } from "@meer/tui/components/spacer.js";
+import { Text } from "@meer/tui/components/text.js";
+import { getKeybindings, type Keybinding } from "@meer/tui/keybindings.js";
+import { matchesKey } from "@meer/tui/keys.js";
+import { ProcessTerminal, type Terminal } from "@meer/tui/terminal.js";
+import { type Component, Container, type OverlayHandle, TUI } from "@meer/tui/tui.js";
 import {
   AssistantMessageComponent,
   ChatViewportComponent,
@@ -273,6 +276,9 @@ export class TuiChatAdapter implements ChatAdapter {
     // the terminal — the differential renderer can't account for them.
     setToolConsoleQuiet(true);
 
+    // Route the renderer's diagnostic seam into meer's diagnostics buffer.
+    setTuiDiagnosticReporter(recordDiagnostic);
+
     this.ui = new TUI(config.terminal ?? new ProcessTerminal());
 
     // Drop tool-row bookkeeping for any components trimmed out of the
@@ -387,7 +393,9 @@ export class TuiChatAdapter implements ChatAdapter {
       // Slash registry unavailable (tests) — autocomplete simply stays off.
     }
     this.editor.setAutocompleteProvider(
-      new CombinedAutocompleteProvider(commands, this.config.cwd)
+      // Inject meer's file-finder cascade so the @ picker works; the tui
+      // package itself stays free of any concrete file-finding backend.
+      new CombinedAutocompleteProvider(commands, this.config.cwd, null, findFilesFuzzy)
     );
   }
 

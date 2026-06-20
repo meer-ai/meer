@@ -19,7 +19,7 @@ import {
   extractImagePathsFromText,
   inlineTextFile,
   isTextFilePath,
-} from "../src/utils/attachments.js";
+} from "@meer/ai/attachments.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

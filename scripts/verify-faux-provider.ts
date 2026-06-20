@@ -14,7 +14,7 @@
 import assert from "node:assert/strict";
 import { runLoop } from "../src/agent/core/loop.js";
 import type { AgentEvent, AgentMessage, AgentTool } from "../src/agent/core/types.js";
-import { FauxProvider } from "../src/providers/faux.js";
+import { FauxProvider } from "@meer/ai/faux.js";
 
 function userMsg(content: string): AgentMessage {
   return { role: "user", content, timestamp: Date.now() };

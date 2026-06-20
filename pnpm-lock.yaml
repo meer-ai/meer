@@ -21,6 +21,15 @@ importers:
       '@babel/traverse':
         specifier: ^7.28.4
         version: 7.28.4
+      '@meer/ai':
+        specifier: workspace:*
+        version: link:packages/ai
+      '@meer/core':
+        specifier: workspace:*
+        version: link:packages/core
+      '@meer/tui':
+        specifier: workspace:*
+        version: link:packages/tui
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@3.25.76)
@@ -118,6 +127,33 @@ importers:
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
+
+  packages/ai:
+    dependencies:
+      '@meer/core':
+        specifier: workspace:*
+        version: link:../core
+      chalk:
+        specifier: ^5.3.0
+        version: 5.6.2
+
+  packages/core:
+    dependencies:
+      undici:
+        specifier: ^6.27.0
+        version: 6.27.0
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
+
+  packages/tui:
+    dependencies:
+      get-east-asian-width:
+        specifier: 1.6.0
+        version: 1.6.0
+      marked:
+        specifier: ^15.0.12
+        version: 15.0.12
 
 packages:
 

@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MessageAttachment } from "../src/agent/core/types.js";
-import { buildOpenAIUserContent } from "../src/providers/openai.js";
+import { buildOpenAIUserContent } from "@meer/ai/providers/openai.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {
@@ -84,7 +84,7 @@ const base64Attachment: MessageAttachment = {
 // the exported helper and the assertion still drives the same coverage.
 // ---------------------------------------------------------------------------
 {
-  const { readAttachmentBase64 } = await import("../src/utils/attachments.js");
+  const { readAttachmentBase64 } = await import("@meer/ai/attachments.js");
 
   function anthropicShape(text: string, attachments: MessageAttachment[]): unknown {
     const blocks: unknown[] = [];
@@ -117,7 +117,7 @@ const base64Attachment: MessageAttachment = {
 // Gemini
 // ---------------------------------------------------------------------------
 {
-  const { readAttachmentBase64 } = await import("../src/utils/attachments.js");
+  const { readAttachmentBase64 } = await import("@meer/ai/attachments.js");
 
   function geminiParts(text: string, attachments: MessageAttachment[]): unknown[] {
     const parts: unknown[] = [];
@@ -144,7 +144,7 @@ const base64Attachment: MessageAttachment = {
 // Ollama — uses { content, images: [base64...] }, no per-image MIME on wire.
 // ---------------------------------------------------------------------------
 {
-  const { readAttachmentBase64 } = await import("../src/utils/attachments.js");
+  const { readAttachmentBase64 } = await import("@meer/ai/attachments.js");
 
   function ollamaShape(text: string, attachments: MessageAttachment[]): unknown {
     const images: string[] = [];

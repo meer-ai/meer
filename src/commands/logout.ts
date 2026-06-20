@@ -4,7 +4,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { AuthStorage } from '../auth/storage.js';
+import { AuthStorage } from '@meer/core/auth/storage.js';
 
 export function createLogoutCommand(): Command {
   const command = new Command('logout');

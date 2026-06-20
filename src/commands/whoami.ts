@@ -4,12 +4,12 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { AuthStorage } from '../auth/storage.js';
+import { AuthStorage } from '@meer/core/auth/storage.js';
 import {
   fetchCurrentSubscription,
   formatUsd,
   hasMeerCredentials,
-} from '../auth/subscription.js';
+} from '@meer/core/auth/subscription.js';
 
 export function createWhoamiCommand(): Command {
   const command = new Command('whoami');

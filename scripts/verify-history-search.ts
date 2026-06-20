@@ -7,9 +7,9 @@
 
 import assert from "node:assert/strict";
 import stripAnsiImport from "strip-ansi";
-import type { Terminal } from "../src/ui/tui/terminal.js";
-import { TUI } from "../src/ui/tui/tui.js";
-import { Editor } from "../src/ui/tui/components/editor.js";
+import type { Terminal } from "@meer/tui/terminal.js";
+import { TUI } from "@meer/tui/tui.js";
+import { Editor } from "@meer/tui/components/editor.js";
 import { getEditorTheme } from "../src/ui/tui-adapter/theme.js";
 
 const stripAnsi = stripAnsiImport as unknown as (text: string) => string;

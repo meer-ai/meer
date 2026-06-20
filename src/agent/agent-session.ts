@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import type { ChatMessage, Provider } from "../providers/base.js";
+import type { ChatMessage, Provider } from "@meer/ai/base.js";
 import type { AgentMessage } from "./core/types.js";
 import type { SessionTracker } from "../session/tracker.js";
 import { memory } from "../memory/index.js";
@@ -16,7 +16,7 @@ import { generateCompactionSummaryWithProvider } from "./session-compaction.js";
 import {
   isContextOverflowError,
   isRetryableProviderError,
-} from "../utils/provider-errors.js";
+} from "@meer/core/provider-errors.js";
 import type { MCPTool } from "../mcp/types.js";
 import type { Skill } from "../skills/index.js";
 

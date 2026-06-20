@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { runLoop } from "../src/agent/core/loop.js";
 import type { AgentEvent } from "../src/agent/core/types.js";
-import type { ChatMessage, Provider, ProviderEvent } from "../src/providers/base.js";
+import type { ChatMessage, Provider, ProviderEvent } from "@meer/ai/base.js";
 import { SessionTracker } from "../src/session/tracker.js";
 
 class UsageProvider implements Provider {

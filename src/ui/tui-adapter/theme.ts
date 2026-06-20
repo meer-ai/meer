@@ -6,9 +6,9 @@
 
 import chalk from "chalk";
 import { getTheme } from "../theme.js";
-import type { EditorTheme } from "../tui/components/editor.js";
-import type { MarkdownTheme } from "../tui/components/markdown.js";
-import type { SelectListTheme } from "../tui/components/select-list.js";
+import type { EditorTheme } from "@meer/tui/components/editor.js";
+import type { MarkdownTheme } from "@meer/tui/components/markdown.js";
+import type { SelectListTheme } from "@meer/tui/components/select-list.js";
 
 export interface TuiStyles {
   accent: (text: string) => string;

@@ -1,0 +1,25 @@
+{
+  "name": "@meer/tui",
+  "version": "0.6.37",
+  "description": "Differential-rendering terminal UI for meer (vendored from pi-tui, MIT).",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./*.js": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*",
+    "LICENSE.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "get-east-asian-width": "1.6.0",
+    "marked": "^15.0.12"
+  }
+}

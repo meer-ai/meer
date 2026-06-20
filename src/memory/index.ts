@@ -5,7 +5,7 @@ import {
   type SessionMessageEntry,
   type SessionCompactionEntry,
 } from "../session/store.js";
-import type { ChatMessage } from "../providers/base.js";
+import type { ChatMessage } from "@meer/ai/base.js";
 
 export interface ConversationEntry {
   timestamp: number;

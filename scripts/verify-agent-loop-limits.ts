@@ -5,7 +5,7 @@ import type {
   ChatMessage,
   Provider,
   ProviderEvent,
-} from "../src/providers/base.js";
+} from "@meer/ai/base.js";
 
 class ProgressProvider implements Provider {
   calls = 0;

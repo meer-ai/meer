@@ -37,7 +37,7 @@ import {
   type SlashCommandResult,
 } from "./chat/slash.js";
 import { isSlashCommandInput } from "./slash/utils.js";
-import type { ChatMessage } from "./providers/base.js";
+import type { ChatMessage } from "@meer/ai/base.js";
 import { backgroundTerminals } from "./runtime/backgroundTerminals.js";
 import { AgentSession, type SessionAgentRuntime } from "./agent/agent-session.js";
 

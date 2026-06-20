@@ -1,5 +1,5 @@
-import type { Provider, ChatMessage } from "../providers/base.js";
-import { ProviderWrapper } from "../providers/provider-wrapper.js";
+import type { Provider, ChatMessage } from "@meer/ai/base.js";
+import { ProviderWrapper } from "@meer/ai/providers/provider-wrapper.js";
 import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";

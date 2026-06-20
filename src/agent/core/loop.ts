@@ -1,4 +1,4 @@
-import type { Provider, ToolDefinition } from "../../providers/base.js";
+import type { Provider, ToolDefinition } from "@meer/ai/base.js";
 import type {
   AgentMessage,
   AgentTool,

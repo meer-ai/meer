@@ -7,7 +7,7 @@ import type {
   ToolDefinition,
   Provider,
   ProviderEvent,
-} from "../src/providers/base.js";
+} from "@meer/ai/base.js";
 
 const tempHome = mkdtempSync(join(tmpdir(), "meer-agent-queue-home-"));
 process.env.HOME = tempHome;

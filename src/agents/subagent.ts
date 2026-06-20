@@ -2,7 +2,7 @@ import { randomBytes } from "crypto";
 import chalk from "chalk";
 import { MeerAgent, type MeerAgentConfig } from "../agent/meer-agent.js";
 import { buildEnvironmentSection } from "../agent/prompts/nativeSystemPrompt.js";
-import type { ChatMessage } from "../providers/base.js";
+import type { ChatMessage } from "@meer/ai/base.js";
 import { logVerbose } from "../logger.js";
 import type {
   SubAgentDefinition,

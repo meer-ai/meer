@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { ProviderWrapper } from "../src/providers/provider-wrapper.js";
-import type { ChatMessage, Provider } from "../src/providers/base.js";
+import { ProviderWrapper } from "@meer/ai/providers/provider-wrapper.js";
+import type { ChatMessage, Provider } from "@meer/ai/base.js";
 import { httpRequest } from "../src/tools/index.js";
 
 class FailingProvider implements Provider {

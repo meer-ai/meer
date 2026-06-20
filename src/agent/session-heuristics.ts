@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../providers/base.js";
+import type { ChatMessage } from "@meer/ai/base.js";
 import type { AgentMessage } from "./core/types.js";
 
 export function buildInitialConversationHistory(

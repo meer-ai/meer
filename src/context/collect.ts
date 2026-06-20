@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, statSync } from 'fs';
 import { join, extname, relative } from 'path';
 import { glob } from 'glob';
-import type { Provider } from '../providers/base.js';
+import type { Provider } from '@meer/ai/base.js';
 
 export interface CodeChunk {
   path: string;
