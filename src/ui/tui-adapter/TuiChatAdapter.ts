@@ -24,7 +24,7 @@ import type {
   TuiDebugState,
 } from "../chat-adapter.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import type { MessageAttachment } from "../../agent/core/types.js";
+import type { MessageAttachment } from "@meer/agent/types.js";
 import { readClipboardImage } from "../../utils/clipboard-image.js";
 import { saveAttachmentBytes } from "@meer/ai/attachments.js";
 import type { Plan } from "../../plan/types.js";

@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import type { ChatMessage, Provider } from "@meer/ai/base.js";
-import type { AgentMessage } from "./core/types.js";
+import type { AgentMessage } from "@meer/agent/types.js";
 import type { SessionTracker } from "../session/tracker.js";
 import { memory } from "../memory/index.js";
 import type { CompactionSummaryInput } from "../session/store.js";
@@ -54,7 +54,7 @@ export interface SessionAgentRuntime {
       turnId?: string;
       preparedMessages?: AgentMessage[];
       systemPrompt?: string;
-      attachments?: import("./core/types.js").MessageAttachment[];
+      attachments?: import("@meer/agent/types.js").MessageAttachment[];
     }
   ): Promise<RuntimeProcessResult>;
   abort?(): void;
@@ -283,7 +283,7 @@ export class AgentSession {
   async prompt(
     userMessage: string,
     options?: {
-      attachments?: import("./core/types.js").MessageAttachment[];
+      attachments?: import("@meer/agent/types.js").MessageAttachment[];
     }
   ): Promise<string> {
     const attachments = options?.attachments;

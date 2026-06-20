@@ -16,7 +16,7 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { MessageAttachment } from "../src/agent/core/types.js";
+import type { MessageAttachment } from "@meer/agent/types.js";
 import { buildOpenAIUserContent } from "@meer/ai/providers/openai.js";
 
 function assert(condition: boolean, message: string): void {

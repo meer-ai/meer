@@ -308,7 +308,7 @@ export function createCLI(): Command {
 
         type PendingInput = {
           text: string;
-          attachments?: import("./agent/core/types.js").MessageAttachment[];
+          attachments?: import("@meer/agent/types.js").MessageAttachment[];
         };
         const pendingInputs: PendingInput[] = [];
         let pendingResolver: ((value: PendingInput) => void) | null = null;
@@ -377,7 +377,7 @@ export function createCLI(): Command {
 
         const enqueueInput = (
           value: string,
-          attachments?: import("./agent/core/types.js").MessageAttachment[]
+          attachments?: import("@meer/agent/types.js").MessageAttachment[]
         ) => {
           const trimmed = value.trim();
           const hasAttachments = (attachments?.length ?? 0) > 0;
@@ -775,7 +775,7 @@ export function createCLI(): Command {
 
           let userInput: string;
           let userAttachments:
-            | import("./agent/core/types.js").MessageAttachment[]
+            | import("@meer/agent/types.js").MessageAttachment[]
             | undefined;
           if (queuedMessage !== null) {
             userInput = queuedMessage;

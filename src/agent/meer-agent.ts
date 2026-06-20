@@ -4,11 +4,11 @@ import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";
 import { createMeerAgentTools } from "./tools/agent.js";
-import type { AgentTool } from "./core/types.js";
+import type { AgentTool } from "@meer/agent/types.js";
 import type { AgentToolCallResult } from "./runtime/types.js";
-import { runLoop } from "./core/loop.js";
-import type { AgentEvent } from "./core/types.js";
-import type { AgentMessage as CoreAgentMessage } from "./core/types.js";
+import { runLoop } from "@meer/agent/loop.js";
+import type { AgentEvent } from "@meer/agent/types.js";
+import type { AgentMessage as CoreAgentMessage } from "@meer/agent/types.js";
 import { generateDiff, type FileEdit } from "../tools/index.js";
 import { backgroundTerminals } from "../runtime/backgroundTerminals.js";
 import {
@@ -222,7 +222,7 @@ export class MeerAgent {
       turnId?: string;
       preparedMessages?: CoreAgentMessage[];
       systemPrompt?: string;
-      attachments?: import("./core/types.js").MessageAttachment[];
+      attachments?: import("@meer/agent/types.js").MessageAttachment[];
     }
   ): Promise<RuntimeProcessResult> {
     if (this.isRunning) {

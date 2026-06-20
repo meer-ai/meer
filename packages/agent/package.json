@@ -1,0 +1,23 @@
+{
+  "name": "@meer/agent",
+  "version": "0.6.37",
+  "description": "meer's generic agent kernel: the tool-calling loop and orchestration types. Provider-agnostic, UI-agnostic.",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./*.js": {
+      "types": "./dist/*.d.ts",
+      "default": "./dist/*.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@meer/ai": "workspace:*"
+  }
+}

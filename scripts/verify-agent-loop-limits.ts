@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { runLoop } from "../src/agent/core/loop.js";
-import type { AgentTool } from "../src/agent/core/types.js";
+import { runLoop } from "@meer/agent/loop.js";
+import type { AgentTool } from "@meer/agent/types.js";
 import type {
   ChatMessage,
   Provider,

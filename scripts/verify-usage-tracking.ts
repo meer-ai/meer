@@ -7,8 +7,8 @@
  */
 
 import assert from "node:assert/strict";
-import { runLoop } from "../src/agent/core/loop.js";
-import type { AgentEvent } from "../src/agent/core/types.js";
+import { runLoop } from "@meer/agent/loop.js";
+import type { AgentEvent } from "@meer/agent/types.js";
 import type { ChatMessage, Provider, ProviderEvent } from "@meer/ai/base.js";
 import { SessionTracker } from "../src/session/tracker.js";
 

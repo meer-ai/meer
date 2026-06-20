@@ -17,6 +17,7 @@
     "paths": {
       "@meer/core/*": ["./packages/core/src/*"],
       "@meer/ai/*": ["./packages/ai/src/*"],
+      "@meer/agent/*": ["./packages/agent/src/*"],
       "@meer/tui/*": ["./packages/tui/src/*"]
     }
   },

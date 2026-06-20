@@ -126,9 +126,26 @@ map, and no custom conditions:
         importers (incl. dynamic `await import()` and single-quoted ones)
         repointed to `@meer/core/*` / `@meer/ai/*`. core is LLM-agnostic;
         verified no `agent/core/types` import remains in it. 22-test slice green.
-- **Phase 3 — Extract `@meer/agent`** (the heart). Move loop/session/compaction,
-  introduce the `transformContext` seam, and delete `buildRecentEvidenceSummary`
-  — the context-history band-aid retires here, permanently.
+- **Phase 3 — Extract `@meer/agent`** (the heart). *(core done)*
+  - [x] **Generic kernel extracted.** `src/agent/core/{loop,types}.ts` →
+        `@meer/agent/{loop,types}.ts`. It's the provider-/UI-agnostic agent:
+        the tool-calling loop + orchestration types (`AgentTool`, `AgentEvent`).
+        Only dep is `@meer/ai`. ~15 importers repointed. (Session/compaction
+        orchestration — `agent-session`, `meer-agent`, `session-*` — is app-
+        coupled and stays in the app for now.)
+  - [x] **`transformContext` seam added** to the loop: an optional hook applied
+        to the full message list immediately before every model call. The loop's
+        own `messages` stay canonical (transforms never accumulate). Locked by a
+        faux-provider test asserting the transform reaches the provider but not
+        the durable history.
+  - [x] **`buildRecentEvidenceSummary` DELETED.** `prepareTurnInput` no longer
+        synthesizes a "Recent Evidence" system block — the tool results it
+        restated are already in the history. The band-aid from this session's
+        first bug is gone at the root; the seam above is where any future
+        context shaping goes. (`verify-turn-input` now asserts *zero* synthesized
+        blocks for any history.)
+  - [ ] (Later) Decouple session/compaction into the package once the app split
+        (Phase 4) clarifies the boundary.
 - **Phase 4 — `@meer/coding-agent` + explicit modes.** Add `print`/JSON mode
   (unlocks scripting and true end-to-end tests without the TUI).
 - **Phase 5 — RPC mode, generated model catalog, polish.**

@@ -12,8 +12,8 @@
  */
 
 import assert from "node:assert/strict";
-import { runLoop } from "../src/agent/core/loop.js";
-import type { AgentEvent, AgentMessage, AgentTool } from "../src/agent/core/types.js";
+import { runLoop } from "@meer/agent/loop.js";
+import type { AgentEvent, AgentMessage, AgentTool } from "@meer/agent/types.js";
 import { FauxProvider } from "@meer/ai/faux.js";
 
 function userMsg(content: string): AgentMessage {
@@ -101,6 +101,37 @@ async function drain(events: AgentEvent[], provider: FauxProvider, messages: Age
 
   assert.deepEqual(newMessages.map((m) => m.role), ["assistant"], "single assistant turn");
   assert.equal(provider.calls.length, 1, "exactly one model call for a tool-free answer");
+}
+
+// ── transformContext shapes the model call without mutating loop state ───────
+{
+  const provider = new FauxProvider([{ text: "ok" }]);
+  const events: AgentEvent[] = [];
+  const newMessages = await runLoop(
+    [userMsg("hello")],
+    [echoTool],
+    provider,
+    {
+      systemPrompt: "sys",
+      maxTurns: 4,
+      // Inject a marker only into what the model sees.
+      transformContext: (messages) => [
+        ...messages,
+        { role: "system", content: "INJECTED-MARKER", timestamp: Date.now() },
+      ],
+    },
+    (event) => events.push(event)
+  );
+
+  // The model saw the injected marker...
+  const sawMarker = provider.calls[0].some(
+    (m) => m.role === "system" && m.content === "INJECTED-MARKER"
+  );
+  assert.ok(sawMarker, "transformContext output reaches the provider");
+
+  // ...but it never leaked into the durable conversation (loop messages stay canonical).
+  const leaked = newMessages.some((m) => m.content === "INJECTED-MARKER");
+  assert.ok(!leaked, "transformContext does not mutate the loop's own messages");
 }
 
 console.log("faux-provider verification passed");

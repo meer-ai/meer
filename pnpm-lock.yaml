@@ -21,6 +21,9 @@ importers:
       '@babel/traverse':
         specifier: ^7.28.4
         version: 7.28.4
+      '@meer/agent':
+        specifier: workspace:*
+        version: link:packages/agent
       '@meer/ai':
         specifier: workspace:*
         version: link:packages/ai
@@ -127,6 +130,12 @@ importers:
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
+
+  packages/agent:
+    dependencies:
+      '@meer/ai':
+        specifier: workspace:*
+        version: link:../ai
 
   packages/ai:
     dependencies:

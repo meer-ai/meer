@@ -18,6 +18,21 @@ export interface LoopConfig {
     args: Record<string, unknown>,
     signal?: AbortSignal
   ) => Promise<{ block: boolean; reason?: string } | undefined>;
+  /**
+   * The canonical context-shaping seam: applied to the full message list
+   * (system prompt included) immediately before every model call. The returned
+   * array is what reaches the provider — the loop's own `messages` are left
+   * untouched, so a transform is transparent and never accumulates.
+   *
+   * This is the *only* place context should be reshaped. It replaces ad-hoc,
+   * per-turn message injection (e.g. the old `buildRecentEvidenceSummary`): the
+   * message list stays canonical, and any host-specific massaging lives behind
+   * this hook where it is explicit and testable.
+   */
+  transformContext?: (
+    messages: AgentMessage[],
+    signal?: AbortSignal
+  ) => AgentMessage[] | Promise<AgentMessage[]>;
 }
 
 function stableStringify(value: unknown): string {
@@ -158,7 +173,13 @@ export async function runLoop(
             );
           }
 
-          for await (const event of streamWithTools(messages, toolDefs, signal)) {
+          // Shape the context for this call only; the loop's own `messages`
+          // stay canonical so transforms never accumulate across turns.
+          const llmMessages = config.transformContext
+            ? await config.transformContext(messages, signal)
+            : messages;
+
+          for await (const event of streamWithTools(llmMessages, toolDefs, signal)) {
             if (signal?.aborted) break;
 
             if (event.type === "text-delta") {

@@ -1,5 +1,5 @@
 import type { ChatMessage } from "@meer/ai/base.js";
-import type { AgentMessage } from "./core/types.js";
+import type { AgentMessage } from "@meer/agent/types.js";
 
 export function buildInitialConversationHistory(
   options?: string | { contextPrompt?: string; priorMessages?: ChatMessage[] }
@@ -52,19 +52,15 @@ export function prepareTurnInput(
     providerType,
     model
   );
-  const recentEvidenceSummary = buildRecentEvidenceSummary(history, userMessage);
 
+  // The message history is canonical: the user's question is simply appended.
+  // We no longer synthesize a "Recent Evidence" system block here — the tool
+  // results it summarized are already present as `tool_result` messages, so
+  // re-stating them was redundant (and, as a mid-conversation system message,
+  // actively harmful on Anthropic-family backends). Any host-specific context
+  // shaping now belongs behind the loop's `transformContext` seam.
   return [
     ...providerCompatibleHistory,
-    ...(recentEvidenceSummary
-      ? [
-          {
-            role: "system" as const,
-            content: recentEvidenceSummary,
-            timestamp: Date.now(),
-          },
-        ]
-      : []),
     {
       role: "user" as const,
       content: userMessage,
@@ -120,65 +116,6 @@ export function describeToolWorkflowStage(toolName: string): string {
   return humanizeToolName(toolName);
 }
 
-export function buildRecentEvidenceSummary(
-  history: AgentMessage[],
-  userMessage: string
-): string | null {
-  if (history.length === 0) {
-    return null;
-  }
-
-  const recentToolResults = history
-    .filter(
-      (message): message is Extract<AgentMessage, { role: "tool_result" }> =>
-        message.role === "tool_result"
-    )
-    .slice(-4);
-
-  // Only inject this block when the recent history actually involved tool
-  // calls. Its entire purpose is to stop the model repeating broad inspection
-  // tools and to nudge it toward turning gathered evidence into findings —
-  // none of which applies to a plain conversational follow-up.
-  //
-  // It used to also re-feed the previous assistant answer here (a "Latest
-  // assistant conclusions" section). That made a follow-up question look like a
-  // continuation of the previous one — on Anthropic the mid-conversation system
-  // message is replayed as a *user* message (see anthropic.ts), so the prior
-  // answer landed right before the new question and the model would re-answer
-  // the previous question first. The assistant reply is already present as a
-  // proper assistant turn in the history, so restating it here is both
-  // redundant and harmful; it has been removed.
-  if (recentToolResults.length === 0) {
-    return null;
-  }
-
-  const toolSummaryLines = recentToolResults.map((result) => {
-    const preview = truncateForSummary(result.content, 220);
-    const errorTag = result.isError ? " (error)" : "";
-    return `- ${result.toolName}${errorTag}: ${preview}`;
-  });
-
-  const lowerUserMessage = userMessage.toLowerCase();
-  const focusHint =
-    /\bsecurity\b|\baudit\b|\breview\b|\bscan\b/.test(lowerUserMessage)
-      ? "Focus on turning the gathered evidence into concrete findings and only gather more context if a specific gap remains."
-      : /\bfix\b|\bedit\b|\bchange\b|\bimplement\b|\brefactor\b/.test(
-            lowerUserMessage
-          )
-        ? "Use the gathered evidence to make the smallest coherent change, then verify it."
-        : "Use the gathered evidence to choose the next most specific action instead of repeating broad inspection tools.";
-
-  const sections: string[] = [
-    "## Recent Evidence",
-    "Use this as a compact memory of the latest verified context. Do not repeat the same broad tool calls unless the latest evidence clearly requires it.",
-    "Latest tool results:",
-    toolSummaryLines.join("\n"),
-    `Next-step guidance: ${focusHint}`,
-  ];
-
-  return sections.join("\n\n");
-}
-
 export function buildProviderCompatibleHistory(
   history: AgentMessage[],
   providerType: string,
@@ -222,15 +159,4 @@ function humanizeToolName(toolName: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function truncateForSummary(content: string, maxLength: number): string {
-  const normalized = content.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return "";
-  }
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-  return `${normalized.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
 }
