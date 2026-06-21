@@ -12,7 +12,7 @@
  * (e.g. `git push --force`) must classify as dangerous, NOT safe.
  */
 
-import { classifyCommand, type CommandRisk } from "@meer/coding-agent/trust/command-classifier.js";
+import { classifyCommand, type CommandRisk } from "@meer-ai/coding-agent/trust/command-classifier.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

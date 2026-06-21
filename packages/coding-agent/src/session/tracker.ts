@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from '@meer/core/fetch.js';
+import { fetchWithTimeout, REQUEST_TIMEOUT_MS } from '@meer-ai/core/fetch.js';
 import { calculateCost, formatCost } from '../pricing/config.js';
 
 export interface SessionStats {
@@ -173,7 +173,7 @@ export class SessionTracker {
   private async logUsageToBackend(): Promise<void> {
     try {
       // Check if user is authenticated
-      const { AuthStorage } = await import('@meer/core/auth/storage.js');
+      const { AuthStorage } = await import('@meer-ai/core/auth/storage.js');
       const authStorage = new AuthStorage();
 
       if (!authStorage.isAuthenticated()) {

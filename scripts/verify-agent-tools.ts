@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createMeerAgentTools } from "@meer/coding-agent/agent/tools/agent.js";
-import { runCommand } from "@meer/coding-agent/tools/index.js";
+import { createMeerAgentTools } from "@meer-ai/coding-agent/agent/tools/agent.js";
+import { runCommand } from "@meer-ai/coding-agent/tools/index.js";
 
 const context = {
   cwd: process.cwd(),

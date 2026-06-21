@@ -6,7 +6,7 @@ import { join, extname } from 'path';
 import { glob } from 'glob';
 import inquirer from 'inquirer';
 import { loadConfig } from '../config.js';
-import type { ChatMessage } from '@meer/ai/base.js';
+import type { ChatMessage } from '@meer-ai/ai/base.js';
 import { detectLanguageFromPath } from '../utils/language.js';
 
 const SUPPORTED_EXTENSIONS = new Set([

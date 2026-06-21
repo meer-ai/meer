@@ -19,11 +19,11 @@ import type {
   AgentMessage,
   ToolDefinition,
 } from '../base.js';
-import { retryWithBackoff, RetryPredicates } from '@meer/core/retry.js';
-import { isContextOverflowError } from '@meer/core/provider-errors.js';
+import { retryWithBackoff, RetryPredicates } from '@meer-ai/core/retry.js';
+import { isContextOverflowError } from '@meer-ai/core/provider-errors.js';
 import { parseStructuredTurn, textStreamToStructuredEvents } from './structured.js';
 import chalk from 'chalk';
-import { contextualError } from '@meer/core/errors.js';
+import { contextualError } from '@meer-ai/core/errors.js';
 
 export interface ProviderWrapperConfig {
   /** Maximum number of retry attempts (default: 3) */

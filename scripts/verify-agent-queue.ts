@@ -7,16 +7,16 @@ import type {
   ToolDefinition,
   Provider,
   ProviderEvent,
-} from "@meer/ai/base.js";
+} from "@meer-ai/ai/base.js";
 
 const tempHome = mkdtempSync(join(tmpdir(), "meer-agent-queue-home-"));
 process.env.HOME = tempHome;
 process.env.USERPROFILE = tempHome;
 
-const { MeerAgent } = await import("@meer/coding-agent/agent/meer-agent.js");
-const { AgentSession } = await import("@meer/coding-agent/agent/agent-session.js");
-const { memory } = await import("@meer/coding-agent/memory/index.js");
-const { MCPManager } = await import("@meer/coding-agent/mcp/manager.js");
+const { MeerAgent } = await import("@meer-ai/coding-agent/agent/meer-agent.js");
+const { AgentSession } = await import("@meer-ai/coding-agent/agent/agent-session.js");
+const { memory } = await import("@meer-ai/coding-agent/memory/index.js");
+const { MCPManager } = await import("@meer-ai/coding-agent/mcp/manager.js");
 
 const manager = MCPManager.getInstance() as any;
 manager.initialized = true;

@@ -17,9 +17,9 @@ import type {
   ToolDefinition,
 } from "../base.js";
 import { parseStructuredTurn } from "./structured.js";
-import type { ChatGPTCredentials } from "@meer/core/auth/chatgpt/oauth.js";
-import { refreshChatGPTToken } from "@meer/core/auth/chatgpt/oauth.js";
-import { fetchWithTimeout, STREAM_TIMEOUT_MS } from "@meer/core/fetch.js";
+import type { ChatGPTCredentials } from "@meer-ai/core/auth/chatgpt/oauth.js";
+import { refreshChatGPTToken } from "@meer-ai/core/auth/chatgpt/oauth.js";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS } from "@meer-ai/core/fetch.js";
 
 const BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM = "https://api.openai.com/auth";

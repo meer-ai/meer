@@ -5,7 +5,7 @@ import {
   normalizeForFuzzyMatch,
   normalizeToLF,
   stripBom,
-} from "@meer/coding-agent/tools/edit-engine.js";
+} from "@meer-ai/coding-agent/tools/edit-engine.js";
 
 // --- Basic exact replacement ---
 {

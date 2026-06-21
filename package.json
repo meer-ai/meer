@@ -44,7 +44,7 @@
   "author": "MeerAI Contributors",
   "license": "MIT",
   "dependencies": {
-    "@meer/coding-agent": "workspace:*"
+    "@meer-ai/coding-agent": "workspace:*"
   },
   "devDependencies": {
     "@types/babel__traverse": "^7.28.0",

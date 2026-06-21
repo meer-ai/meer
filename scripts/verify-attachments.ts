@@ -18,7 +18,7 @@ import {
   mimeTypeForExtension,
   readAttachmentBase64,
   saveAttachmentBytes,
-} from "@meer/ai/attachments.js";
+} from "@meer-ai/ai/attachments.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

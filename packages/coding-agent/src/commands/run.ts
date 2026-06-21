@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { readFileSync } from "fs";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
-import type { Provider } from "@meer/ai/base.js";
+import type { Provider } from "@meer-ai/ai/base.js";
 import {
   createRunEventEmitter,
   RUN_PROTOCOL_VERSION,

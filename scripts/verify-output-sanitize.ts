@@ -11,7 +11,7 @@
  * Newlines must be preserved; tabs must be preserved.
  */
 
-import { sanitizeToolOutput } from "@meer/coding-agent/utils/output-sanitize.js";
+import { sanitizeToolOutput } from "@meer-ai/coding-agent/utils/output-sanitize.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

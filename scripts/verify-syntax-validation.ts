@@ -1,5 +1,5 @@
 /**
- * Locks the edit-tool's pre-apply validator (`@meer/coding-agent/lsp/diagnostics`)
+ * Locks the edit-tool's pre-apply validator (`@meer-ai/coding-agent/lsp/diagnostics`)
  * to SYNTAX-ONLY behavior.
  *
  * Regression: the validator used to also run TypeScript SEMANTIC diagnostics on
@@ -12,7 +12,7 @@
  */
 
 import assert from "node:assert/strict";
-import { validateSyntax } from "@meer/coding-agent/lsp/diagnostics.js";
+import { validateSyntax } from "@meer-ai/coding-agent/lsp/diagnostics.js";
 
 // ── Valid TSX with an unresolved import must PASS (no false TS7016) ───────────
 {

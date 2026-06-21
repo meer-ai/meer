@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { ProviderWrapper } from "@meer/ai/providers/provider-wrapper.js";
-import type { ChatMessage, Provider } from "@meer/ai/base.js";
-import { httpRequest } from "@meer/coding-agent/tools/index.js";
+import { ProviderWrapper } from "@meer-ai/ai/providers/provider-wrapper.js";
+import type { ChatMessage, Provider } from "@meer-ai/ai/base.js";
+import { httpRequest } from "@meer-ai/coding-agent/tools/index.js";
 
 class FailingProvider implements Provider {
   async chat(_messages: ChatMessage[]): Promise<string> {

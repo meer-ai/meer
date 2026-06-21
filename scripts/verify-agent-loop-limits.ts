@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { runLoop } from "@meer/agent/loop.js";
-import type { AgentTool } from "@meer/agent/types.js";
+import { runLoop } from "@meer-ai/agent/loop.js";
+import type { AgentTool } from "@meer-ai/agent/types.js";
 import type {
   ChatMessage,
   Provider,
   ProviderEvent,
-} from "@meer/ai/base.js";
+} from "@meer-ai/ai/base.js";
 
 class ProgressProvider implements Provider {
   calls = 0;

@@ -12,7 +12,7 @@ import {
   contextFillPercent,
   formatTokenCount,
   getContextWindow,
-} from "@meer/coding-agent/utils/model-context.js";
+} from "@meer-ai/coding-agent/utils/model-context.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

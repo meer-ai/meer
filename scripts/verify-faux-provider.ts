@@ -12,9 +12,9 @@
  */
 
 import assert from "node:assert/strict";
-import { runLoop } from "@meer/agent/loop.js";
-import type { AgentEvent, AgentMessage, AgentTool } from "@meer/agent/types.js";
-import { FauxProvider } from "@meer/ai/faux.js";
+import { runLoop } from "@meer-ai/agent/loop.js";
+import type { AgentEvent, AgentMessage, AgentTool } from "@meer-ai/agent/types.js";
+import { FauxProvider } from "@meer-ai/ai/faux.js";
 
 function userMsg(content: string): AgentMessage {
   return { role: "user", content, timestamp: Date.now() };

@@ -25,7 +25,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Dependency order: a package is published only after everything it depends on.
-// The root `meerai` (thin bin → @meer/coding-agent) goes last.
+// The root `meerai` (thin bin → @meer-ai/coding-agent) goes last.
 const packages = [
   { dir: "packages/core", needsDist: true },
   { dir: "packages/ai", needsDist: true },

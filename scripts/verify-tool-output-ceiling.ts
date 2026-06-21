@@ -12,7 +12,7 @@
  */
 
 import { readFileSync, existsSync, unlinkSync } from "node:fs";
-import { formatToolTranscript } from "@meer/coding-agent/agent/meer-agent.js";
+import { formatToolTranscript } from "@meer-ai/coding-agent/agent/meer-agent.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

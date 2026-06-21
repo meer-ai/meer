@@ -2,7 +2,7 @@
  * Core agent types — adapted from the pi agent architecture.
  *
  * The LLM I/O contract (the conversation message model and tool schemas) now
- * lives in `@meer/ai`; it is re-exported here so the many `../agent/core/types`
+ * lives in `@meer-ai/ai`; it is re-exported here so the many `../agent/core/types`
  * importers keep working. This file owns only the agent-orchestration types
  * (tools with executable bodies, loop events) that sit *above* the LLM layer.
  */
@@ -13,9 +13,9 @@ export type {
   MessageAttachment,
   AgentMessage,
   ToolResult,
-} from "@meer/ai/types.js";
+} from "@meer-ai/ai/types.js";
 
-import type { AgentMessage, ToolResult } from "@meer/ai/types.js";
+import type { AgentMessage, ToolResult } from "@meer-ai/ai/types.js";
 
 export interface AgentTool<TInput = Record<string, unknown>> {
   name: string;

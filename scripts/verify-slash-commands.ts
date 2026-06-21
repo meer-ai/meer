@@ -4,13 +4,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   loadSlashCommandConfigs,
-} from "@meer/coding-agent/slash/loader.js";
+} from "@meer-ai/coding-agent/slash/loader.js";
 import {
   reloadSlashCommandRegistry,
   getAllCommands,
   resolveCustomCommand,
   findCustomCommand,
-} from "@meer/coding-agent/slash/registry.js";
+} from "@meer-ai/coding-agent/slash/registry.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "meer-slash-test-"));
 const projectDir = join(tempRoot, "project");

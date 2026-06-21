@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {
   isContextOverflowError,
   isRetryableProviderError,
-} from "@meer/core/provider-errors.js";
+} from "@meer-ai/core/provider-errors.js";
 
 // --- Retryable transient failures ---
 const retryable = [

@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { extractLeadingCd } from "@meer/coding-agent/utils/shell-cd.js";
+import { extractLeadingCd } from "@meer-ai/coding-agent/utils/shell-cd.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

@@ -21,7 +21,7 @@ import { resolveEnvVars } from './config.js';
 import { MCPOAuthProvider, hasMCPAuth } from './oauth/provider.js';
 import { shouldLogMCPToConsole } from './console.js';
 import { CircuitBreaker } from './circuitBreaker.js';
-import { retryWithBackoff, RetryPredicates } from '@meer/core/retry.js';
+import { retryWithBackoff, RetryPredicates } from '@meer-ai/core/retry.js';
 import {
   log,
   mcpReconnections,

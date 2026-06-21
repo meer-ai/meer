@@ -6,9 +6,9 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import * as readline from 'readline';
-import { AuthClient } from '@meer/core/auth/client.js';
-import { AuthStorage } from '@meer/core/auth/storage.js';
-import { loginChatGPTBrowser, loginChatGPTDeviceCode } from '@meer/core/auth/chatgpt/oauth.js';
+import { AuthClient } from '@meer-ai/core/auth/client.js';
+import { AuthStorage } from '@meer-ai/core/auth/storage.js';
+import { loginChatGPTBrowser, loginChatGPTDeviceCode } from '@meer-ai/core/auth/chatgpt/oauth.js';
 
 async function promptLine(question: string): Promise<string> {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

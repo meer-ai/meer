@@ -1,6 +1,6 @@
 import { readFileSync, existsSync, statSync } from "fs";
 import { join, relative } from "path";
-import type { Provider } from "@meer/ai/base.js";
+import type { Provider } from "@meer-ai/ai/base.js";
 import { CodeChunker, type CodeChunk } from "./chunker.js";
 import { EmbeddingStore, type EmbeddingRecord } from "../context/embeddingStore.js";
 import { glob } from "glob";

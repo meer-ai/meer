@@ -1,7 +1,7 @@
 {
-  "name": "@meer/coding-agent",
+  "name": "@meer-ai/coding-agent",
   "version": "0.6.39",
-  "description": "The meer coding assistant: tools, slash commands, config, trust, skills, MCP, and the interactive TUI app. Built on @meer/{core,ai,agent,tui}.",
+  "description": "The meer coding assistant: tools, slash commands, config, trust, skills, MCP, and the interactive TUI app. Built on @meer-ai/{core,ai,agent,tui}.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -23,10 +23,10 @@
   "dependencies": {
     "@babel/parser": "^7.28.4",
     "@babel/traverse": "^7.28.4",
-    "@meer/agent": "workspace:*",
-    "@meer/ai": "workspace:*",
-    "@meer/core": "workspace:*",
-    "@meer/tui": "workspace:*",
+    "@meer-ai/agent": "workspace:*",
+    "@meer-ai/ai": "workspace:*",
+    "@meer-ai/core": "workspace:*",
+    "@meer-ai/tui": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/inquirer": "^9.0.9",
     "ansi-escapes": "^7.1.1",

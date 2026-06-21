@@ -24,9 +24,9 @@ import type {
   TuiDebugState,
 } from "../chat-adapter.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import type { MessageAttachment } from "@meer/agent/types.js";
+import type { MessageAttachment } from "@meer-ai/agent/types.js";
 import { readClipboardImage } from "../../utils/clipboard-image.js";
-import { saveAttachmentBytes } from "@meer/ai/attachments.js";
+import { saveAttachmentBytes } from "@meer-ai/ai/attachments.js";
 import type { Plan } from "../../plan/types.js";
 import type { BackgroundTerminalSession } from "../../runtime/backgroundTerminals.js";
 import type { UITimelineEvent } from "../shared/timelineTypes.js";
@@ -36,20 +36,20 @@ import type { ToolDisplayMode } from "../ui-settings.js";
 import { getAllCommands } from "../../slash/registry.js";
 import { isSlashCommandInput } from "../../slash/utils.js";
 import { setToolConsoleQuiet } from "../../tools/index.js";
-import { CombinedAutocompleteProvider, type SlashCommand } from "@meer/tui/autocomplete.js";
-import { setTuiDiagnosticReporter } from "@meer/tui/diagnostics.js";
+import { CombinedAutocompleteProvider, type SlashCommand } from "@meer-ai/tui/autocomplete.js";
+import { setTuiDiagnosticReporter } from "@meer-ai/tui/diagnostics.js";
 import { recordDiagnostic } from "../../utils/diagnostics.js";
 import { findFilesFuzzy } from "../../utils/file-finder.js";
-import { Editor } from "@meer/tui/components/editor.js";
+import { Editor } from "@meer-ai/tui/components/editor.js";
 import { PromptHistoryStore } from "../promptHistory.js";
-import { Loader } from "@meer/tui/components/loader.js";
-import { SelectList, type SelectItem } from "@meer/tui/components/select-list.js";
-import { Spacer } from "@meer/tui/components/spacer.js";
-import { Text } from "@meer/tui/components/text.js";
-import { getKeybindings, type Keybinding } from "@meer/tui/keybindings.js";
-import { matchesKey } from "@meer/tui/keys.js";
-import { ProcessTerminal, type Terminal } from "@meer/tui/terminal.js";
-import { type Component, Container, type OverlayHandle, TUI } from "@meer/tui/tui.js";
+import { Loader } from "@meer-ai/tui/components/loader.js";
+import { SelectList, type SelectItem } from "@meer-ai/tui/components/select-list.js";
+import { Spacer } from "@meer-ai/tui/components/spacer.js";
+import { Text } from "@meer-ai/tui/components/text.js";
+import { getKeybindings, type Keybinding } from "@meer-ai/tui/keybindings.js";
+import { matchesKey } from "@meer-ai/tui/keys.js";
+import { ProcessTerminal, type Terminal } from "@meer-ai/tui/terminal.js";
+import { type Component, Container, type OverlayHandle, TUI } from "@meer-ai/tui/tui.js";
 import {
   AssistantMessageComponent,
   CotMessageComponent,

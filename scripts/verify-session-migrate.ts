@@ -10,8 +10,8 @@
  *   - Older-version headers are accepted (version is read, entries migrated).
  */
 
-import { parseSessionEntries, migrateSessionEntry, CURRENT_SESSION_VERSION } from "@meer/coding-agent/session/migrate.js";
-import type { SessionEntry } from "@meer/coding-agent/session/store.js";
+import { parseSessionEntries, migrateSessionEntry, CURRENT_SESSION_VERSION } from "@meer-ai/coding-agent/session/migrate.js";
+import type { SessionEntry } from "@meer-ai/coding-agent/session/store.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

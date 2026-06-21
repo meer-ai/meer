@@ -6,7 +6,7 @@ import {
   formatSkillInvocation,
   formatSkillsForSystemPrompt,
   loadSkillsFromSources,
-} from "@meer/coding-agent/skills/index.js";
+} from "@meer-ai/coding-agent/skills/index.js";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "meer-skills-"));

@@ -7,10 +7,10 @@
  */
 
 import assert from "node:assert/strict";
-import { runLoop } from "@meer/agent/loop.js";
-import type { AgentEvent } from "@meer/agent/types.js";
-import type { ChatMessage, Provider, ProviderEvent } from "@meer/ai/base.js";
-import { SessionTracker } from "@meer/coding-agent/session/tracker.js";
+import { runLoop } from "@meer-ai/agent/loop.js";
+import type { AgentEvent } from "@meer-ai/agent/types.js";
+import type { ChatMessage, Provider, ProviderEvent } from "@meer-ai/ai/base.js";
+import { SessionTracker } from "@meer-ai/coding-agent/session/tracker.js";
 
 class UsageProvider implements Provider {
   async chat(): Promise<string> {

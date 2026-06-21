@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import {
   handleSlashCommand,
   mergeTimelineEvents,
-} from "@meer/coding-agent/chat/slash.js";
-import type { AgentEventRecorder } from "@meer/coding-agent/agent/eventRecorder.js";
-import type { ChatAdapter } from "@meer/coding-agent/ui/chat-adapter.js";
-import type { UITimelineEvent } from "@meer/coding-agent/ui/shared/timelineTypes.js";
+} from "@meer-ai/coding-agent/chat/slash.js";
+import type { AgentEventRecorder } from "@meer-ai/coding-agent/agent/eventRecorder.js";
+import type { ChatAdapter } from "@meer-ai/coding-agent/ui/chat-adapter.js";
+import type { UITimelineEvent } from "@meer-ai/coding-agent/ui/shared/timelineTypes.js";
 
 const agentStarted: UITimelineEvent = {
   id: "agent-1",

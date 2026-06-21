@@ -11,7 +11,7 @@
  * whitespace) before routing to slash handling.
  */
 
-import { isSlashCommandInput } from "@meer/coding-agent/slash/utils.js";
+import { isSlashCommandInput } from "@meer-ai/coding-agent/slash/utils.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

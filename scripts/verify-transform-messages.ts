@@ -1,5 +1,5 @@
 /**
- * Verifies the shared OpenAI message transform (@meer/ai/providers/transform-messages).
+ * Verifies the shared OpenAI message transform (@meer-ai/ai/providers/transform-messages).
  *
  * This is the single converter now used by the OpenAI provider and the
  * OpenRouter provider (and, by inheritance, DeepSeek / Together / Opencode). It
@@ -12,11 +12,11 @@
  */
 
 import assert from "node:assert/strict";
-import type { AgentMessage } from "@meer/ai/types.js";
+import type { AgentMessage } from "@meer-ai/ai/types.js";
 import {
   buildOpenAIUserContent,
   convertAgentMessagesToOpenAI,
-} from "@meer/ai/providers/transform-messages.js";
+} from "@meer-ai/ai/providers/transform-messages.js";
 
 type Row = { role: string; content: unknown; tool_call_id?: string; tool_calls?: unknown };
 

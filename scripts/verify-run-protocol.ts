@@ -1,6 +1,6 @@
 /**
  * Locks the `meer run --json` headless event protocol
- * (@meer/coding-agent/runtime/run-events).
+ * (@meer-ai/coding-agent/runtime/run-events).
  *
  * This NDJSON stream is a live integration contract: meer-code's provider
  * adapter (apps/server/.../MeerAdapter.ts) switches on each event's `type` and
@@ -14,7 +14,7 @@ import {
   createRunEventEmitter,
   RUN_PROTOCOL_VERSION,
   type RunEvent,
-} from "@meer/coding-agent/runtime/run-events.js";
+} from "@meer-ai/coding-agent/runtime/run-events.js";
 
 type Line = Record<string, unknown> & { type: string; timestamp: string };
 

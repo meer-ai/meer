@@ -7,7 +7,7 @@
  * a seam so the renderer can be swapped or mocked without touching callers.
  */
 
-import type { MessageAttachment } from "@meer/agent/types.js";
+import type { MessageAttachment } from "@meer-ai/agent/types.js";
 import type { Plan } from "../plan/types.js";
 import type { BackgroundTerminalSession } from "../runtime/backgroundTerminals.js";
 import type { UITimelineEvent } from "./shared/timelineTypes.js";

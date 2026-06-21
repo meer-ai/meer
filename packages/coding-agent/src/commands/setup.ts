@@ -6,24 +6,24 @@ import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { stringify } from 'yaml';
-import { OllamaProvider } from '@meer/ai/providers/ollama.js';
-import { AnthropicProvider } from '@meer/ai/providers/anthropic.js';
-import { OpenRouterProvider } from '@meer/ai/providers/openrouter.js';
-import { OpenAIProvider } from '@meer/ai/providers/openai.js';
-import { GeminiProvider } from '@meer/ai/providers/gemini.js';
+import { OllamaProvider } from '@meer-ai/ai/providers/ollama.js';
+import { AnthropicProvider } from '@meer-ai/ai/providers/anthropic.js';
+import { OpenRouterProvider } from '@meer-ai/ai/providers/openrouter.js';
+import { OpenAIProvider } from '@meer-ai/ai/providers/openai.js';
+import { GeminiProvider } from '@meer-ai/ai/providers/gemini.js';
 import {
   ZaiCodingPlanProvider,
   ZaiCreditProvider,
   normalizeZaiModel,
-} from '@meer/ai/providers/zai.js';
+} from '@meer-ai/ai/providers/zai.js';
 import {
   OPENCODE_ZEN_MODELS,
   OPENCODE_GO_MODELS,
   DEFAULT_OPENCODE_ZEN_MODEL,
   DEFAULT_OPENCODE_GO_MODEL,
-} from '@meer/ai/providers/opencode.js';
-import { DEEPSEEK_MODELS, DEFAULT_DEEPSEEK_MODEL } from '@meer/ai/providers/deepseek.js';
-import { TOGETHER_MODELS, DEFAULT_TOGETHER_MODEL } from '@meer/ai/providers/together.js';
+} from '@meer-ai/ai/providers/opencode.js';
+import { DEEPSEEK_MODELS, DEFAULT_DEEPSEEK_MODEL } from '@meer-ai/ai/providers/deepseek.js';
+import { TOGETHER_MODELS, DEFAULT_TOGETHER_MODEL } from '@meer-ai/ai/providers/together.js';
 
 export function createSetupCommand(): Command {
   return new Command('setup')
@@ -896,7 +896,7 @@ export async function runSetupWizard(): Promise<void> {
     console.log(chalk.gray('Meer will authenticate with your ChatGPT account using OAuth.'));
     console.log(chalk.gray('No API key needed — just your ChatGPT Plus or Pro subscription.\n'));
 
-    const { AuthStorage } = await import('@meer/core/auth/storage.js');
+    const { AuthStorage } = await import('@meer-ai/core/auth/storage.js');
     const authStorage = new AuthStorage();
 
     if (authStorage.isChatGPTAuthenticated()) {
@@ -923,7 +923,7 @@ export async function runSetupWizard(): Promise<void> {
       ]);
 
       try {
-        const { loginChatGPTBrowser, loginChatGPTDeviceCode } = await import('@meer/core/auth/chatgpt/oauth.js');
+        const { loginChatGPTBrowser, loginChatGPTDeviceCode } = await import('@meer-ai/core/auth/chatgpt/oauth.js');
         const readline = await import('readline');
 
         let creds;

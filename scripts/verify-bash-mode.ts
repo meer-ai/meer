@@ -18,7 +18,7 @@
  *    not a thrown exception
  */
 
-import { runCommand } from "@meer/coding-agent/tools/index.js";
+import { runCommand } from "@meer-ai/coding-agent/tools/index.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

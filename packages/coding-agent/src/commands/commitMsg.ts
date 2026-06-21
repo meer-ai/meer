@@ -4,7 +4,7 @@ import ora from 'ora';
 import inquirer from 'inquirer';
 import { execSync } from 'child_process';
 import { loadConfig } from '../config.js';
-import type { ChatMessage } from '@meer/ai/base.js';
+import type { ChatMessage } from '@meer-ai/ai/base.js';
 
 interface CommitType {
   type: string;

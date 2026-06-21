@@ -3,30 +3,30 @@ import { join, dirname } from "path";
 import { homedir } from "os";
 import { parse, stringify } from "yaml";
 import { z } from "zod";
-import { OllamaProvider } from "@meer/ai/providers/ollama.js";
-import { OpenAIProvider } from "@meer/ai/providers/openai.js";
-import { GeminiProvider } from "@meer/ai/providers/gemini.js";
-import { AnthropicProvider } from "@meer/ai/providers/anthropic.js";
-import { OpenRouterProvider } from "@meer/ai/providers/openrouter.js";
-import { MeerProvider } from "@meer/ai/providers/meer.js";
+import { OllamaProvider } from "@meer-ai/ai/providers/ollama.js";
+import { OpenAIProvider } from "@meer-ai/ai/providers/openai.js";
+import { GeminiProvider } from "@meer-ai/ai/providers/gemini.js";
+import { AnthropicProvider } from "@meer-ai/ai/providers/anthropic.js";
+import { OpenRouterProvider } from "@meer-ai/ai/providers/openrouter.js";
+import { MeerProvider } from "@meer-ai/ai/providers/meer.js";
 import {
   ZaiCodingPlanProvider,
   ZaiCreditProvider,
   DEFAULT_ZAI_MODEL,
   normalizeZaiModel,
-} from "@meer/ai/providers/zai.js";
+} from "@meer-ai/ai/providers/zai.js";
 import {
   OpenCodeZenProvider,
   OpenCodeGoProvider,
   DEFAULT_OPENCODE_ZEN_MODEL,
   DEFAULT_OPENCODE_GO_MODEL,
-} from "@meer/ai/providers/opencode.js";
-import { ChatGPTProvider } from "@meer/ai/providers/chatgpt.js";
-import { DeepSeekProvider, DEFAULT_DEEPSEEK_MODEL } from "@meer/ai/providers/deepseek.js";
-import { TogetherProvider, DEFAULT_TOGETHER_MODEL } from "@meer/ai/providers/together.js";
-import { AuthStorage } from "@meer/core/auth/storage.js";
-import type { Provider } from "@meer/ai/base.js";
-import { wrapProvider } from "@meer/ai/providers/provider-wrapper.js";
+} from "@meer-ai/ai/providers/opencode.js";
+import { ChatGPTProvider } from "@meer-ai/ai/providers/chatgpt.js";
+import { DeepSeekProvider, DEFAULT_DEEPSEEK_MODEL } from "@meer-ai/ai/providers/deepseek.js";
+import { TogetherProvider, DEFAULT_TOGETHER_MODEL } from "@meer-ai/ai/providers/together.js";
+import { AuthStorage } from "@meer-ai/core/auth/storage.js";
+import type { Provider } from "@meer-ai/ai/base.js";
+import { wrapProvider } from "@meer-ai/ai/providers/provider-wrapper.js";
 import {
   resolveUISettings,
   type UISettings,

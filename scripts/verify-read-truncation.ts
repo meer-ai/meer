@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFile } from "@meer/coding-agent/tools/index.js";
-import { truncateHead, truncateTail } from "@meer/coding-agent/tools/truncate.js";
+import { readFile } from "@meer-ai/coding-agent/tools/index.js";
+import { truncateHead, truncateTail } from "@meer-ai/coding-agent/tools/truncate.js";
 
 const dir = mkdtempSync(join(tmpdir(), "meer-read-test-"));
 

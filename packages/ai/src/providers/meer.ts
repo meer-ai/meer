@@ -1,12 +1,12 @@
-import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "@meer/core/fetch.js";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "@meer-ai/core/fetch.js";
 import type {
   Provider,
   ChatMessage,
   ChatOptions,
   ProviderMetadata,
 } from "../base.js";
-import { AuthClient } from "@meer/core/auth/client.js";
-import { AuthStorage } from "@meer/core/auth/storage.js";
+import { AuthClient } from "@meer-ai/core/auth/client.js";
+import { AuthStorage } from "@meer-ai/core/auth/storage.js";
 import { readAttachmentBase64 } from "../attachments.js";
 
 interface MeerProviderConfig {

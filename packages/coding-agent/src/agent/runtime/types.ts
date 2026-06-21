@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@meer/ai/base.js";
+import type { ChatMessage } from "@meer-ai/ai/base.js";
 
 export type AgentMessage = ChatMessage;
 

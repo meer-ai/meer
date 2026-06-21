@@ -5,7 +5,7 @@
  * Writes the same version into the root `meerai` package and every
  * `packages/*` workspace package. The packages depend on each other via
  * `workspace:*`, so they MUST ship at one identical version — otherwise the
- * published `meerai` pins a `@meer/coding-agent` version that doesn't exist
+ * published `meerai` pins a `@meer-ai/coding-agent` version that doesn't exist
  * (exactly the bug that broke `npm i -g meerai`).
  *
  *   node scripts/set-version.mjs 0.6.39

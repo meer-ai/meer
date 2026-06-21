@@ -12,7 +12,7 @@
  * pins conversation-history regressions (e.g. a previous answer being re-fed
  * before the next question).
  *
- * This lives in `src/providers/` for now; it moves into `@meer/ai` when the
+ * This lives in `src/providers/` for now; it moves into `@meer-ai/ai` when the
  * provider layer is extracted (see docs/ARCHITECTURE.md).
  */
 

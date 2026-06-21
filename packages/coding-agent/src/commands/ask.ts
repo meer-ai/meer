@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { loadConfig } from '../config.js';
 import { collectRepoFiles, topK, formatContext } from '../context/collect.js';
-import type { ChatMessage } from '@meer/ai/base.js';
+import type { ChatMessage } from '@meer-ai/ai/base.js';
 import { WorkflowTimeline } from '../ui/workflowTimeline.js';
 
 export function createAskCommand(): Command {

@@ -4,7 +4,7 @@
  * Drives `runHeadless` (the core shared by `meer run` and `meer --print`) with
  * the faux provider injected and a capturing stdout sink, then asserts the
  * emitted `--json` event stream. This is the first true end-to-end exercise of
- * headless mode through @meer/coding-agent — config injection → MeerAgent →
+ * headless mode through @meer-ai/coding-agent — config injection → MeerAgent →
  * the run-events emitter → the wire — the same path meer-code and the cloud
  * agent depend on.
  */
@@ -13,8 +13,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FauxProvider } from "@meer/ai/faux.js";
-import { runHeadless } from "@meer/coding-agent/commands/run.js";
+import { FauxProvider } from "@meer-ai/ai/faux.js";
+import { runHeadless } from "@meer-ai/coding-agent/commands/run.js";
 
 const cwd = mkdtempSync(join(tmpdir(), "meer-headless-"));
 

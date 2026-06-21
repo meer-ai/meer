@@ -13,8 +13,8 @@
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { TrustStore } from "@meer/coding-agent/trust/store.js";
-import { resolveTrustMode } from "@meer/coding-agent/trust/gate.js";
+import { TrustStore } from "@meer-ai/coding-agent/trust/store.js";
+import { resolveTrustMode } from "@meer-ai/coding-agent/trust/gate.js";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) {

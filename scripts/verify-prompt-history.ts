@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PromptHistoryStore } from "@meer/coding-agent/ui/promptHistory.js";
+import { PromptHistoryStore } from "@meer-ai/coding-agent/ui/promptHistory.js";
 
 const dir = mkdtempSync(join(tmpdir(), "meer-history-"));
 const path = join(dir, "history.log");

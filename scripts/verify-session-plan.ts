@@ -17,7 +17,7 @@ const tempHome = mkdtempSync(join(tmpdir(), "meer-session-plan-home-"));
 process.env.HOME = tempHome;
 process.env.USERPROFILE = tempHome;
 
-const { Memory } = await import("@meer/coding-agent/memory/index.js");
+const { Memory } = await import("@meer-ai/coding-agent/memory/index.js");
 const memory = new Memory();
 
 const cwd = join(tempHome, "project");

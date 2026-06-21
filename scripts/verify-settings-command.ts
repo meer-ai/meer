@@ -3,9 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse } from "yaml";
-import { handleSlashCommand } from "@meer/coding-agent/chat/slash.js";
-import type { ChatAdapter } from "@meer/coding-agent/ui/chat-adapter.js";
-import { DEFAULT_UI_SETTINGS } from "@meer/coding-agent/ui/ui-settings.js";
+import { handleSlashCommand } from "@meer-ai/coding-agent/chat/slash.js";
+import type { ChatAdapter } from "@meer-ai/coding-agent/ui/chat-adapter.js";
+import { DEFAULT_UI_SETTINGS } from "@meer-ai/coding-agent/ui/ui-settings.js";
 
 const tempRoot = mkdtempSync(join(tmpdir(), "meer-settings-test-"));
 const configPath = join(tempRoot, "config.yaml");

@@ -1,4 +1,4 @@
-import type { ChatMessage } from "@meer/ai/base.js";
+import type { ChatMessage } from "@meer-ai/ai/base.js";
 
 /**
  * Sub-agent definition loaded from markdown files

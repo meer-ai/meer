@@ -1,5 +1,5 @@
 {
-  "//": "Production build of the meer app. Unlike tsconfig.json (used by tsx and dev type-checking, which resolve @meer/* to package source via `paths`), this clears `paths` so workspace packages resolve to their built dist via node_modules — the form the published bin actually runs. Build packages first (see the root `build` script).",
+  "//": "Production build of the meer app. Unlike tsconfig.json (used by tsx and dev type-checking, which resolve @meer-ai/* to package source via `paths`), this clears `paths` so workspace packages resolve to their built dist via node_modules — the form the published bin actually runs. Build packages first (see the root `build` script).",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "paths": {},

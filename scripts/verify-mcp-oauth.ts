@@ -28,7 +28,7 @@ function assert(condition: boolean, message: string): void {
 }
 
 const { MCPOAuthProvider, MCPAuthRequiredError, hasMCPAuth, clearMCPAuth } = await import(
-  '@meer/coding-agent/mcp/oauth/provider.js'
+  '@meer-ai/coding-agent/mcp/oauth/provider.js'
 );
 
 const SERVER = 'notion';

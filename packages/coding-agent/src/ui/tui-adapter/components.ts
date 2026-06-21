@@ -7,13 +7,13 @@
  * transcript stable: there is no separate "static" channel to keep in sync.
  */
 
-import type { Component } from "@meer/tui/tui.js";
-import { Container, visibleWidth } from "@meer/tui/tui.js";
-import { Markdown } from "@meer/tui/components/markdown.js";
-import { Spacer } from "@meer/tui/components/spacer.js";
-import { Text } from "@meer/tui/components/text.js";
-import { matchesKey } from "@meer/tui/keys.js";
-import { truncateToWidth } from "@meer/tui/utils.js";
+import type { Component } from "@meer-ai/tui/tui.js";
+import { Container, visibleWidth } from "@meer-ai/tui/tui.js";
+import { Markdown } from "@meer-ai/tui/components/markdown.js";
+import { Spacer } from "@meer-ai/tui/components/spacer.js";
+import { Text } from "@meer-ai/tui/components/text.js";
+import { matchesKey } from "@meer-ai/tui/keys.js";
+import { truncateToWidth } from "@meer-ai/tui/utils.js";
 import {
   buildDiffPreview,
   buildToolOutputPreview,

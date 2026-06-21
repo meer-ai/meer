@@ -5,7 +5,7 @@ import {
   type SessionMessageEntry,
   type SessionCompactionEntry,
 } from "../session/store.js";
-import type { ChatMessage } from "@meer/ai/base.js";
+import type { ChatMessage } from "@meer-ai/ai/base.js";
 import type { Plan } from "../plan/types.js";
 
 export interface ConversationEntry {

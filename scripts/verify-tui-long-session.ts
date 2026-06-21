@@ -9,9 +9,9 @@
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
 import stripAnsiImport from "strip-ansi";
-import type { Terminal } from "@meer/tui/terminal.js";
-import { TuiChatAdapter } from "@meer/coding-agent/ui/tui-adapter/TuiChatAdapter.js";
-import { visibleWidth } from "@meer/tui/tui.js";
+import type { Terminal } from "@meer-ai/tui/terminal.js";
+import { TuiChatAdapter } from "@meer-ai/coding-agent/ui/tui-adapter/TuiChatAdapter.js";
+import { visibleWidth } from "@meer-ai/tui/tui.js";
 
 const stripAnsi = stripAnsiImport as unknown as (text: string) => string;
 

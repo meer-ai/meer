@@ -1,8 +1,8 @@
 /**
  * The LLM I/O contract: the conversation message model and tool schemas
- * exchanged with providers. This is the lowest layer in meer — `@meer/agent`
+ * exchanged with providers. This is the lowest layer in meer — `@meer-ai/agent`
  * and the coding agent build on it and re-export these types, so this file must
- * not import anything outside `@meer/ai`.
+ * not import anything outside `@meer-ai/ai`.
  */
 
 export interface ToolDefinition {

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import type { FileEdit, ToolResult } from "../../tools/index.js";
 import * as tools from "../../tools/index.js";
-import type { Provider } from "@meer/ai/base.js";
+import type { Provider } from "@meer-ai/ai/base.js";
 import type { MCPTool } from "../../mcp/types.js";
 import type { AgentTool, AgentToolCallResult } from "../runtime/types.js";
 import { extractLeadingCd } from "../../utils/shell-cd.js";

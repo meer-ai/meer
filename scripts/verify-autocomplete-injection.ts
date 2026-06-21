@@ -5,12 +5,12 @@
  * into CombinedAutocompleteProvider. This guards both halves of that contract:
  * with a finder the @ picker returns file suggestions, without one it degrades
  * to no file suggestions instead of throwing. (See docs/ARCHITECTURE.md — this
- * decoupling is what lets @meer/tui be extracted as a standalone package.)
+ * decoupling is what lets @meer-ai/tui be extracted as a standalone package.)
  */
 
 import assert from "node:assert/strict";
-import { CombinedAutocompleteProvider } from "@meer/tui/autocomplete.js";
-import { findFilesFuzzy } from "@meer/coding-agent/utils/file-finder.js";
+import { CombinedAutocompleteProvider } from "@meer-ai/tui/autocomplete.js";
+import { findFilesFuzzy } from "@meer-ai/coding-agent/utils/file-finder.js";
 
 const repoRoot = process.cwd();
 

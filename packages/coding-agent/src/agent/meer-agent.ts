@@ -1,14 +1,14 @@
-import type { Provider, ChatMessage } from "@meer/ai/base.js";
-import { ProviderWrapper } from "@meer/ai/providers/provider-wrapper.js";
+import type { Provider, ChatMessage } from "@meer-ai/ai/base.js";
+import { ProviderWrapper } from "@meer-ai/ai/providers/provider-wrapper.js";
 import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";
 import { createMeerAgentTools } from "./tools/agent.js";
-import type { AgentTool } from "@meer/agent/types.js";
+import type { AgentTool } from "@meer-ai/agent/types.js";
 import type { AgentToolCallResult } from "./runtime/types.js";
-import { runLoop } from "@meer/agent/loop.js";
-import type { AgentEvent } from "@meer/agent/types.js";
-import type { AgentMessage as CoreAgentMessage } from "@meer/agent/types.js";
+import { runLoop } from "@meer-ai/agent/loop.js";
+import type { AgentEvent } from "@meer-ai/agent/types.js";
+import type { AgentMessage as CoreAgentMessage } from "@meer-ai/agent/types.js";
 import { generateDiff, type FileEdit } from "../tools/index.js";
 import { backgroundTerminals } from "../runtime/backgroundTerminals.js";
 import {
@@ -222,7 +222,7 @@ export class MeerAgent {
       turnId?: string;
       preparedMessages?: CoreAgentMessage[];
       systemPrompt?: string;
-      attachments?: import("@meer/agent/types.js").MessageAttachment[];
+      attachments?: import("@meer-ai/agent/types.js").MessageAttachment[];
     }
   ): Promise<RuntimeProcessResult> {
     if (this.isRunning) {

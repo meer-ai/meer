@@ -38,7 +38,7 @@ import {
   type SlashCommandResult,
 } from "./chat/slash.js";
 import { isSlashCommandInput } from "./slash/utils.js";
-import type { ChatMessage } from "@meer/ai/base.js";
+import type { ChatMessage } from "@meer-ai/ai/base.js";
 import { backgroundTerminals } from "./runtime/backgroundTerminals.js";
 import { AgentSession, type SessionAgentRuntime } from "./agent/agent-session.js";
 
@@ -319,7 +319,7 @@ export function createCLI(): Command {
 
         type PendingInput = {
           text: string;
-          attachments?: import("@meer/agent/types.js").MessageAttachment[];
+          attachments?: import("@meer-ai/agent/types.js").MessageAttachment[];
         };
         const pendingInputs: PendingInput[] = [];
         let pendingResolver: ((value: PendingInput) => void) | null = null;
@@ -388,7 +388,7 @@ export function createCLI(): Command {
 
         const enqueueInput = (
           value: string,
-          attachments?: import("@meer/agent/types.js").MessageAttachment[]
+          attachments?: import("@meer-ai/agent/types.js").MessageAttachment[]
         ) => {
           const trimmed = value.trim();
           const hasAttachments = (attachments?.length ?? 0) > 0;
@@ -796,7 +796,7 @@ export function createCLI(): Command {
 
           let userInput: string;
           let userAttachments:
-            | import("@meer/agent/types.js").MessageAttachment[]
+            | import("@meer-ai/agent/types.js").MessageAttachment[]
             | undefined;
           if (queuedMessage !== null) {
             userInput = queuedMessage;

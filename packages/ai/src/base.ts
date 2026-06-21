@@ -1,6 +1,6 @@
 /**
  * The provider contract: every meer LLM backend implements {@link Provider}.
- * This is part of `@meer/ai` (the LLM I/O layer); the agent loop and the app
+ * This is part of `@meer-ai/ai` (the LLM I/O layer); the agent loop and the app
  * depend on it, never the other way around.
  */
 

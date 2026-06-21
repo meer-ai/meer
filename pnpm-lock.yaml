@@ -15,7 +15,7 @@ importers:
 
   .:
     dependencies:
-      '@meer/coding-agent':
+      '@meer-ai/coding-agent':
         specifier: workspace:*
         version: link:packages/coding-agent
     devDependencies:
@@ -43,13 +43,13 @@ importers:
 
   packages/agent:
     dependencies:
-      '@meer/ai':
+      '@meer-ai/ai':
         specifier: workspace:*
         version: link:../ai
 
   packages/ai:
     dependencies:
-      '@meer/core':
+      '@meer-ai/core':
         specifier: workspace:*
         version: link:../core
       chalk:
@@ -64,16 +64,16 @@ importers:
       '@babel/traverse':
         specifier: ^7.28.4
         version: 7.28.4
-      '@meer/agent':
+      '@meer-ai/agent':
         specifier: workspace:*
         version: link:../agent
-      '@meer/ai':
+      '@meer-ai/ai':
         specifier: workspace:*
         version: link:../ai
-      '@meer/core':
+      '@meer-ai/core':
         specifier: workspace:*
         version: link:../core
-      '@meer/tui':
+      '@meer-ai/tui':
         specifier: workspace:*
         version: link:../tui
       '@modelcontextprotocol/sdk':

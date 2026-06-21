@@ -1,4 +1,4 @@
-import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "@meer/core/fetch.js";
+import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "@meer-ai/core/fetch.js";
 import type {
   Provider,
   ChatMessage,

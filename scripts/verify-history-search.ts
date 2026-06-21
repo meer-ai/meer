@@ -7,10 +7,10 @@
 
 import assert from "node:assert/strict";
 import stripAnsiImport from "strip-ansi";
-import type { Terminal } from "@meer/tui/terminal.js";
-import { TUI } from "@meer/tui/tui.js";
-import { Editor } from "@meer/tui/components/editor.js";
-import { getEditorTheme } from "@meer/coding-agent/ui/tui-adapter/theme.js";
+import type { Terminal } from "@meer-ai/tui/terminal.js";
+import { TUI } from "@meer-ai/tui/tui.js";
+import { Editor } from "@meer-ai/tui/components/editor.js";
+import { getEditorTheme } from "@meer-ai/coding-agent/ui/tui-adapter/theme.js";
 
 const stripAnsi = stripAnsiImport as unknown as (text: string) => string;
 

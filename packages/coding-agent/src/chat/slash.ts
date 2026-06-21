@@ -597,9 +597,9 @@ async function writeDiagnosticsDump(args: {
 }
 
 async function handleAccountCommand(): Promise<void> {
-  const { AuthStorage } = await import("@meer/core/auth/storage.js");
+  const { AuthStorage } = await import("@meer-ai/core/auth/storage.js");
   const { fetchCurrentSubscription, formatUsd, hasMeerCredentials } =
-    await import("@meer/core/auth/subscription.js");
+    await import("@meer-ai/core/auth/subscription.js");
   const authStorage = new AuthStorage();
   const user = authStorage.getUser();
   const hasCredentials = await hasMeerCredentials();

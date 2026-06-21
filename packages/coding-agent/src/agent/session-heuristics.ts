@@ -1,5 +1,5 @@
-import type { ChatMessage } from "@meer/ai/base.js";
-import type { AgentMessage } from "@meer/agent/types.js";
+import type { ChatMessage } from "@meer-ai/ai/base.js";
+import type { AgentMessage } from "@meer-ai/agent/types.js";
 
 export function buildInitialConversationHistory(
   options?: string | { contextPrompt?: string; priorMessages?: ChatMessage[] }
