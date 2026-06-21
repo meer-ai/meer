@@ -3,6 +3,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import { CURRENT_SESSION_VERSION, parseSessionEntries } from "./migrate.js";
+import type { Plan } from "../plan/types.js";
 
 export interface SessionHeader {
   type: "session";
@@ -45,10 +46,22 @@ export interface SessionCompactionEntry {
   tokensBefore: number;
 }
 
+/**
+ * A snapshot of the live plan (the task panel) at a point in time. Appended
+ * whenever the plan changes so a resumed session can pick up where it left off.
+ * `plan: null` records an explicit clear. The latest such entry wins.
+ */
+export interface SessionPlanEntry {
+  type: "plan";
+  timestamp: number;
+  plan: Plan | null;
+}
+
 export type SessionEntry =
   | SessionHeader
   | SessionMessageEntry
-  | SessionCompactionEntry;
+  | SessionCompactionEntry
+  | SessionPlanEntry;
 
 export interface SessionFileInfo {
   id: string;
@@ -240,6 +253,33 @@ export class SessionStore {
     };
 
     this.appendEntry(payload, cwd);
+  }
+
+  /**
+   * Persist a plan snapshot to the current session so a later resume can
+   * restore the task panel. Pass `null` to record that the plan was cleared.
+   */
+  recordPlan(plan: Plan | null, cwd = this.currentCwd ?? process.cwd()): void {
+    if (!this.currentSessionPath || this.currentCwd !== cwd) {
+      this.startSession(cwd);
+    }
+    const entry: SessionPlanEntry = {
+      type: "plan",
+      timestamp: Date.now(),
+      plan,
+    };
+    this.appendEntry(entry, cwd);
+  }
+
+  /**
+   * Return the most recent plan snapshot recorded in a session file, or null if
+   * the session never had a plan (or the last recorded state was a clear).
+   */
+  loadLatestPlan(sessionPath: string): Plan | null {
+    const latest = [...this.loadSession(sessionPath)]
+      .reverse()
+      .find((entry): entry is SessionPlanEntry => entry.type === "plan");
+    return latest?.plan ?? null;
   }
 
   async compactSession(
@@ -641,7 +681,7 @@ export class SessionStore {
   }
 
   private appendEntry(
-    entry: SessionMessageEntry | SessionCompactionEntry,
+    entry: SessionMessageEntry | SessionCompactionEntry | SessionPlanEntry,
     cwd = this.currentCwd ?? process.cwd()
   ): void {
     if (!this.currentSessionPath || this.currentCwd !== cwd) {
@@ -652,7 +692,7 @@ export class SessionStore {
 
   private appendRawEntry(
     sessionPath: string,
-    entry: SessionMessageEntry | SessionCompactionEntry
+    entry: SessionMessageEntry | SessionCompactionEntry | SessionPlanEntry
   ): void {
     appendFileSync(sessionPath, `${JSON.stringify(entry)}\n`, "utf8");
   }

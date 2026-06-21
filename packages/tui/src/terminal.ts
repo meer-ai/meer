@@ -154,6 +154,12 @@ export class ProcessTerminal implements Terminal {
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
 		process.stdout.write("\x1b[?2004h");
 
+		// NOTE: we deliberately do NOT enable mouse reporting. Capturing the
+		// mouse breaks the terminal's native text selection / copy (and is what
+		// pi avoids). Scrollback is served by the terminal's own buffer plus the
+		// in-app keyboard bindings (PageUp/PageDown, Ctrl+Up/Down) — see
+		// TuiChatAdapter.handleTranscriptScrollInput.
+
 		// Set up resize handler immediately
 		process.stdout.on("resize", this.resizeHandler);
 

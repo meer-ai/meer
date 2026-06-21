@@ -43,6 +43,13 @@ export class MCPClient {
   private maxReconnectAttempts = 3;
   private circuitBreaker: CircuitBreaker;
   private manualDisconnect = false;
+  /**
+   * Shared promise for an in-flight reconnect. Both the unexpected-disconnect
+   * timer (onclose) and on-demand reconnects (ensureConnected) funnel through
+   * it so concurrent callers never race two reconnect() bodies — which would
+   * recreate the client/transport underneath each other.
+   */
+  private reconnectInFlight: Promise<void> | null = null;
 
   constructor(serverName: string, config: MCPServerConfig) {
     this.serverName = serverName;
@@ -248,9 +255,50 @@ export class MCPClient {
   }
 
   /**
-   * Attempt to reconnect after unexpected disconnection
+   * Ensure the server is connected, reconnecting on demand if it dropped.
+   *
+   * Called by executeTool (and the manager) before a tool runs, so a server
+   * that crashed mid-session recovers transparently instead of returning
+   * "not connected" and stalling the agent turn. An explicit tool call also
+   * REVIVES a server whose background reconnect already "gave up" (it resets
+   * the attempt counter). Concurrent callers share one reconnect via
+   * {@link reconnect}. Returns true when connected, false otherwise.
    */
-  private async reconnect(): Promise<void> {
+  async ensureConnected(): Promise<boolean> {
+    if (this.connected) return true;
+    // A user-initiated disconnect must stay down — never auto-revive it.
+    if (this.manualDisconnect) return false;
+
+    // A fresh on-demand call revives a server that exhausted its background
+    // attempts; reset so reconnect() actually runs again.
+    this.reconnectAttempts = 0;
+    try {
+      await this.reconnect();
+    } catch (error) {
+      if (shouldLogMCPToConsole()) {
+        console.error(
+          chalk.red(`  ❌ On-demand reconnect to ${this.serverName} failed:`),
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    }
+    return this.connected;
+  }
+
+  /**
+   * Attempt to reconnect after disconnection. Concurrency-safe: a second
+   * caller while a reconnect is in flight awaits the same attempt instead of
+   * starting a competing one.
+   */
+  private reconnect(): Promise<void> {
+    if (this.reconnectInFlight) return this.reconnectInFlight;
+    this.reconnectInFlight = this.doReconnect().finally(() => {
+      this.reconnectInFlight = null;
+    });
+    return this.reconnectInFlight;
+  }
+
+  private async doReconnect(): Promise<void> {
     try {
       this.manualDisconnect = false;
       if (this.transport) {
@@ -401,7 +449,10 @@ export class MCPClient {
    * Execute a tool on this server with circuit breaker and retry logic
    */
   async executeTool(toolName: string, params: any): Promise<MCPToolResult> {
-    if (!this.connected) {
+    // Recover transparently from a dropped connection rather than failing the
+    // call outright (which would feed an identical "not connected" error back
+    // to the model and trip the agent's repeated-result guard).
+    if (!this.connected && !(await this.ensureConnected())) {
       return {
         success: false,
         content: [],

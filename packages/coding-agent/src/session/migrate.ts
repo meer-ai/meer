@@ -15,7 +15,7 @@ import type { SessionEntry } from "./store.js";
 
 export const CURRENT_SESSION_VERSION = 3;
 
-const KNOWN_ENTRY_TYPES = new Set(["session", "message", "compaction"]);
+const KNOWN_ENTRY_TYPES = new Set(["session", "message", "compaction", "plan"]);
 
 /**
  * Forward-migrate a single entry from the file's declared version to the

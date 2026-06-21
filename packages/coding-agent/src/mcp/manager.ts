@@ -268,8 +268,9 @@ export class MCPManager {
       };
     }
 
-    // Check if server is connected
-    if (!client.isConnected()) {
+    // Check if server is connected — reconnect on demand if it dropped, so a
+    // transient stdio crash recovers instead of stalling the agent turn.
+    if (!client.isConnected() && !(await client.ensureConnected())) {
       return {
         success: false,
         content: [],

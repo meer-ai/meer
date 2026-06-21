@@ -104,11 +104,10 @@ function findLine(lines: string[], predicate: (line: string) => boolean): number
 }
 
 function assertFullShellLayout(lines: string[], width: number, height: number): void {
-  assert.ok(lines.length <= height, `rendered shell should fit terminal height ${height}, got ${lines.length}`);
   assertLineWidths(lines, width);
 
   const header = findLine(lines, (line) => line.includes("≋ meer"));
-  const overflow = findLine(lines, (line) => line.includes("earlier transcript lines"));
+  const headTranscript = findLine(lines, (line) => line.includes("user-marker-0"));
   const tailUser = findLine(lines, (line) => line.includes("user-marker-179"));
   const tailAssistant = findLine(lines, (line) => line.includes("assistant-marker-179"));
   const finalTurnTail = findLine(
@@ -119,11 +118,18 @@ function assertFullShellLayout(lines: string[], width: number, height: number): 
   const footerStatus = findLine(lines, (line) => line.includes("meer · stress/stress-model"));
   const footerHints = findLine(lines, (line) => line.includes("Enter send"));
 
+  // Inline rendering (pi-style): the WHOLE transcript renders; the terminal
+  // owns scrollback, so the render legitimately spans more than the viewport
+  // height — there is no in-app windowing/overflow marker any more.
+  assert.ok(
+    lines.length > height,
+    `inline render should span the full transcript (got ${lines.length} <= ${height})`
+  );
   assert.equal(header, 0, "status header should remain the first shell line");
-  assert.ok(overflow > header, "transcript overflow marker should appear below header");
-  assert.ok(finalTurnTail > overflow, "latest turn tail should appear after overflow marker");
+  assert.ok(headTranscript > header, "oldest transcript line renders inline (not windowed away)");
+  assert.ok(finalTurnTail > headTranscript, "latest turn tail should appear after the transcript head");
   if (width >= 80) {
-    assert.ok(tailUser > overflow, "wide shell should keep latest user message visible");
+    assert.ok(tailUser > headTranscript, "wide shell should keep latest user message present");
     assert.ok(tailAssistant > tailUser, "wide shell should preserve latest user to assistant order");
   }
   assert.ok(editorBorder > finalTurnTail, "composer border should appear after transcript tail");
@@ -197,8 +203,8 @@ for (const width of widths) {
 
     assertFullShellLayout(lines, width, height);
     assert.ok(elapsed < 1500, `pure render at width ${width} should stay under 1500ms, got ${elapsed.toFixed(1)}ms`);
-    assert.ok(text.includes("earlier transcript lines"), "hidden transcript history should be indicated");
-    assert.ok(!text.includes("user-marker-0"), "old transcript head should be hidden from the active viewport");
+    assert.ok(!text.includes("earlier transcript lines"), "no in-app windowing marker (terminal owns scrollback)");
+    assert.ok(text.includes("user-marker-0"), "full transcript renders inline, including the oldest message");
     if (text.includes("user-marker-179") && text.includes("assistant-marker-179")) {
       assertOrdered(text, ["user-marker-179", "assistant-marker-179"]);
     } else {
@@ -232,10 +238,10 @@ for (const width of widths) {
   }
 }
 
-// A tall composer (multi-line draft) must steal rows from the transcript so the
-// input area and footer stay on-screen. Regression for "the message input
-// disappears during long turns": the viewport used to reserve a fixed chrome
-// height, so a grown composer overflowed the terminal and scrolled the input off.
+// The composer + footer must always be the LAST thing rendered, so when the
+// terminal shows its bottom rows the input area is on-screen — even with a tall
+// multi-line draft and a long transcript. (Inline rendering: no chrome-height
+// reservation; the terminal scrolls the transcript above into its scrollback.)
 {
   const height = 24;
   const width = 80;
@@ -250,17 +256,13 @@ for (const width of widths) {
     buildLargeTranscript(adapter, 120);
     // Type a long draft that wraps to many composer lines.
     term.type("draft ".repeat(80));
-    // Two renders: the viewport reserves the composer height measured on the
-    // previous frame, so the second render reflects the now-tall composer.
-    renderLines(adapter, width);
     const lines = renderLines(adapter, width);
-    assert.ok(
-      lines.length <= height,
-      `a tall composer must keep the shell within height ${height}, got ${lines.length}`
-    );
     const footerHints = findLine(lines, (line) => line.includes("Enter send"));
-    assert.ok(footerHints !== -1, "footer/input must stay visible when the composer grows");
-    assert.ok(footerHints <= height - 1, "footer must sit on the last visible row");
+    assert.ok(footerHints !== -1, "footer/input must stay present when the composer grows");
+    assert.ok(
+      footerHints >= lines.length - 2,
+      `footer/input must be rendered last so it stays on the terminal's bottom rows, got footer at ${footerHints} of ${lines.length}`
+    );
   } finally {
     adapter.destroy();
   }

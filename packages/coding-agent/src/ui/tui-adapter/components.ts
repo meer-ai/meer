@@ -116,66 +116,6 @@ export class SystemMessageComponent extends Container {
   }
 }
 
-// ── Transcript viewport ─────────────────────────────────────────────────────
-
-export class ChatViewportComponent implements Component {
-  constructor(
-    private readonly source: Component,
-    private readonly getMaxRows: () => number,
-    private readonly getScrollOffset: () => number
-  ) {}
-
-  invalidate(): void {
-    this.source.invalidate?.();
-  }
-
-  render(width: number): string[] {
-    const lines = this.source.render(width);
-    const maxRows = Math.max(1, Math.floor(this.getMaxRows()));
-    if (lines.length <= maxRows) return lines;
-
-    const s = getTuiStyles();
-    if (maxRows === 1) {
-      return [s.muted(truncateToWidth(`↑ ${lines.length} transcript lines hidden`, width))];
-    }
-
-    const offset = Math.max(0, Math.floor(this.getScrollOffset()));
-    if (offset <= 0) {
-      const visibleRows = maxRows - 1;
-      const hidden = lines.length - visibleRows;
-      return [this.hiddenAboveMarker(s, hidden, width), ...lines.slice(-visibleRows)];
-    }
-
-    const below = Math.min(offset, Math.max(0, lines.length - 1));
-    const end = Math.max(1, lines.length - below);
-    let contentRows = Math.max(1, maxRows - 2);
-    let start = Math.max(0, end - contentRows);
-    let above = start;
-    let hasAbove = above > 0;
-    const hasBelow = below > 0;
-
-    contentRows = Math.max(1, maxRows - (hasAbove ? 1 : 0) - (hasBelow ? 1 : 0));
-    start = Math.max(0, end - contentRows);
-    above = start;
-    hasAbove = above > 0;
-
-    const rendered: string[] = [];
-    if (hasAbove) rendered.push(this.hiddenAboveMarker(s, above, width));
-    rendered.push(...lines.slice(start, end));
-    if (hasBelow) {
-      rendered.push(
-        s.muted(truncateToWidth(`↓ ${below} newer transcript line${below === 1 ? "" : "s"}`, width))
-      );
-    }
-    return rendered.slice(0, maxRows);
-  }
-
-  private hiddenAboveMarker(s: TuiStyles, hidden: number, width: number): string {
-    return s.muted(
-      truncateToWidth(`↑ ${hidden} earlier transcript line${hidden === 1 ? "" : "s"}`, width)
-    );
-  }
-}
 
 /** Max reasoning lines shown before collapsing the rest. */
 const COT_PREVIEW_LINES = 6;
@@ -872,7 +812,6 @@ export interface FooterState {
   cost?: { current: number; limit?: number };
   queued: number;
   status?: string;
-  transcriptScrollOffset?: number;
   /** Number of images queued to send with the next message. */
   attachments?: number;
 }
@@ -933,10 +872,7 @@ export class FooterComponent implements Component {
     if (st.attachments && st.attachments > 0) {
       parts.push(s.warning(`📎 ${st.attachments}`));
     }
-    if (st.transcriptScrollOffset && st.transcriptScrollOffset > 0) {
-      parts.push(s.warning(`scroll:${st.transcriptScrollOffset} rows`));
-    }
-    const hints = s.muted("Enter send · Shift+Pg scroll · ? shortcuts · / commands · Esc stop · ^C exit");
+    const hints = s.muted("Enter send · ? shortcuts · / commands · Esc stop · ^C exit");
     const line = ` ${parts.join(s.muted(" · "))}`;
     return [truncateToWidth(line, width), truncateToWidth(` ${hints}`, width)];
   }

@@ -2,6 +2,11 @@ import { Command } from "commander";
 import { readFileSync } from "fs";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
+import type { Provider } from "@meer/ai/base.js";
+import {
+  createRunEventEmitter,
+  RUN_PROTOCOL_VERSION,
+} from "../runtime/run-events.js";
 
 /**
  * `meer run` — non-interactive agentic execution.
@@ -71,14 +76,15 @@ export function createRunCommand(): Command {
     .option("--json", "Emit newline-delimited JSON events on stdout", false)
     .action(async (promptParts: string[], options: RunOptions) => {
       try {
-        const exitCode = await runAgent(promptParts, options);
+        const exitCode = await runHeadless(promptParts, options);
         process.exit(exitCode);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
         if (options.json) {
-          emitJson({ type: "run.error", message });
-          emitJson({ type: "run.completed", exitCode: 1 });
+          const emitter = createRunEventEmitter((s) => process.stdout.write(s));
+          emitter.emit({ type: "run.error", message });
+          emitter.emit({ type: "run.completed", exitCode: 1 });
         }
         process.stderr.write(`! error: ${message}\n`);
         process.exit(1);
@@ -88,7 +94,7 @@ export function createRunCommand(): Command {
   return command;
 }
 
-interface RunOptions {
+export interface RunOptions {
   file?: string;
   yes?: boolean;
   maxSteps?: number;
@@ -98,136 +104,191 @@ interface RunOptions {
   json?: boolean;
 }
 
-async function runAgent(
+/**
+ * Injection seam for {@link runHeadless}. Production passes nothing (config is
+ * loaded from disk, output goes to the process streams). Tests pass a `provider`
+ * (e.g. the faux provider) and a capturing `write` to drive the headless flow
+ * end-to-end with no network, no real config, and no bin spawn.
+ */
+export interface RunHeadlessIO {
+  /** stdout sink. Defaults to `process.stdout.write`. */
+  write?: (chunk: string) => void;
+  /** stderr sink. Defaults to `process.stderr.write`. */
+  writeErr?: (chunk: string) => void;
+  /** Inject a provider, bypassing `loadConfig()`. */
+  provider?: Provider;
+  /** Provider label when a provider is injected. */
+  providerType?: string;
+  /** Model label when a provider is injected. */
+  model?: string;
+  /** Register a SIGINT handler for abort. Defaults to true. */
+  handleSignals?: boolean;
+}
+
+/**
+ * Non-interactive agent run shared by the `meer run` subcommand and the
+ * top-level `meer --print` alias. Returns an exit code; never calls
+ * `process.exit` (the caller owns that). Output is fully routed through the
+ * `io` sinks so it can be captured in tests.
+ */
+export async function runHeadless(
   promptParts: string[],
-  options: RunOptions
+  options: RunOptions,
+  io: RunHeadlessIO = {}
 ): Promise<number> {
+  const write = io.write ?? ((chunk: string) => void process.stdout.write(chunk));
+  const writeErr = io.writeErr ?? ((chunk: string) => void process.stderr.write(chunk));
+  const emitter = createRunEventEmitter(write);
+  const isJson = options.json === true;
+
   const prompt = resolvePrompt(promptParts, options.file);
   if (!prompt) {
-    if (options.json) {
-      emitJson({
+    if (isJson) {
+      emitter.emit({
         type: "run.error",
         message: "No prompt provided. Pass it as arguments or use --file <path>.",
       });
-      emitJson({ type: "run.completed", exitCode: 1 });
+      emitter.emit({ type: "run.completed", exitCode: 1 });
     }
-    process.stderr.write(
+    writeErr(
       "! error: no prompt provided. Pass it as arguments or use --file <path>.\n"
     );
     return 1;
   }
 
   if (!options.yes) {
-    if (options.json) {
-      emitJson({
+    if (isJson) {
+      emitter.emit({
         type: "run.error",
         message:
           "meer run requires --yes (auto-approval) for now. Interactive approval is not yet supported in headless mode.",
       });
-      emitJson({ type: "run.completed", exitCode: 1 });
+      emitter.emit({ type: "run.completed", exitCode: 1 });
     }
-    process.stderr.write(
+    writeErr(
       "! error: meer run requires --yes (auto-approval) for now. Interactive\n" +
         "  approval is not yet supported in headless mode.\n"
     );
     return 1;
   }
 
-  const config = loadConfig();
-
-  if (options.model) {
-    // ProviderWrapper / individual providers honor the current model field;
-    // most provider implementations also expose it on `provider.model`.
-    const providerWithModel = config.provider as { model?: string };
-    if (providerWithModel && typeof providerWithModel === "object") {
-      providerWithModel.model = options.model;
+  // Resolve the provider: injected (tests) or loaded from disk (production).
+  let provider: Provider;
+  let providerType: string;
+  let model: string | undefined;
+  if (io.provider) {
+    provider = io.provider;
+    providerType = io.providerType ?? "faux";
+    model = io.model;
+  } else {
+    const config = loadConfig();
+    if (options.model) {
+      // ProviderWrapper / individual providers honor the current model field;
+      // most provider implementations also expose it on `provider.model`.
+      const providerWithModel = config.provider as { model?: string };
+      if (providerWithModel && typeof providerWithModel === "object") {
+        providerWithModel.model = options.model;
+      }
+      config.model = options.model;
     }
-    config.model = options.model;
+    provider = config.provider;
+    providerType = config.providerType;
+    model = config.model;
   }
 
   const cwd = options.cwd ?? process.cwd();
-  const isJson = options.json === true;
   if (isJson) {
-    emitJson({
+    emitter.emit({
       type: "run.started",
-      provider: config.providerType,
-      model: config.model,
+      protocolVersion: RUN_PROTOCOL_VERSION,
+      provider: providerType,
+      model,
       cwd,
       maxSteps: options.maxSteps,
     });
   } else {
-    process.stdout.write(
-      `[run] provider=${config.providerType} model=${config.model} cwd=${cwd}\n`
-    );
-    process.stdout.write(`[run] max-steps=${options.maxSteps}\n`);
+    write(`[run] provider=${providerType} model=${model} cwd=${cwd}\n`);
+    write(`[run] max-steps=${options.maxSteps}\n`);
   }
 
   const { MeerAgent } = await import("../agent/meer-agent.js");
 
+  // Text mode only: when the provider streams a turn, the chunks are already on
+  // stdout, so the follow-up settled `onAssistantMessage` for the SAME content
+  // must not reprint it. (JSON mode deliberately emits both assistant.delta and
+  // assistant.message — meer-code dedupes by turn.)
+  let textStreamed = false;
+
   const agent = new MeerAgent({
-    provider: config.provider,
+    provider,
     cwd,
     maxIterations: options.maxSteps,
     enableMemory: false,
     autoCollectContext: true,
-    providerType: config.providerType,
-    model: config.model,
+    providerType,
+    model,
 
     // Plain stdout streaming. No Ink, no fancy UI.
     onStreamingStart: () => {
       if (isJson) {
-        emitJson({ type: "assistant.started" });
+        emitter.emit({ type: "assistant.started" });
         return;
       }
-      process.stdout.write(`\n${chalk.bold("assistant:")} `);
+      textStreamed = true;
+      write(`\n${chalk.bold("assistant:")} `);
     },
     onStreamingChunk: (chunk) => {
       if (isJson) {
-        emitJson({ type: "assistant.delta", delta: chunk });
+        emitter.emit({ type: "assistant.delta", delta: chunk });
         return;
       }
-      process.stdout.write(chunk);
+      write(chunk);
     },
     onStreamingEnd: () => {
       if (isJson) {
-        emitJson({ type: "assistant.completed" });
+        emitter.emit({ type: "assistant.completed" });
         return;
       }
-      process.stdout.write("\n");
+      write("\n");
     },
     onAssistantMessage: (content) => {
       if (isJson) {
         if (content?.trim()) {
-          emitJson({ type: "assistant.message", content });
+          emitter.emit({ type: "assistant.message", content });
         }
         return;
       }
+      // Already streamed to stdout this turn → don't reprint the settled copy.
+      if (textStreamed) {
+        textStreamed = false;
+        return;
+      }
       if (content?.trim()) {
-        process.stdout.write(`\n${chalk.bold("assistant:")} ${content}\n`);
+        write(`\n${chalk.bold("assistant:")} ${content}\n`);
       }
     },
     onCotMessage: (content) => {
       if (isJson) {
         if (options.verbose && content?.trim()) {
-          emitJson({ type: "reasoning.message", content });
+          emitter.emit({ type: "reasoning.message", content });
         }
         return;
       }
       if (options.verbose && content?.trim()) {
-        process.stdout.write(chalk.gray(`[thinking] ${content}\n`));
+        write(chalk.gray(`[thinking] ${content}\n`));
       }
     },
     onToolStart: (tool, args) => {
       if (isJson) {
-        emitJson({ type: "tool.started", tool, args });
+        emitter.emit({ type: "tool.started", tool, args });
         return;
       }
       const preview = previewArgs(args);
-      process.stdout.write(`→ ${chalk.cyan(tool)}${preview}\n`);
+      write(`→ ${chalk.cyan(tool)}${preview}\n`);
     },
     onToolMessage: (tool, result, metadata) => {
       if (isJson) {
-        emitJson({ type: "tool.message", tool, result, metadata });
+        emitter.emit({ type: "tool.message", tool, result, metadata });
         return;
       }
       const trimmed = (result ?? "").trim();
@@ -236,16 +297,16 @@ async function runAgent(
       const ellipsis = trimmed.length > 240 ? " …" : "";
       const line = `  ↳ ${head.replace(/\n/g, " ")}${ellipsis}`;
       if (metadata?.isError) {
-        process.stdout.write(chalk.red(line) + "\n");
+        write(chalk.red(line) + "\n");
       } else {
-        process.stdout.write(chalk.gray(line) + "\n");
+        write(chalk.gray(line) + "\n");
       }
     },
     onError: (error) => {
       if (isJson) {
-        emitJson({ type: "run.error", message: error.message });
+        emitter.emit({ type: "run.error", message: error.message });
       }
-      process.stderr.write(`! agent error: ${error.message}\n`);
+      writeErr(`! agent error: ${error.message}\n`);
     },
 
     // No promptChoice / promptForm — triggers the auto-approve fallbacks
@@ -253,37 +314,33 @@ async function runAgent(
   });
 
   let interrupted = false;
+  const handleSignals = io.handleSignals ?? true;
   const onSigint = () => {
     if (interrupted) return;
     interrupted = true;
     if (isJson) {
-      emitJson({ type: "run.error", message: "Interrupted, aborting agent." });
+      emitter.emit({ type: "run.error", message: "Interrupted, aborting agent." });
     }
-    process.stderr.write("\n! interrupted, aborting agent…\n");
+    writeErr("\n! interrupted, aborting agent…\n");
     agent.abort();
   };
-  process.on("SIGINT", onSigint);
+  if (handleSignals) {
+    process.on("SIGINT", onSigint);
+  }
 
   try {
     await agent.initialize();
     await agent.processMessage(prompt, { persistUserMessage: false });
     const exitCode = interrupted ? 130 : 0;
     if (isJson) {
-      emitJson({ type: "run.completed", exitCode });
+      emitter.emit({ type: "run.completed", exitCode });
     }
     return exitCode;
   } finally {
-    process.off("SIGINT", onSigint);
+    if (handleSignals) {
+      process.off("SIGINT", onSigint);
+    }
   }
-}
-
-function emitJson(event: Record<string, unknown>): void {
-  process.stdout.write(
-    `${JSON.stringify({
-      timestamp: new Date().toISOString(),
-      ...event,
-    })}\n`
-  );
 }
 
 function resolvePrompt(

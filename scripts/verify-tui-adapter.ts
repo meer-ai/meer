@@ -10,7 +10,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import stripAnsiImport from "strip-ansi";
 import type { Terminal } from "@meer/tui/terminal.js";
-import { TuiChatAdapter } from "@meer/coding-agent/ui/tui-adapter/TuiChatAdapter.js";
+import {
+  TuiChatAdapter,
+  MAX_TRANSCRIPT_COMPONENTS,
+} from "@meer/coding-agent/ui/tui-adapter/TuiChatAdapter.js";
 import { DEFAULT_UI_SETTINGS, type UISettingsInput } from "@meer/coding-agent/ui/ui-settings.js";
 
 const stripAnsi = stripAnsiImport as unknown as (text: string) => string;
@@ -150,34 +153,30 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   adapter.destroy();
 }
 
-// ── Long transcript is viewported, with hidden-history marker ────────────────
+// ── Long transcript renders inline (no in-app windowing/scroll) ──────────────
+// Like pi: the whole transcript is rendered and the terminal owns scrollback +
+// selection/copy. There is no hidden-history marker, no scroll offset, and no
+// scroll keybinding capture — old rows are reachable via the terminal's own
+// scrollback, not an app-side viewport.
 {
   const { adapter, terminal } = makeAdapter();
   for (let i = 0; i < 40; i++) {
     adapter.appendSystemMessage(`viewport-marker-${i}`);
   }
   let text = renderedText(adapter);
-  assert.ok(text.includes("earlier transcript lines"), "viewport shows hidden-history marker");
-  assert.ok(!text.includes("viewport-marker-0"), "old transcript head is hidden from active viewport");
-  assert.ok(text.includes("viewport-marker-39"), "latest transcript tail remains visible");
-  assert.ok(text.includes("test/test-model"), "status header remains visible with long transcript");
+  assert.ok(!text.includes("earlier transcript lines"), "no in-app hidden-history marker");
+  assert.ok(!text.includes("newer transcript lines"), "no in-app hidden-newer marker");
+  assert.ok(!text.includes("scroll:"), "footer shows no app-side scroll offset");
+  assert.ok(text.includes("viewport-marker-0"), "oldest transcript row renders inline (terminal scrolls it)");
+  assert.ok(text.includes("viewport-marker-39"), "latest transcript tail renders");
+  assert.ok(text.includes("test/test-model"), "status header remains present with a long transcript");
 
+  // Scroll keys are no longer captured by the app — they pass through to the
+  // terminal — so the rendered transcript is unchanged by Shift+PageUp.
   terminal.type("\x1b[5;2~"); // Shift+PageUp
   text = renderedText(adapter);
-  assert.ok(text.includes("viewport-marker-0"), "Shift+PageUp scrolls to older transcript rows");
-  assert.ok(text.includes("newer transcript lines"), "scrolled transcript shows hidden-newer marker");
-  assert.ok(text.includes("scroll:"), "footer shows transcript scroll offset");
-
-  terminal.type("\x1b[1;2F"); // Shift+End
-  text = renderedText(adapter);
-  assert.ok(text.includes("viewport-marker-39"), "Shift+End returns to latest transcript rows");
-  assert.ok(!text.includes("newer transcript lines"), "latest transcript has no hidden-newer marker");
-
-  terminal.type("\x1b[5;2~"); // Shift+PageUp
-  adapter.appendUserMessage("viewport-user-reset");
-  text = renderedText(adapter);
-  assert.ok(text.includes("viewport-user-reset"), "new user message resets transcript to latest");
-  assert.ok(!text.includes("newer transcript lines"), "new user message clears scrolled-back state");
+  assert.ok(text.includes("viewport-marker-0"), "Shift+PageUp does not change the inline render");
+  assert.ok(!text.includes("newer transcript lines"), "still no app-side scroll markers after a scroll key");
   adapter.destroy();
 }
 
@@ -803,12 +802,14 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   for (let i = 0; i < 35; i++) {
     adapter.appendSystemMessage(`debug-marker-${i}`);
   }
-  terminal.type("\x1b[5;2~"); // Shift+PageUp
   const state = adapter.getDebugState();
   assert.equal(state.renderer, "tui", "debug state identifies TUI renderer");
   assert.equal(state.terminal.columns, 100, "debug state records terminal width");
-  assert.ok(state.viewport.transcriptLines > state.viewport.transcriptRows, "debug state records viewport pressure");
-  assert.ok(state.viewport.scrollOffset > 0, "debug state records transcript scroll offset");
+  // The transcript renders inline (no in-app windowing): the terminal owns
+  // scrollback, so there is never an app-side scroll offset or hidden lines.
+  assert.ok(state.viewport.transcriptLines >= 35, "debug state reports the full transcript line count");
+  assert.equal(state.viewport.scrollOffset, 0, "no in-app scroll offset (native scrollback)");
+  assert.equal(state.viewport.hiddenAbove, 0, "no hidden-above windowing");
   assert.equal(state.layoutMode, "wide", "debug state records layout mode");
 
   const snapshotPath = adapter.saveRendererSnapshot("verify");
@@ -929,10 +930,13 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   assert.ok(toolRows.has("tc-evictee"), "tool row is tracked before eviction");
 
   // Flood well past the cap so the early component is trimmed from the front.
-  for (let i = 0; i < 900; i++) {
+  for (let i = 0; i < MAX_TRANSCRIPT_COMPONENTS + 200; i++) {
     adapter.appendSystemMessage(`bound-marker-${i}`);
   }
-  assert.ok(chat.children.length <= 800, "transcript components stay within the cap");
+  assert.ok(
+    chat.children.length <= MAX_TRANSCRIPT_COMPONENTS,
+    "transcript components stay within the cap"
+  );
   assert.ok(!toolRows.has("tc-evictee"), "trimmed tool row is pruned from the toolRows map");
   adapter.destroy();
 }

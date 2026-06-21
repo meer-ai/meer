@@ -6,6 +6,7 @@ import {
   type SessionCompactionEntry,
 } from "../session/store.js";
 import type { ChatMessage } from "@meer/ai/base.js";
+import type { Plan } from "../plan/types.js";
 
 export interface ConversationEntry {
   timestamp: number;
@@ -83,6 +84,16 @@ export class Memory {
 
   addToSession(entry: ConversationEntry, cwd = process.cwd()): void {
     this.store.appendMessage(entry, cwd);
+  }
+
+  /** Persist the live plan to the current session so resume can restore it. */
+  recordPlan(plan: Plan | null, cwd = process.cwd()): void {
+    this.store.recordPlan(plan, cwd);
+  }
+
+  /** Latest plan snapshot saved in a session file, or null if none/cleared. */
+  loadLatestPlan(sessionPath: string): Plan | null {
+    return this.store.loadLatestPlan(sessionPath);
   }
 
   loadCurrentSession(cwd = process.cwd()): ConversationEntry[] {

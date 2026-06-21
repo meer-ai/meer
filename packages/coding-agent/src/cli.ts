@@ -24,6 +24,7 @@ import type { ChatAdapter } from "./ui/chat-adapter.js";
 import { setVerboseLogging } from "./logger.js";
 import { ProjectContextManager } from "./context/manager.js";
 import { planStore } from "./plan/store.js";
+import type { Plan } from "./plan/types.js";
 import { AgentEventBus } from "./agent/eventBus.js";
 import { AgentEventRecorder } from "./agent/eventRecorder.js";
 import { BusTimeline } from "./agent/busTimeline.js";
@@ -148,6 +149,13 @@ export function createCLI(): Command {
     .option("--always-ask", "Enable approval prompts for edits and commands")
     .option("--resume [session]", "Resume the latest or a specific saved session")
     .option("--fork <session>", "Fork a saved session into a new one")
+    .option(
+      "--print <prompt>",
+      "Run a single prompt headlessly and exit (non-interactive; alias for `meer run --yes`)"
+    )
+    .option("--json", "With --print: emit newline-delimited JSON events instead of text")
+    .option("--model <id>", "With --print: override the model id for this run")
+    .option("--cwd <path>", "With --print: working directory for the agent")
     .hook("preAction", (thisCommand) => {
       const options = thisCommand.opts();
       if (options.profile) {
@@ -224,6 +232,7 @@ export function createCLI(): Command {
         let restoredModelMessages:
           | Array<{ role: "user" | "assistant" | "system"; content: string }>
           | null = null;
+        let restoredPlan: Plan | null = null;
 
         if (cliOptions.fork) {
           const source = memory.resolveSession(cliOptions.fork, currentCwd);
@@ -242,6 +251,7 @@ export function createCLI(): Command {
           restoredModelMessages = memory.loadChatMessages(source.path, {
             maxMessages: 24,
           });
+          restoredPlan = memory.loadLatestPlan(source.path);
           sessionBanner = `Forked session ${source.id.slice(0, 8)} into ${forked.sessionId.slice(0, 8)}.`;
         } else if (effectiveResume) {
           const requested =
@@ -268,6 +278,7 @@ export function createCLI(): Command {
           restoredModelMessages = memory.loadChatMessages(source.path, {
             maxMessages: 24,
           });
+          restoredPlan = memory.loadLatestPlan(source.path);
           sessionBanner = `Resumed session ${source.id.slice(0, 8)}.`;
         } else {
           previousSessionContext = memory.buildRecentContext(currentCwd, {
@@ -676,6 +687,14 @@ export function createCLI(): Command {
         // mirror it onto the event bus for recorders/timeline. Without the
         // chatUI.setPlan call the panel never updates, so set_plan /
         // update_plan_task were invisible.
+        //
+        // Restore an unfinished plan from the resumed/forked session BEFORE the
+        // first snapshot and before the subscribe is attached: seeding now means
+        // the panel renders the restored plan immediately, and the seed itself
+        // isn't re-persisted (no listener is wired yet).
+        if (restoredPlan) {
+          planStore.setPlan(restoredPlan);
+        }
         const pushPlanSnapshot = (plan = planStore.getSnapshot()) => {
           chatUI?.setPlan(plan);
           eventBus.emitPlan(plan);
@@ -683,6 +702,8 @@ export function createCLI(): Command {
         pushPlanSnapshot();
         const detachPlanListener = planStore.subscribe((plan) => {
           pushPlanSnapshot(plan);
+          // Persist every plan change so a later resume picks up where we left.
+          memory.recordPlan(plan, currentCwd);
         });
 
         chatUI?.captureConsole();
@@ -917,7 +938,32 @@ export function createCLI(): Command {
     } while (restarting);
   };
 
-  program.action(() => runChatAction());
+  program.action(async () => {
+    // Top-level `--print` runs the headless agent and exits — an ergonomic
+    // alias over `meer run --yes`. It shares the exact same protocol/output as
+    // the `run` subcommand (see commands/run.ts → runHeadless), so the meer-code
+    // and cloud-agent integrations see an identical stream either way.
+    const opts = program.opts() as {
+      print?: string;
+      json?: boolean;
+      model?: string;
+      cwd?: string;
+      verbose?: boolean;
+    };
+    if (opts.print !== undefined) {
+      const { runHeadless } = await import("./commands/run.js");
+      const exitCode = await runHeadless([opts.print], {
+        yes: true,
+        json: opts.json,
+        model: opts.model,
+        cwd: opts.cwd,
+        verbose: opts.verbose,
+        maxSteps: 50,
+      });
+      process.exit(exitCode);
+    }
+    await runChatAction();
+  });
 
   // ── Resume sub-command ──────────────────────────────────────────────────────
   // `meer resume [session]` is an explicit alias for the `--resume` flag so the

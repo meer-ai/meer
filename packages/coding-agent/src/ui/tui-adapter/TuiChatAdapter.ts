@@ -52,7 +52,6 @@ import { ProcessTerminal, type Terminal } from "@meer/tui/terminal.js";
 import { type Component, Container, type OverlayHandle, TUI } from "@meer/tui/tui.js";
 import {
   AssistantMessageComponent,
-  ChatViewportComponent,
   CotMessageComponent,
   FooterComponent,
   HeaderComponent,
@@ -84,7 +83,7 @@ const MAX_TIMELINE_EVENTS = 400;
  * session would otherwise grow `this.chat` (and the per-frame render cost)
  * without limit. Generous enough that an active turn's rows are never trimmed.
  */
-const MAX_TRANSCRIPT_COMPONENTS = 800;
+export const MAX_TRANSCRIPT_COMPONENTS = 5000;
 
 /**
  * Reduce the small amount of Markdown that callers put in prompt messages
@@ -198,7 +197,6 @@ export class TuiChatAdapter implements ChatAdapter {
   private ui: TUI;
   private chat: BoundedTranscriptContainer;
   private header: HeaderComponent;
-  private chatViewport: ChatViewportComponent;
   private statusContainer = new Container();
   private toolDetailContainer = new Container();
   private planContainer = new Container();
@@ -216,7 +214,6 @@ export class TuiChatAdapter implements ChatAdapter {
   private screenReaderMode: "auto" | "on" | "off";
   private alternateBufferMode: "on" | "off";
   private toolDisplayMode: ToolDisplayMode;
-  private transcriptScrollOffset = 0;
   private turnActive = false;
   private destroyed = false;
   private messageCount = 0;
@@ -300,13 +297,12 @@ export class TuiChatAdapter implements ChatAdapter {
       cwd: config.cwd,
       branch: detectGitBranch(config.cwd),
     });
-    this.chatViewport = new ChatViewportComponent(
-      this.chat,
-      () => this.getTranscriptViewportRows(),
-      () => this.transcriptScrollOffset
-    );
+    // Render the transcript inline (like pi): no viewport-windowing. As the
+    // conversation grows past the screen, the differential renderer scrolls
+    // settled lines into the terminal's NATIVE scrollback, so the terminal's
+    // own scroll + text selection/copy work normally. No in-app scroll layer.
     this.ui.addChild(this.header);
-    this.ui.addChild(this.chatViewport);
+    this.ui.addChild(this.chat);
     this.ui.addChild(this.statusContainer);
     this.ui.addChild(this.toolDetailContainer);
     this.ui.addChild(this.planContainer);
@@ -360,27 +356,6 @@ export class TuiChatAdapter implements ChatAdapter {
     this.editor.setAutocompleteMaxVisible(visible);
   }
 
-  private getTranscriptViewportRows(): number {
-    const rows = this.ui.terminal.rows || 24;
-    const width = this.ui.terminal.columns || 80;
-    const dynamicRows =
-      this.statusContainer.render(width).length +
-      this.toolDetailContainer.render(width).length +
-      this.planContainer.render(width).length +
-      this.promptContainer.render(width).length;
-    // Reserve the composer's *actual* height instead of a fixed guess. A
-    // multi-line draft, an open slash/file autocomplete dropdown, or the
-    // reverse-search line all make the editor grow; with a fixed reservation
-    // that overflow scrolled the input area off-screen during long turns. The
-    // height is measured from the previous frame (the composer renders after the
-    // viewport in the child list), defaulting to its minimal 4 rows before then.
-    const editorRows = this.editorChrome.lastHeight || 4;
-    const HEADER_ROWS = 1;
-    const FOOTER_ROWS = 2;
-    const chromeRows = HEADER_ROWS + FOOTER_ROWS + editorRows + dynamicRows;
-    // Keep a useful transcript even on tiny terminals.
-    return Math.max(6, rows - chromeRows);
-  }
 
   private installAutocomplete(): void {
     let commands: SlashCommand[] = [];
@@ -406,9 +381,6 @@ export class TuiChatAdapter implements ChatAdapter {
     }
     if (matchesKey(data, "escape") && this.shortcutsOverlay) {
       this.hideShortcutsOverlay();
-      return { consume: true };
-    }
-    if (!this.shortcutsOverlay && this.handleTranscriptScrollInput(data)) {
       return { consume: true };
     }
     // Match via matchesKey, not a raw "\x03" byte: with the Kitty keyboard
@@ -496,32 +468,7 @@ export class TuiChatAdapter implements ChatAdapter {
     return true;
   }
 
-  private handleTranscriptScrollInput(data: string): boolean {
-    if (this.activePrompt) return false;
-    const page = this.getTranscriptScrollPageRows();
-    if (matchesKey(data, "shift+pageUp")) {
-      this.scrollTranscript(page);
-      return true;
-    }
-    if (matchesKey(data, "shift+pageDown")) {
-      this.scrollTranscript(-page);
-      return true;
-    }
-    if (matchesKey(data, "shift+home")) {
-      this.scrollTranscriptToTop();
-      return true;
-    }
-    if (matchesKey(data, "shift+end")) {
-      this.scrollTranscriptToBottom();
-      return true;
-    }
-    return false;
-  }
-
-  private getTranscriptScrollPageRows(): number {
-    return Math.max(3, this.getTranscriptViewportRows() - 2);
-  }
-
+  /** Number of rendered transcript lines (debug diagnostics only). */
   private getTranscriptLineCount(): number {
     const width = this.ui.terminal.columns || 80;
     return this.chat.render(width).length;
@@ -534,37 +481,6 @@ export class TuiChatAdapter implements ChatAdapter {
     return "wide";
   }
 
-  private getMaxTranscriptScrollOffset(): number {
-    return Math.max(0, this.getTranscriptLineCount() - 1);
-  }
-
-  private clampTranscriptScroll(): void {
-    // Fast path for the common live case: when following the tail (offset 0)
-    // the clamp is a no-op, so skip getMaxTranscriptScrollOffset() — it renders
-    // the entire transcript just to count lines, which we'd otherwise pay on
-    // every refreshFooter() (i.e. every streamed chunk and ticker frame).
-    if (this.transcriptScrollOffset <= 0) {
-      this.transcriptScrollOffset = 0;
-      return;
-    }
-    this.transcriptScrollOffset = Math.max(
-      0,
-      Math.min(this.transcriptScrollOffset, this.getMaxTranscriptScrollOffset())
-    );
-  }
-
-  private scrollTranscript(deltaRows: number): void {
-    const previous = this.transcriptScrollOffset;
-    this.transcriptScrollOffset += deltaRows;
-    this.clampTranscriptScroll();
-    if (this.transcriptScrollOffset !== previous) {
-      this.recordLog("info", `Transcript scrolled ${this.transcriptScrollOffset} rows from bottom`);
-      this.refreshFooter();
-      return;
-    }
-    this.ui.requestRender();
-  }
-
   private recordResizeDiagnostic(): void {
     const now = Date.now();
     this.resizeEvents.push(now);
@@ -575,27 +491,6 @@ export class TuiChatAdapter implements ChatAdapter {
       this.recordLog("warn", `Renderer snapshot saved after resize churn: ${path}`);
       this.resizeEvents = [];
     }
-  }
-
-  private scrollTranscriptToTop(): void {
-    const previous = this.transcriptScrollOffset;
-    this.transcriptScrollOffset = this.getMaxTranscriptScrollOffset();
-    if (this.transcriptScrollOffset !== previous) {
-      this.recordLog("info", "Transcript scrolled to top");
-      this.refreshFooter();
-      return;
-    }
-    this.ui.requestRender();
-  }
-
-  private scrollTranscriptToBottom(): void {
-    if (this.transcriptScrollOffset === 0) {
-      this.ui.requestRender();
-      return;
-    }
-    this.transcriptScrollOffset = 0;
-    this.recordLog("info", "Transcript scrolled to bottom");
-    this.refreshFooter();
   }
 
   private handleSubmit(rawText: string): void {
@@ -673,7 +568,6 @@ export class TuiChatAdapter implements ChatAdapter {
       attachmentCount > 0
         ? `${normalized}${normalized ? "\n\n" : ""}📎 ${attachmentCount} image${attachmentCount === 1 ? "" : "s"} attached`
         : normalized;
-    this.transcriptScrollOffset = 0;
     this.lastUserMessage = { content: normalized, at: Date.now() };
     this.chat.addChild(new UserMessageComponent(displayed));
     this.recordLog("note", `User message${attachmentCount > 0 ? ` (${attachmentCount} attachment${attachmentCount === 1 ? "" : "s"})` : ""}`);
@@ -765,12 +659,8 @@ export class TuiChatAdapter implements ChatAdapter {
     this.lastSettledContent = null;
     this.messageCount = 0;
     this.timelineEvents = [];
-    // Drop any scrollback position — the transcript is empty, so the next
-    // content must render from the bottom. Without this the offset survives the
-    // clear and new messages render scrolled away from the input ("/clear stops
-    // scrolling to new content"). Force a full redraw so the large→empty
-    // transition leaves no ghost lines behind from the differential renderer.
-    this.transcriptScrollOffset = 0;
+    // Force a full redraw so the large→empty transition leaves no ghost lines
+    // behind from the differential renderer.
     this.refreshFooter();
     this.ui.requestRender(true);
   }
@@ -1154,7 +1044,6 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   private refreshFooter(): void {
-    this.clampTranscriptScroll();
     this.footer.update({
       mode: this.mode,
       screenReaderMode: this.screenReaderMode,
@@ -1162,7 +1051,6 @@ export class TuiChatAdapter implements ChatAdapter {
       toolDisplay: this.toolDisplayMode,
       messageCount: this.messageCount,
       queued: this.queueState.steering + this.queueState.followUp,
-      transcriptScrollOffset: this.transcriptScrollOffset,
       attachments: this.pendingAttachments.length,
     });
     this.ui.requestRender();
@@ -1347,10 +1235,11 @@ export class TuiChatAdapter implements ChatAdapter {
           { keys: ["shift+tab"], description: "Cycle permission mode" },
           { keys: ["ctrl+v"], description: "Attach image from clipboard when available" },
           { keys: ["ctrl+o"], description: "Cycle inline tool output: compact → auto → expanded" },
-          { keys: ["shift+pageUp"], description: "Scroll transcript up" },
-          { keys: ["shift+pageDown"], description: "Scroll transcript down" },
-          { keys: ["shift+home"], description: "Jump transcript to top" },
-          { keys: ["shift+end"], description: "Jump transcript to latest" },
+          {
+            keys: ["scroll"],
+            description:
+              "Scroll & select/copy use the terminal natively (its own scrollback) — meer doesn't capture the mouse",
+          },
         ],
       },
       {
@@ -1629,14 +1518,9 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   getDebugState(): TuiDebugState {
-    const transcriptRows = this.getTranscriptViewportRows();
+    // The transcript renders inline (no in-app windowing); the terminal owns
+    // scrollback, so there is no app-side scroll offset or hidden-line count.
     const transcriptLines = this.getTranscriptLineCount();
-    const hiddenBelow = Math.min(this.transcriptScrollOffset, Math.max(0, transcriptLines - 1));
-    const renderedContentRows = Math.max(1, transcriptRows - (hiddenBelow > 0 ? 1 : 0) - 1);
-    const hiddenAbove =
-      hiddenBelow > 0
-        ? Math.max(0, transcriptLines - hiddenBelow - renderedContentRows)
-        : Math.max(0, transcriptLines - Math.max(1, transcriptRows - 1));
     return {
       renderer: "tui",
       layoutMode: this.getLayoutMode(),
@@ -1646,11 +1530,11 @@ export class TuiChatAdapter implements ChatAdapter {
         kittyProtocolActive: Boolean(this.ui.terminal.kittyProtocolActive),
       },
       viewport: {
-        transcriptRows,
+        transcriptRows: this.ui.terminal.rows || 24,
         transcriptLines,
-        scrollOffset: this.transcriptScrollOffset,
-        hiddenAbove,
-        hiddenBelow,
+        scrollOffset: 0,
+        hiddenAbove: 0,
+        hiddenBelow: 0,
       },
       overlay: {
         shortcutsVisible: Boolean(this.shortcutsOverlay),

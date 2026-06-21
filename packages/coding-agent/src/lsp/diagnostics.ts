@@ -20,7 +20,8 @@ export interface ValidationResult {
 export function validateTypeScript(
   filepath: string,
   content: string,
-  cwd: string
+  cwd: string,
+  options: { semantic?: boolean } = {}
 ): ValidationResult {
   const diagnostics: Diagnostic[] = [];
 
@@ -49,11 +50,18 @@ export function validateTypeScript(
       }
     }
 
-    // Try to get semantic diagnostics if tsconfig.json exists
-    const tsconfigPath = findTsConfig(cwd);
-    if (tsconfigPath && existsSync(tsconfigPath)) {
-      const semanticDiagnostics = getSemanticDiagnostics(filepath, content, tsconfigPath);
-      diagnostics.push(...semanticDiagnostics);
+    // Semantic (type) diagnostics are OPT-IN only. They must never gate an
+    // edit: a single-file virtual `createProgram` can't resolve project-wide
+    // types (e.g. missing @types/react surfaces as TS7016 "Could not find a
+    // declaration file for module 'react'"), and they flag PRE-EXISTING errors
+    // unrelated to the change — blocking valid edits. The edit tool validates
+    // syntax only; type-checking belongs to the user's build/typecheck.
+    if (options.semantic) {
+      const tsconfigPath = findTsConfig(cwd);
+      if (tsconfigPath && existsSync(tsconfigPath)) {
+        const semanticDiagnostics = getSemanticDiagnostics(filepath, content, tsconfigPath);
+        diagnostics.push(...semanticDiagnostics);
+      }
     }
 
     const hasErrors = diagnostics.some(d => d.severity === 'error');
@@ -220,13 +228,14 @@ export function validatePython(content: string): ValidationResult {
 export function validateSyntax(
   filepath: string,
   content: string,
-  cwd: string
+  cwd: string,
+  options: { semantic?: boolean } = {}
 ): { valid: boolean; errors: string[] } {
   const ext = filepath.toLowerCase();
 
   // TypeScript/JavaScript
   if (/\.(ts|tsx|js|jsx)$/.test(ext)) {
-    const result = validateTypeScript(filepath, content, cwd);
+    const result = validateTypeScript(filepath, content, cwd, options);
     return {
       valid: result.valid,
       errors: result.errors.map(e => `Line ${e.line}:${e.column} - ${e.message}`),
