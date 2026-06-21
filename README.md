@@ -4,13 +4,13 @@
 ### _Dive deep into your code._
 
 **MeerAI** (from the German word _"Meer"_ — *sea*) is an **open-source, local-first AI CLI** for developers.
-Operate entirely on your machine with local models, or connect to hosted providers (Meer Managed, OpenRouter, OpenAI, Anthropic, Gemini, Hugging Face) and Model Context Protocol servers — all from the terminal.
+Operate entirely on your machine with local models, or connect to hosted providers (Meer Managed, OpenRouter, OpenAI, Anthropic, Gemini, DeepSeek, Z.AI, Ollama) and Model Context Protocol servers — all from the terminal.
 
+[![npm](https://img.shields.io/npm/v/meerai)](https://www.npmjs.com/package/meerai)
 [![License](https://img.shields.io/github/license/meer-ai/meer)](LICENSE)
+[![CI](https://github.com/meer-ai/meer/actions/workflows/ci.yml/badge.svg)](https://github.com/meer-ai/meer/actions/workflows/ci.yml)
 [![Made with TypeScript](https://img.shields.io/badge/made%20with-TypeScript-blue.svg)](https://www.typescriptlang.org/)
-[![Ollama Supported](https://img.shields.io/badge/Ollama-Supported-green.svg)](https://ollama.ai)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
-[![Structured Agent](https://img.shields.io/badge/Agent-Structured-blueviolet.svg)](#agent-workflows)
 
 </div>
 
@@ -20,12 +20,13 @@ Operate entirely on your machine with local models, or connect to hosted provide
 
 MeerAI delivers intelligent assistance **inside your terminal** — no browser tabs, no forced SaaS lock-in.
 
-- **Local-first or cloud-smart** – chat with local [Ollama](https://ollama.ai) models, Meer Managed, or remote APIs (OpenAI, Anthropic, Gemini, Hugging Face, vLLM, TGI)
-- **Two agent workflows** – classic streaming agent or structured tool-driven agent with 60+ tools and MCP integration
-- **Rich TUI experience** – Ink-based terminal UI with timelines, diff previews, approval overlays, slash command palette
-- **Workspace-native** – read/edit files, run commands/tests, manage git, scaffold projects, execute semantic search
-- **Private by default** – nothing leaves your machine unless you choose a remote provider
-- **Extensible** – add providers, tools, MCP servers, or CLI commands without touching core logic
+- **Local-first or cloud-smart** — chat with local [Ollama](https://ollama.ai) models, Meer Managed, or remote APIs (OpenAI, Anthropic, Gemini, OpenRouter, DeepSeek, Z.AI)
+- **Structured agent** — a tool-calling loop with a large toolset and Model Context Protocol integration
+- **Custom terminal UI** — a differential renderer with live tool timelines, diff previews, approval overlays, and a slash-command palette; native terminal scrollback and text selection/copy
+- **Headless modes** — `meer run` / `meer --print` stream plain-text or newline-delimited-JSON events for scripting, CI, and editor/cloud integrations
+- **Workspace-native** — read/edit files, run commands and tests, manage git, scaffold projects, run semantic search
+- **Private by default** — nothing leaves your machine unless you choose a remote provider
+- **Layered & extensible** — a clean package split (core → ai → agent → coding-agent) keeps the generic agent separable from the coding assistant
 
 ---
 
@@ -33,56 +34,66 @@ MeerAI delivers intelligent assistance **inside your terminal** — no browser t
 
 | Area | Capabilities |
 | ---- | ------------ |
-| **Chat (`meer`)** | Interactive TUI with streaming responses, plan tracking, tool timeline, diff previews |
-| **One-shot Q&A (`meer ask`)** | Repo-aware answers, optional memory, slash command access, classic/structured modes |
-| **Reviews & commits** | `meer review`, `meer commit-msg`, inline suggestions, conventional commit support |
-| **Toolbox** | 60+ structured tools: read/write, git, run_command, semantic_search, scaffold_project, security_scan, generate_tests, etc. |
-| **Slash commands** | Built-in palette (`/model`, `/setup`, `/history`, …) plus [custom commands](docs/CUSTOM_SLASH_COMMANDS.md) powered by prompt, shell, or Meer CLI actions |
-| **Memory management** | Inspect stats, purge sessions, disable per command |
-| **Semantic search & embeddings** | Optional per-project embedding index with local cache or managed backend |
-| **MCP support** | Auto-load Model Context Protocol servers via `~/.meer/mcp.yaml` |
-| **UI niceties** | Approval overlays, pagination prompts, status bar spinner, command palette |
+| **Chat (`meer`)** | Interactive TUI with streaming responses, plan tracking (restored on resume), tool timeline, diff previews |
+| **Headless (`meer run`, `meer --print`)** | Non-interactive runs that stream text or JSON events — for CI, scripts, and integrations |
+| **One-shot Q&A (`meer ask`)** | Repo-aware answers with optional memory and slash-command access |
+| **Reviews & commits** | `meer review`, `meer commit-msg` with conventional-commit support |
+| **Toolbox** | 60+ structured tools: read/write/edit, git, run_command, semantic_search, scaffold_project, generate_tests, security_scan, and more |
+| **Slash commands** | Built-in palette (`/model`, `/setup`, `/history`, `/plan`, …) plus [custom commands](docs/CUSTOM_SLASH_COMMANDS.md) |
+| **Sessions & memory** | Resumable sessions (`--resume`, `--fork`), recent-context loading, per-command memory control |
+| **MCP support** | Auto-load Model Context Protocol servers via `~/.meer/mcp.yaml`, with lazy reconnect on server restart |
 
 ---
 
 ## Quick Start
 
-### 1. Prerequisites
-- Node.js **20+**
-- Optional: [Ollama](https://ollama.ai) for local LLMs (Mistral, Llama, Phi, Qwen, etc.)
+### Install (recommended)
 
-### 2. Install
 ```bash
-git clone https://github.com/meer-ai/meer.git
-cd meer
-npm install
-npm run build
-npm link    # or: npm i -g
+npm install -g meerai
 ```
 
-### 3. Configure a provider
+Requires **Node.js 20+**. Optional: [Ollama](https://ollama.ai) for local models.
+
+### Configure a provider
+
 ```bash
 meer setup
 ```
-Select **Ollama**, **Meer Managed**, or another remote provider. Profiles are stored in `~/.meer/config.yaml`.
 
-### 4. Launch the TUI
+Select **Ollama**, **Meer Managed**, or another remote provider. Profiles are stored in `~/.meer/config.yaml`. For Meer Managed, run `meer login` or set `MEER_API_KEY`.
+
+### Launch
+
 ```bash
 meer
 ```
-> Leave `MEER_AGENT` unset for the structured agent. Set `MEER_AGENT=classic` to use the legacy streaming workflow.
 
 ---
 
-## Usage Snippets
+## Usage
 
-### Conversational coding
+### Interactive coding
 ```bash
 meer
 ```
-- Timeline view tracks tool execution.
-- Approvals for edits appear as Apply/Skip overlays in the TUI.
-- Slash commands (`/plan`, `/history`, `/config`, `/remember`) available inline.
+- Live tool timeline and diff previews.
+- Edit/command approvals appear as inline overlays (per the project trust mode).
+- Slash commands (`/plan`, `/history`, `/config`, `/remember`, …) available inline.
+- `?` shows shortcuts. Scroll and copy use your terminal natively.
+
+### Headless / scripting
+```bash
+# Plain-text, non-interactive run (auto-approves safe actions)
+meer run --yes "add a TODO to README.md explaining the project"
+
+# Newline-delimited JSON event stream (for CI / integrations)
+meer run --json --yes "fix the failing tests"
+
+# Top-level shorthand for a one-shot prompt
+meer --print "summarize the recent changes"
+meer --print "summarize the recent changes" --json
+```
 
 ### Repo-aware Q&A
 ```bash
@@ -97,45 +108,13 @@ git add .
 meer commit-msg --conventional
 ```
 
-### Memory hygiene
+### Sessions & memory
 ```bash
+meer --resume                 # resume the latest session (restores an unfinished plan)
+meer --fork <session>         # branch a saved session into a new one
 meer memory stats
-meer memory purge --sessions
 meer ask --no-memory "Refactor this script"
 ```
-
-### Toggle agent modes
-```bash
-MEER_AGENT=classic meer ask "Summarize the CLI bootstrap"
-meer ask "Refactor the provider registry"
-```
-
-### Web search via Brave
-```bash
-export BRAVE_API_KEY="your_brave_search_api_key"
-meer ask "Research the latest Node.js LTS dates"
-```
-- The `google_search` tool now calls the Brave Search API when the key is present.
-- Missing keys fall back to a copyable search URL so you can still continue manually.
-- Combine with the structured agent for research workflows.
-
----
-
-## Agent Workflows
-
-### Classic (`MEER_AGENT=classic`)
-- Streaming conversation with incremental tool execution.
-- Ideal for quick iteration and conversational coding.
-- CLI prompts handle approvals and pagination.
-
-### Structured Agent (default)
-- Structured tool-driven agent with Meer-native turn handling and dynamic toolset.
-- 60+ tools defined in `src/agent/tools/agent.ts`, including git helpers, scaffolding, formatting, testing, semantic search, documentation generators, security scans, etc.
-- Model Context Protocol integration via `src/mcp/manager.ts` — automatically loads configured servers and exposes their tools.
-- Session tracker monitors plans, tokens, and costs.
-- Approvals rendered inside the TUI (no garbled output).
-
-Use `MEER_AGENT=classic` only if you explicitly want the legacy workflow.
 
 ---
 
@@ -170,10 +149,10 @@ profiles:
     model: openrouter/anthropic/claude-3.5-sonnet
 ```
 
-Use per-command overrides:
+Switch profiles per invocation with `meer --profile <name>` (or `DEVAI_PROFILE=<name>`):
 ```bash
-DEVAI_PROFILE=ollama-mistral meer review src
-DEVAI_PROFILE=openrouter-claude meer ask "Generate tests for the CLI"
+meer --profile ollama-mistral review src
+meer --profile openrouter-claude ask "Generate tests for the CLI"
 ```
 
 ---
@@ -185,37 +164,52 @@ DEVAI_PROFILE=openrouter-claude meer ask "Generate tests for the CLI"
 | Conversations    | `~/.meer/sessions/`     | Rolling session history (JSONL)    |
 | Long-term memory | `~/.meer/longterm/`     | Facts, preferences, embeddings     |
 | Config           | `~/.meer/config.yaml`   | Provider profiles & agent defaults |
-| MCP cache        | `~/.meer/mcp/`          | Cached tool/resource metadata      |
-
-Disable or purge memory whenever needed:
-```bash
-meer memory purge --longterm
-meer ask --no-memory "Explain this file"
-```
+| MCP servers      | `~/.meer/mcp.yaml`      | Configured Model Context Protocol servers |
 
 ---
 
-## Directory Overview
+## Architecture
+
+MeerAI is a **pnpm workspace monorepo** with an enforced dependency layering, so the generic
+agent is cleanly separable from the coding assistant built on top of it:
 
 ```
-src/
- ├─ agent/            # Classic + structured workflows, prompts, tool adapters
- ├─ commands/         # CLI commands (ask, review, commit, memory…)
- ├─ providers/        # Provider adapters (meer, openrouter, ollama, anthropic, gemini, zai…)
- ├─ tools/            # Core tooling (read/edit, git, run_command, semantic search, MCP bridge)
- ├─ memory/           # Session + long-term storage implementation
- ├─ mcp/              # Model Context Protocol plumbing
- ├─ ui/               # Blessed TUI (chat console, timeline, prompts, status bar)
- └─ utils/            # Shared helpers (token counting, logging, configuration)
+packages/
+  @meer-ai/core           HTTP (fetch), auth/OAuth — the base layer, LLM-agnostic
+  @meer-ai/ai             LLM I/O: message model, Provider contract, providers, attachments
+  @meer-ai/agent          generic agent loop + orchestration types (no tools, no UI, no provider)
+  @meer-ai/tui            vendored differential terminal renderer
+  @meer-ai/coding-agent   the assistant: tools, slash commands, config, trust, skills, MCP,
+                          and the interactive TUI app — owns the `meer` bin
+meerai (root)             thin launcher → @meer-ai/coding-agent
 ```
+
+Dependency rule (lower may not import higher): `core ← ai ← agent ← coding-agent`; `tui` is
+independent. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ### Extending MeerAI
-- **New tool**: export a function in `src/tools/index.ts`, wrap it in `src/agent/tools/agent.ts`.
-- **New provider**: implement `Provider` interface in `src/providers/` and wire it through `config.ts`.
-- **MCP server**: add to `~/.meer/mcp.yaml`; the structured agent autoloads it.
-- **New CLI command**: create a file in `src/commands/` and register it in `src/cli.ts`.
+- **New tool** — add it under `packages/coding-agent/src/tools/`, wrap it in `packages/coding-agent/src/agent/tools/agent.ts`.
+- **New provider** — implement the `Provider` interface in `packages/ai/src/providers/` and wire it through `packages/coding-agent/src/config.ts`.
+- **MCP server** — add it to `~/.meer/mcp.yaml`; the agent autoloads it.
+- **New CLI command** — create a file in `packages/coding-agent/src/commands/` and register it in `packages/coding-agent/src/cli.ts`.
 
-Run `npm run build` and `npm test` to ensure tooling coverage stays intact.
+---
+
+## Development
+
+```bash
+git clone https://github.com/meer-ai/meer.git
+cd meer
+pnpm install
+pnpm run build      # build all packages in dependency order
+pnpm run check      # typecheck the whole program
+pnpm test           # run the verification suite (parallel)
+pnpm run dev        # run the CLI from source (tsx, no build)
+```
+
+Releases are automated: `pnpm run release` bumps all packages lockstep, runs preflight, tags,
+and pushes — GitHub Actions then publishes every package to npm with provenance and cuts a
+GitHub Release.
 
 ---
 
@@ -225,10 +219,10 @@ We welcome contributions, bug reports, and ideas!
 
 1. Review the [Code of Conduct](CODE_OF_CONDUCT.md) and [Contributing Guide](CONTRIBUTING.md).
 2. Fork the repo and create a branch: `git checkout -b feat/awesome-thing`.
-3. Run `npm run build` (and `npm test`) before submitting.
+3. Run `pnpm run build && pnpm run check && pnpm test` before submitting.
 4. Open a PR with the provided [template](.github/PULL_REQUEST_TEMPLATE.md).
 
-Issue templates for bugs/features live under `.github/ISSUE_TEMPLATE/`. The [Security Policy](SECURITY.md) explains how to report vulnerabilities responsibly.
+Issue templates live under `.github/ISSUE_TEMPLATE/`. The [Security Policy](SECURITY.md) explains how to report vulnerabilities responsibly.
 
 ---
 
