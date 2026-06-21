@@ -1,6 +1,6 @@
 {
   "name": "@meer/agent",
-  "version": "0.6.37",
+  "version": "0.6.39",
   "description": "meer's generic agent kernel: the tool-calling loop and orchestration types. Provider-agnostic, UI-agnostic.",
   "type": "module",
   "license": "MIT",
@@ -19,5 +19,13 @@
   },
   "dependencies": {
     "@meer/ai": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meer-ai/meer.git",
+    "directory": "packages/agent"
   }
 }

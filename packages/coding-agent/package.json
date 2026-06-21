@@ -1,6 +1,6 @@
 {
   "name": "@meer/coding-agent",
-  "version": "0.6.37",
+  "version": "0.6.39",
   "description": "The meer coding assistant: tools, slash commands, config, trust, skills, MCP, and the interactive TUI app. Built on @meer/{core,ai,agent,tui}.",
   "type": "module",
   "license": "MIT",
@@ -56,5 +56,13 @@
     "yaml": "^2.9.0",
     "zod": "^3.23.0",
     "zod-to-json-schema": "^3.25.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meer-ai/meer.git",
+    "directory": "packages/coding-agent"
   }
 }
