@@ -92,3 +92,9 @@ assert.ok(
 }
 
 console.log("headless-run verification passed");
+
+// runHeadless drives a real MeerAgent, which holds open handles (the injectable
+// core deliberately never calls process.exit — the CLI action owns that, see
+// commands/run.ts and cli.ts). So this test must exit explicitly, exactly as
+// the production CLI does, or the process lingers until its handles drain.
+process.exit(0);
