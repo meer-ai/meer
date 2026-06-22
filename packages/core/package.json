@@ -1,6 +1,6 @@
 {
   "name": "@meer-ai/core",
-  "version": "0.6.40",
+  "version": "0.6.41",
   "description": "meer's cross-cutting infrastructure: HTTP, auth/OAuth, and attachments. The lowest layer — depended on by @meer-ai/ai and the app.",
   "type": "module",
   "license": "MIT",

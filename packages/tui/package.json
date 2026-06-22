@@ -1,6 +1,6 @@
 {
   "name": "@meer-ai/tui",
-  "version": "0.6.40",
+  "version": "0.6.41",
   "description": "Differential-rendering terminal UI for meer (vendored from pi-tui, MIT).",
   "type": "module",
   "license": "MIT",
