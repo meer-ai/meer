@@ -75,14 +75,28 @@ export function createRunCommand(): Command {
       false
     )
     .option("--json", "Emit newline-delimited JSON events on stdout", false)
-    .action(async (promptParts: string[], options: RunOptions) => {
+    .action(async (promptParts: string[], options: RunOptions, command: Command) => {
+      // `--json`, `--model`, and `--cwd` are ALSO declared as top-level options
+      // (so `meer --print … --json` works). Because of that name collision,
+      // Commander assigns them to the PARENT program when written after the
+      // subcommand (`meer run --json`), leaving this command's `options.json`
+      // false — which silently dropped headless JSON mode (meer-code's NDJSON
+      // parser then saw no events and the turn hung). Merge the global opts so
+      // the flags are honored whether they land on the parent or the subcommand.
+      const globals = command.optsWithGlobals() as Partial<RunOptions>;
+      const resolved: RunOptions = {
+        ...options,
+        json: Boolean(options.json || globals.json),
+        model: options.model ?? globals.model,
+        cwd: options.cwd ?? globals.cwd,
+      };
       try {
-        const exitCode = await runHeadless(promptParts, options);
+        const exitCode = await runHeadless(promptParts, resolved);
         process.exit(exitCode);
       } catch (error) {
         const message =
           error instanceof Error ? error.message : String(error);
-        if (options.json) {
+        if (resolved.json) {
           const emitter = createRunEventEmitter((s) => process.stdout.write(s));
           emitter.emit({ type: "run.error", message });
           emitter.emit({ type: "run.completed", exitCode: 1 });
@@ -232,6 +246,17 @@ export async function runHeadless(
   // assistant.message — meer-code dedupes by turn.)
   let textStreamed = false;
 
+  // Auto-retry config for transient provider failures (cold-connection
+  // timeouts, 5xx, rate limits, "fetch failed", etc.) — parity with the
+  // interactive CLI's AgentSession, which headless previously lacked. Hoisted
+  // here so onError can tell whether the current failure will be retried (and
+  // thus suppress an otherwise-terminal run.error that JSON consumers like
+  // meer-code would treat as a hard failure mid-retry).
+  const maxRetries = Math.max(0, retryConfig?.attempts ?? 0);
+  const baseDelay = Math.max(0, retryConfig?.delayMs ?? 0);
+  const backoffFactor = Math.max(1, retryConfig?.backoffFactor ?? 1);
+  let attempt = 0;
+
   const agent = new MeerAgent({
     provider,
     cwd,
@@ -316,7 +341,16 @@ export async function runHeadless(
       }
     },
     onError: (error) => {
-      if (isJson) {
+      // If this failure is about to be auto-retried, DON'T emit a terminal
+      // run.error — JSON consumers (meer-code) treat run.error as a failed turn
+      // and stop, even though the retry recovers a moment later. The final
+      // failure is still reported by the command action's catch. The stderr
+      // note stays (meer-code only surfaces stderr on a failed run).
+      const willRetry =
+        attempt < maxRetries &&
+        error.name !== "AbortError" &&
+        isRetryableProviderError(error);
+      if (isJson && !willRetry) {
         emitter.emit({ type: "run.error", message: error.message });
       }
       writeErr(`! agent error: ${error.message}\n`);
@@ -344,16 +378,10 @@ export async function runHeadless(
   try {
     await agent.initialize();
 
-    // Auto-retry transient provider failures (cold-connection timeouts, 5xx,
-    // rate limits, "fetch failed", etc.) — parity with the interactive CLI's
-    // AgentSession, which headless previously lacked. Without this, a one-off
-    // first-request timeout (common with DeepSeek's cold TLS connect) failed
-    // the whole `meer run`, and every retry from a caller like meer-code spawns
-    // a fresh process that hits the same cold-start timeout.
-    const maxRetries = Math.max(0, retryConfig?.attempts ?? 0);
-    const baseDelay = Math.max(0, retryConfig?.delayMs ?? 0);
-    const backoffFactor = Math.max(1, retryConfig?.backoffFactor ?? 1);
-    let attempt = 0;
+    // Auto-retry transient provider failures so a one-off first-request timeout
+    // (common with DeepSeek's cold TLS connect) doesn't fail the whole run.
+    // Each retry from a caller like meer-code spawns a fresh process that would
+    // otherwise hit the same cold-start timeout. (Config hoisted above.)
     for (;;) {
       try {
         await agent.processMessage(prompt, { persistUserMessage: false });

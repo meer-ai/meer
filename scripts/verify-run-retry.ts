@@ -75,6 +75,12 @@ function sinks() {
     "assistant text surfaced after the retry"
   );
   assert.ok(err.some((l) => /retry/i.test(l)), "a retry notice was written to stderr");
+  // The retried (recovered) attempt must NOT emit a terminal run.error — that's
+  // what made meer-code show a failure and stop mid-retry.
+  assert.ok(
+    !events.some((e) => e.type === "run.error"),
+    "no run.error is emitted when the retry recovers"
+  );
 }
 
 // ── 2) Failures exceed attempts → throws (caller maps to run.error/exit 1) ────
