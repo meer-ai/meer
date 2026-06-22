@@ -1,6 +1,6 @@
 {
   "name": "@meer-ai/coding-agent",
-  "version": "0.6.39",
+  "version": "0.6.40",
   "description": "The meer coding assistant: tools, slash commands, config, trust, skills, MCP, and the interactive TUI app. Built on @meer-ai/{core,ai,agent,tui}.",
   "type": "module",
   "license": "MIT",

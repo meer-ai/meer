@@ -1,6 +1,6 @@
 {
   "name": "meerai",
-  "version": "0.6.39",
+  "version": "0.6.40",
   "description": "MeerAI - Dive deep into your code. An open-source, local-first AI CLI for developers.",
   "type": "module",
   "packageManager": "pnpm@9.12.3",
@@ -64,8 +64,13 @@
       "esbuild@>=0.17.0 <0.28.1": "0.28.1"
     },
     "supportedArchitectures": {
-      "os": ["win32", "linux"],
-      "cpu": ["x64"]
+      "os": [
+        "win32",
+        "linux"
+      ],
+      "cpu": [
+        "x64"
+      ]
     }
   },
   "engines": {
