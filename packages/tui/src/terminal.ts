@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { setKittyProtocolActive } from "./keys.js";
+import { setKittyProtocolActive, setWindowsVtInputActive } from "./keys.js";
 import { isNativeModifierPressed } from "./native-modifiers.js";
 import { StdinBuffer } from "./stdin-buffer.js";
 
@@ -370,7 +370,11 @@ export class ProcessTerminal implements Terminal {
 			for (const modulePath of candidates) {
 				try {
 					const helper = cjsRequire(modulePath) as { enableVirtualTerminalInput?: () => boolean };
-					helper.enableVirtualTerminalInput?.();
+					// Record the ACTUAL result: the module can load yet still fail to
+					// enable VT input (piped stdin, no console handle). Backspace
+					// parsing depends on knowing whether VT input is truly on.
+					const enabled = helper.enableVirtualTerminalInput?.() ?? false;
+					setWindowsVtInputActive(enabled);
 					return;
 				} catch {
 					// Try the next possible packaging location.

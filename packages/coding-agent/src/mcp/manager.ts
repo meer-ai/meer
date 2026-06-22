@@ -149,79 +149,75 @@ export class MCPManager {
     let failed = 0;
     this.emitProgress({ phase: 'connecting', total, connected, failed });
 
-    const results = await Promise.allSettled(
-      serverNames.map(async (name) => {
-        try {
-          await this.connectServer(name);
-          connected++;
-          this.emitProgress({
-            phase: 'connecting',
-            total,
-            connected,
-            failed,
-            lastServer: name,
-            lastOk: true,
-          });
-        } catch (error) {
-          failed++;
-          this.emitProgress({
-            phase: 'connecting',
-            total,
-            connected,
-            failed,
-            lastServer: name,
-            lastOk: false,
-          });
-          throw error;
+    // Emit the terminal `done` event from a finally so the UI's "Starting MCP
+    // servers…" indicator always clears — even if something below throws
+    // unexpectedly after we've shown the connecting state. `connected`/`failed`
+    // are the live per-server tallies, so the count is correct in every path.
+    try {
+      const results = await Promise.allSettled(
+        serverNames.map(async (name) => {
+          try {
+            await this.connectServer(name);
+            connected++;
+            this.emitProgress({
+              phase: 'connecting',
+              total,
+              connected,
+              failed,
+              lastServer: name,
+              lastOk: true,
+            });
+          } catch (error) {
+            failed++;
+            this.emitProgress({
+              phase: 'connecting',
+              total,
+              connected,
+              failed,
+              lastServer: name,
+              lastOk: false,
+            });
+            throw error;
+          }
+        })
+      );
+
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          const serverName = serverNames[index];
+          if (shouldLogMCPToConsole()) {
+            console.error(
+              chalk.red(`  ❌ Failed to connect to ${serverName}:`),
+              result.reason
+            );
+          }
+
+          // Track connection failure in metrics
+          mcpConnectionsTotal.inc({ server_name: serverName, status: 'failure' });
+          log.mcp(serverName, 'error', { error: result.reason });
         }
-      })
-    );
+      });
 
-    let successCount = 0;
-    let failCount = 0;
-
-    results.forEach((result, index) => {
-      if (result.status === 'fulfilled') {
-        successCount++;
-      } else {
-        failCount++;
-        const serverName = serverNames[index];
-        if (shouldLogMCPToConsole()) {
-          console.error(
-            chalk.red(`  ❌ Failed to connect to ${serverName}:`),
-            result.reason
-          );
-        }
-
-        // Track connection failure in metrics
-        mcpConnectionsTotal.inc({ server_name: serverName, status: 'failure' });
-        log.mcp(serverName, 'error', { error: result.reason });
+      if (connected > 0 && shouldLogMCPToConsole()) {
+        console.log(
+          chalk.green(
+            `✓ Connected to ${connected}/${serverNames.length} MCP server(s)`
+          )
+        );
       }
-    });
 
-    if (successCount > 0 && shouldLogMCPToConsole()) {
-      console.log(
-        chalk.green(
-          `✓ Connected to ${successCount}/${serverNames.length} MCP server(s)`
-        )
-      );
+      if (failed > 0 && shouldLogMCPToConsole()) {
+        console.log(
+          chalk.yellow(
+            `⚠️  ${failed} server(s) failed to connect. Check configuration.`
+          )
+        );
+      }
+
+      this.initialized = true;
+    } finally {
+      this.emitProgress({ phase: 'done', total, connected, failed });
     }
-
-    if (failCount > 0 && shouldLogMCPToConsole()) {
-      console.log(
-        chalk.yellow(
-          `⚠️  ${failCount} server(s) failed to connect. Check configuration.`
-        )
-      );
-    }
-
-    this.initialized = true;
-    this.emitProgress({
-      phase: 'done',
-      total,
-      connected: successCount,
-      failed: failCount,
-    });
   }
 
   /**

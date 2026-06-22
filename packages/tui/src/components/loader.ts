@@ -37,7 +37,12 @@ export class Loader extends Text {
 		this.spinnerColorFn = spinnerColorFn;
 		this.messageColorFn = messageColorFn;
 		this.message = message;
-		this.setIndicator(indicator);
+		// Configure and render the initial frame, but do NOT start the animation
+		// timer here — that's start()'s job. Auto-starting from the constructor
+		// leaks an interval if the Loader is constructed and then discarded
+		// without ever being started/stopped.
+		this.applyIndicator(indicator);
+		this.updateDisplay();
 	}
 
 	render(width: number): string[] {
@@ -62,11 +67,15 @@ export class Loader extends Text {
 	}
 
 	setIndicator(indicator?: LoaderIndicatorOptions): void {
+		this.applyIndicator(indicator);
+		this.start();
+	}
+
+	private applyIndicator(indicator?: LoaderIndicatorOptions): void {
 		this.renderIndicatorVerbatim = indicator !== undefined;
 		this.frames = indicator?.frames !== undefined ? [...indicator.frames] : [...DEFAULT_FRAMES];
 		this.intervalMs = indicator?.intervalMs && indicator.intervalMs > 0 ? indicator.intervalMs : DEFAULT_INTERVAL_MS;
 		this.currentFrame = 0;
-		this.start();
 	}
 
 	private restartAnimation(): void {

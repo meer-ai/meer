@@ -40,6 +40,30 @@ export function isKittyProtocolActive(): boolean {
 }
 
 // =============================================================================
+// Windows Virtual Terminal Input State
+// =============================================================================
+
+let _windowsVtInputActive = false;
+
+/**
+ * Record whether ENABLE_VIRTUAL_TERMINAL_INPUT was successfully enabled on the
+ * Windows console (via the native helper). This matters for backspace parsing:
+ * only when VT input is ON does the Windows console send plain Backspace as
+ * 0x7f and Ctrl+Backspace as 0x08. When it's OFF (native helper missing, piped
+ * stdin, or the SetConsoleMode call failed), Node delivers plain Backspace as
+ * raw 0x08 — so the "0x08 == Ctrl+Backspace" heuristic must NOT apply, or
+ * Backspace would be misread as an unbound Ctrl+Backspace and delete nothing.
+ */
+export function setWindowsVtInputActive(active: boolean): void {
+	_windowsVtInputActive = active;
+}
+
+/** Query whether ENABLE_VIRTUAL_TERMINAL_INPUT is active on the Windows console. */
+export function isWindowsVtInputActive(): boolean {
+	return _windowsVtInputActive;
+}
+
+// =============================================================================
 // Type-Safe Key Identifiers
 // =============================================================================
 
@@ -730,7 +754,12 @@ function isWindowsTerminalSession(): boolean {
 function matchesRawBackspace(data: string, expectedModifier: number): boolean {
 	if (data === "\x7f") return expectedModifier === 0;
 	if (data !== "\x08") return false;
-	return isWindowsTerminalSession() ? expectedModifier === MODIFIERS.ctrl : expectedModifier === 0;
+	// 0x08 means Ctrl+Backspace ONLY when VT input is actually enabled (the
+	// console then sends plain Backspace as 0x7f). Without it, 0x08 IS plain
+	// Backspace — see setWindowsVtInputActive().
+	return isWindowsTerminalSession() && isWindowsVtInputActive()
+		? expectedModifier === MODIFIERS.ctrl
+		: expectedModifier === 0;
 }
 
 // =============================================================================
@@ -1284,7 +1313,8 @@ export function parseKey(data: string): string | undefined {
 	if (data === "\x00") return "ctrl+space";
 	if (data === " ") return "space";
 	if (data === "\x7f") return "backspace";
-	if (data === "\x08") return isWindowsTerminalSession() ? "ctrl+backspace" : "backspace";
+	if (data === "\x08")
+		return isWindowsTerminalSession() && isWindowsVtInputActive() ? "ctrl+backspace" : "backspace";
 	if (data === "\x1b[Z") return "shift+tab";
 	if (!_kittyProtocolActive && data === "\x1b\r") return "alt+enter";
 	if (!_kittyProtocolActive && data === "\x1b ") return "alt+space";
