@@ -3,6 +3,7 @@ import { readFileSync } from "fs";
 import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import type { Provider } from "@meer-ai/ai/base.js";
+import { isRetryableProviderError } from "@meer-ai/core/provider-errors.js";
 import {
   createRunEventEmitter,
   RUN_PROTOCOL_VERSION,
@@ -121,6 +122,11 @@ export interface RunHeadlessIO {
   providerType?: string;
   /** Model label when a provider is injected. */
   model?: string;
+  /**
+   * Auto-retry config for transient provider failures. Omitted by default for
+   * injected-provider runs so tests stay deterministic (no retry).
+   */
+  retry?: { attempts: number; delayMs: number; backoffFactor: number };
   /** Register a SIGINT handler for abort. Defaults to true. */
   handleSignals?: boolean;
 }
@@ -176,10 +182,16 @@ export async function runHeadless(
   let provider: Provider;
   let providerType: string;
   let model: string | undefined;
+  // Auto-retry config for transient provider failures (e.g. a cold-connection
+  // timeout on the first request). The interactive CLI gets this via
+  // AgentSession; headless calls processMessage directly, so we apply the same
+  // retry here. Injected-provider (test) runs intentionally get no retry.
+  let retryConfig: { attempts: number; delayMs: number; backoffFactor: number } | undefined;
   if (io.provider) {
     provider = io.provider;
     providerType = io.providerType ?? "faux";
     model = io.model;
+    retryConfig = io.retry;
   } else {
     const config = loadConfig();
     if (options.model) {
@@ -194,6 +206,7 @@ export async function runHeadless(
     provider = config.provider;
     providerType = config.providerType;
     model = config.model;
+    retryConfig = config.retry;
   }
 
   const cwd = options.cwd ?? process.cwd();
@@ -330,7 +343,43 @@ export async function runHeadless(
 
   try {
     await agent.initialize();
-    await agent.processMessage(prompt, { persistUserMessage: false });
+
+    // Auto-retry transient provider failures (cold-connection timeouts, 5xx,
+    // rate limits, "fetch failed", etc.) — parity with the interactive CLI's
+    // AgentSession, which headless previously lacked. Without this, a one-off
+    // first-request timeout (common with DeepSeek's cold TLS connect) failed
+    // the whole `meer run`, and every retry from a caller like meer-code spawns
+    // a fresh process that hits the same cold-start timeout.
+    const maxRetries = Math.max(0, retryConfig?.attempts ?? 0);
+    const baseDelay = Math.max(0, retryConfig?.delayMs ?? 0);
+    const backoffFactor = Math.max(1, retryConfig?.backoffFactor ?? 1);
+    let attempt = 0;
+    for (;;) {
+      try {
+        await agent.processMessage(prompt, { persistUserMessage: false });
+        break;
+      } catch (error) {
+        const normalized =
+          error instanceof Error ? error : new Error(String(error));
+        const retryable =
+          normalized.name !== "AbortError" &&
+          isRetryableProviderError(normalized);
+        if (attempt >= maxRetries || !retryable || interrupted) {
+          throw normalized;
+        }
+        attempt += 1;
+        const delayMs = Math.round(
+          baseDelay * Math.pow(backoffFactor, attempt - 1)
+        );
+        writeErr(
+          `! transient error, retrying (attempt ${attempt}/${maxRetries}) in ${Math.round(
+            delayMs / 1000
+          )}s: ${normalized.message}\n`
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
     const exitCode = interrupted ? 130 : 0;
     if (isJson) {
       emitter.emit({ type: "run.completed", exitCode });
