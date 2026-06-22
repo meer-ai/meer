@@ -2,6 +2,7 @@ import type { Provider, ChatMessage } from "@meer-ai/ai/base.js";
 import { ProviderWrapper } from "@meer-ai/ai/providers/provider-wrapper.js";
 import { memory } from "../memory/index.js";
 import { MCPManager } from "../mcp/manager.js";
+import type { MCPInitProgress } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";
 import { createMeerAgentTools } from "./tools/agent.js";
 import type { AgentTool } from "@meer-ai/agent/types.js";
@@ -209,10 +210,23 @@ export class MeerAgent {
     options?: string | MeerAgentInitOptions
   ): Promise<void> {
     if (!this.mcpManager.isInitialized()) {
-      await this.mcpManager.initialize();
+      // Connect MCP servers in the BACKGROUND so the REPL and slash commands
+      // (which don't need MCP) are usable immediately at startup. The first
+      // model turn awaits readiness in processMessage before building tools.
+      void this.mcpManager.initialize().catch(() => {});
     }
     this.mcpTools = this.mcpManager.listAllTools();
     await this.reloadSkills();
+  }
+
+  /**
+   * Subscribe to MCP connection progress so the UI can surface a live
+   * "Starting MCP servers …" indicator at startup. Returns an unsubscribe fn.
+   */
+  subscribeMcpInitProgress(
+    listener: (progress: MCPInitProgress) => void
+  ): () => void {
+    return this.mcpManager.onInitProgress(listener);
   }
 
   async processMessage(
@@ -286,6 +300,13 @@ export class MeerAgent {
         let loopError: Error | null = null;
         let wasAborted = false;
         let toolsCleared = false;
+
+        // MCP servers connect in the background at startup (see initialize()).
+        // Make sure that's finished — and pick up any freshly-connected tools —
+        // before building the tool list for this turn, so the model can call
+        // MCP tools even on the very first message.
+        await this.mcpManager.whenReady().catch(() => {});
+        this.mcpTools = this.mcpManager.listAllTools();
 
         const agentTools = this.buildAgentTools();
 

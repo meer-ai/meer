@@ -671,6 +671,29 @@ export function createCLI(): Command {
           priorMessages: restoredModelMessages ?? undefined,
         });
 
+        // MCP servers connect in the background (so the prompt is usable right
+        // away). Surface a live "Starting MCP servers …" indicator — like Codex
+        // — so the user knows why tools aren't ready yet instead of staring at a
+        // silent prompt. The subscription replays the latest state immediately,
+        // so we don't miss progress fired before we attached.
+        const unsubscribeMcpProgress = agent.subscribeMcpInitProgress((p) => {
+          if (!chatUI) return;
+          if (p.phase === "done") {
+            chatUI.setStartupStatus(null);
+            if (p.failed > 0) {
+              chatUI.appendSystemMessage(
+                `⚠️  ${p.failed} of ${p.total} MCP server(s) failed to connect. Run /mcp for details.`
+              );
+            }
+            return;
+          }
+          const settled = p.connected + p.failed;
+          const suffix = p.lastServer ? `: ${p.lastServer}` : "";
+          chatUI.setStartupStatus(
+            `Starting MCP servers (${settled}/${p.total})${suffix}`
+          );
+        });
+
         chatUI?.setInterruptHandler(() => session?.abort());
 
         // Shift+Tab in the TUI cycles the permission mode; keep the agent's
@@ -725,6 +748,7 @@ export function createCLI(): Command {
             clearInterval(backgroundSessionTimer);
           }
           const finalStats = await sessionTracker.endSession();
+          unsubscribeMcpProgress();
           if (chatUI) {
             chatUI.appendSystemMessage("Session ended. Goodbye! 🌊");
             detachPlanListener();
@@ -912,6 +936,7 @@ export function createCLI(): Command {
         }
 
         const finalStats = await sessionTracker.endSession();
+        unsubscribeMcpProgress();
         if (chatUI) {
           detachPlanListener();
           chatUI.destroy();

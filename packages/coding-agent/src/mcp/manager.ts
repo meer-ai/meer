@@ -23,11 +23,32 @@ import {
   mcpActiveConnections
 } from '../telemetry/index.js';
 
+/**
+ * Progress emitted while MCP servers connect at startup. Lets the UI show a
+ * live "Starting MCP servers (x/n): <name>" indicator (à la Codex) instead of
+ * leaving the user staring at an unresponsive-looking prompt.
+ */
+export interface MCPInitProgress {
+  phase: 'connecting' | 'done';
+  total: number;
+  connected: number;
+  failed: number;
+  /** The server whose connection most recently settled (for the status line). */
+  lastServer?: string;
+  lastOk?: boolean;
+}
+
+export type MCPInitProgressListener = (progress: MCPInitProgress) => void;
+
 export class MCPManager {
   private static instance: MCPManager;
   private clients: Map<string, MCPClient> = new Map();
   private config: MCPConfig;
   private initialized = false;
+  /** Shared promise for the in-flight (or completed) initialize() run. */
+  private readyPromise: Promise<void> | null = null;
+  private progressListeners = new Set<MCPInitProgressListener>();
+  private lastProgress: MCPInitProgress | null = null;
 
   private constructor() {
     this.config = loadMCPConfig();
@@ -44,14 +65,64 @@ export class MCPManager {
   }
 
   /**
-   * Initialize and connect to all enabled MCP servers
+   * Subscribe to connection progress. If a progress snapshot already exists
+   * (e.g. servers started connecting before this listener attached), it is
+   * replayed immediately so late subscribers don't miss the current state.
+   * Returns an unsubscribe function.
    */
-  async initialize(options: { force?: boolean } = {}): Promise<void> {
+  onInitProgress(listener: MCPInitProgressListener): () => void {
+    this.progressListeners.add(listener);
+    if (this.lastProgress) {
+      listener(this.lastProgress);
+    }
+    return () => {
+      this.progressListeners.delete(listener);
+    };
+  }
+
+  /** Latest connection progress, or null if initialize() never ran. */
+  getInitProgress(): MCPInitProgress | null {
+    return this.lastProgress;
+  }
+
+  /**
+   * Resolves once initialize() has finished (or immediately if it never
+   * started). Callers that need MCP tools — like the first model turn — await
+   * this so background connection completes before tools are built, while the
+   * REPL and slash commands stay responsive in the meantime.
+   */
+  whenReady(): Promise<void> {
+    if (this.initialized) return Promise.resolve();
+    return this.readyPromise ?? Promise.resolve();
+  }
+
+  private emitProgress(progress: MCPInitProgress): void {
+    this.lastProgress = progress;
+    for (const listener of this.progressListeners) {
+      try {
+        listener(progress);
+      } catch {
+        // A broken UI listener must not abort MCP connection.
+      }
+    }
+  }
+
+  /**
+   * Initialize and connect to all enabled MCP servers. Idempotent: concurrent
+   * and repeat callers share the same in-flight promise.
+   */
+  initialize(options: { force?: boolean } = {}): Promise<void> {
     if (this.initialized) {
       logVerbose(chalk.gray('MCP Manager already initialized'));
-      return;
+      return Promise.resolve();
     }
+    if (!this.readyPromise) {
+      this.readyPromise = this.runInitialize(options);
+    }
+    return this.readyPromise;
+  }
 
+  private async runInitialize(options: { force?: boolean } = {}): Promise<void> {
     if (this.config.mcp?.autoStart === false && !options.force) {
       logVerbose(chalk.gray('MCP auto-start disabled'));
       this.initialized = true;
@@ -73,8 +144,37 @@ export class MCPManager {
       );
     }
 
+    const total = serverNames.length;
+    let connected = 0;
+    let failed = 0;
+    this.emitProgress({ phase: 'connecting', total, connected, failed });
+
     const results = await Promise.allSettled(
-      serverNames.map((name) => this.connectServer(name))
+      serverNames.map(async (name) => {
+        try {
+          await this.connectServer(name);
+          connected++;
+          this.emitProgress({
+            phase: 'connecting',
+            total,
+            connected,
+            failed,
+            lastServer: name,
+            lastOk: true,
+          });
+        } catch (error) {
+          failed++;
+          this.emitProgress({
+            phase: 'connecting',
+            total,
+            connected,
+            failed,
+            lastServer: name,
+            lastOk: false,
+          });
+          throw error;
+        }
+      })
     );
 
     let successCount = 0;
@@ -116,6 +216,12 @@ export class MCPManager {
     }
 
     this.initialized = true;
+    this.emitProgress({
+      phase: 'done',
+      total,
+      connected: successCount,
+      failed: failCount,
+    });
   }
 
   /**
@@ -172,6 +278,10 @@ export class MCPManager {
     await Promise.allSettled(disconnectPromises);
     this.clients.clear();
     this.initialized = false;
+    // Drop the cached init promise/progress so a later initialize() (e.g. via
+    // reload()) actually reconnects instead of returning the stale promise.
+    this.readyPromise = null;
+    this.lastProgress = null;
   }
 
   /**

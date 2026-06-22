@@ -206,6 +206,8 @@ export class TuiChatAdapter implements ChatAdapter {
   private readonly history = new PromptHistoryStore();
   private footer: FooterComponent;
   private loader: Loader | null = null;
+  /** Standalone spinner for startup work (e.g. MCP connection) shown outside a turn. */
+  private startupLoader: Loader | null = null;
   private shortcutsOverlay: OverlayHandle | null = null;
   private lastRendererSnapshotPath: string | undefined;
   private resizeEvents: number[] = [];
@@ -243,6 +245,15 @@ export class TuiChatAdapter implements ChatAdapter {
   private onSubmitCallback:
     | ((text: string, attachments?: MessageAttachment[]) => void)
     | null = null;
+  /**
+   * Submissions made before the chat loop wired its handler (e.g. while MCP
+   * servers are still connecting at startup). Buffered here instead of being
+   * dropped, then flushed in enableContinuousChat so nothing typed is lost.
+   */
+  private earlyInputBuffer: Array<{
+    text: string;
+    attachments: MessageAttachment[];
+  }> = [];
   private promptResolver: ((value: string) => void) | null = null;
   private interruptHandler: (() => void) | null = null;
   private modeChangeHandler: ((mode: ChatMode) => void) | null = null;
@@ -521,8 +532,6 @@ export class TuiChatAdapter implements ChatAdapter {
       this.history.append(text);
     }
 
-    if (!this.onSubmitCallback) return;
-
     // Hand the queued attachments off with this turn, then reset.
     this.pendingAttachments = [];
     this.refreshFooter();
@@ -533,6 +542,14 @@ export class TuiChatAdapter implements ChatAdapter {
         attachmentCount: attachments.length,
       });
     }
+
+    if (!this.onSubmitCallback) {
+      // Loop handler isn't wired yet (still starting up). Buffer rather than
+      // drop so the input is delivered the moment enableContinuousChat runs.
+      this.earlyInputBuffer.push({ text, attachments });
+      return;
+    }
+
     this.onSubmitCallback(text, attachments.length > 0 ? attachments : undefined);
   }
 
@@ -887,6 +904,9 @@ export class TuiChatAdapter implements ChatAdapter {
     // sticking to the input. (An unfinished plan stays — it spans turns.)
     this.dismissCompletedPlan();
     this.turnActive = true;
+    // The turn's own "Thinking" loader takes over the status area; drop any
+    // startup spinner so the two don't render stacked.
+    this.setStartupStatus(null);
     this.turnAssistantParts = [];
     this.currentAssistant = null;
     this.lastSettledContent = null;
@@ -1026,6 +1046,37 @@ export class TuiChatAdapter implements ChatAdapter {
     this.ui.requestRender();
   }
 
+  /**
+   * Show (or clear, with null) a standalone startup spinner — used for the
+   * "Starting MCP servers …" indicator while servers connect in the
+   * background. Independent of the per-turn loader so it works before any turn.
+   */
+  setStartupStatus(text: string | null): void {
+    if (!text || this.turnActive) {
+      if (this.startupLoader) {
+        this.startupLoader.stop();
+        this.statusContainer.removeChild(this.startupLoader);
+        this.startupLoader = null;
+        this.ui.requestRender();
+      }
+      return;
+    }
+    if (!this.startupLoader) {
+      const s = getTuiStyles();
+      this.startupLoader = new Loader(
+        this.ui,
+        (t) => s.accent(t),
+        (t) => s.muted(t),
+        text,
+        { frames: getWaveLoaderFrames(), intervalMs: WAVE_LOADER_INTERVAL_MS }
+      );
+      this.statusContainer.addChild(this.startupLoader);
+    }
+    this.startupLoader.setMessage(text);
+    this.startupLoader.start();
+    this.ui.requestRender();
+  }
+
   updateTokens(used: number, limit?: number, estimated = false): void {
     this.lastTokenUsage = { used, estimated };
     this.header.update({ tokens: { used, limit }, tokensEstimated: estimated });
@@ -1076,6 +1127,18 @@ export class TuiChatAdapter implements ChatAdapter {
     onSubmit: (text: string, attachments?: MessageAttachment[]) => void
   ): void {
     this.onSubmitCallback = onSubmit;
+    // Deliver anything the user submitted before the handler was wired (e.g.
+    // a slash command typed while MCP servers were still connecting).
+    if (this.earlyInputBuffer.length > 0) {
+      const buffered = this.earlyInputBuffer;
+      this.earlyInputBuffer = [];
+      for (const item of buffered) {
+        onSubmit(
+          item.text,
+          item.attachments.length > 0 ? item.attachments : undefined
+        );
+      }
+    }
   }
 
   async prompt(): Promise<string> {
@@ -1592,6 +1655,7 @@ export class TuiChatAdapter implements ChatAdapter {
     }
     this.stopTicker();
     this.stopLoader();
+    this.setStartupStatus(null);
     this.restoreConsole();
     setToolConsoleQuiet(false);
     this.ui.stop();

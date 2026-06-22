@@ -146,6 +146,11 @@ export interface ChatAdapter {
 
   // ── Status / footer ──────────────────────────────────────────────────────
   setStatus(text: string): void;
+  /**
+   * Show (text) or clear (null) a standalone startup spinner, e.g. the
+   * "Starting MCP servers …" indicator while servers connect in the background.
+   */
+  setStartupStatus(text: string | null): void;
   updateTokens(used: number, limit?: number, estimated?: boolean): void;
   updateCost(current: number, limit?: number): void;
   incrementMessageCount(): void;
