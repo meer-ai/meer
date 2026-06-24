@@ -12,7 +12,7 @@ export interface MeerAgentToolContext {
   cwd: string;
   provider?: Provider;
   /**
-   * Required for tools that generate FileEdit payloads (propose_edit, edit_line).
+   * Required for tools that generate FileEdit payloads (propose_edit).
    */
   reviewFileEdit?: (edit: FileEdit) => Promise<boolean>;
   /**
@@ -724,23 +724,6 @@ async function callMeerTool(
         })
       );
     }
-    case "edit_line": {
-      const path = String(input.path);
-      const lineNumber = Number(input.lineNumber);
-      const oldText = String(input.oldText ?? "");
-      const newText = String(input.newText ?? "");
-      const edit = tools.editLine(
-        path,
-        lineNumber,
-        oldText,
-        newText,
-        context.cwd
-      );
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Line edit skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
-    }
     case "git_status": {
       return unwrap(tools.gitStatus(context.cwd));
     }
@@ -1399,19 +1382,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("grep", input as Record<string, unknown>, context),
-  },
-  {
-    name: "edit_line",
-    description:
-      "Edit a specific line in a file after confirming the change.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      lineNumber: z.coerce.number().int().positive(),
-      oldText: z.string().default(""),
-      newText: z.string().default(""),
-    }),
-    execute: (input, context) =>
-      callMeerTool("edit_line", input as Record<string, unknown>, context),
   },
   {
     name: "git_status",

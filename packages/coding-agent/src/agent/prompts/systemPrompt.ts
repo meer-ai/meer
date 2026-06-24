@@ -71,7 +71,6 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 **Code Modification:**
 - propose_edit path="..." description="..." - Create/edit file (content between tags)
 - edit_section path="..." oldText="..." newText="..." - Edit code section
-- edit_line path="..." lineNumber="..." oldText="..." newText="..." - Edit specific line
 - write_file path="..." - Create/overwrite file (content between tags)
 - delete_file path="..." - Delete file
 - move_file source="..." dest="..." - Move/rename file
@@ -150,7 +149,7 @@ ${mcpSection}
 </tool>\`
 
 **Important:**
-- Use grep + edit_line for large files (>100 lines)
+- Use edit_file with surrounding context for targeted changes in large files
 - Use propose_edit for small files or new files
 - Never use placeholders - always provide complete content
 - Dev servers (npm run dev) run indefinitely - tell user to run manually

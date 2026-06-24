@@ -67,8 +67,7 @@ For content-bearing tools (\`propose_edit\`, \`write_file\`), content goes BETWE
 12. \`web_fetch url="url"\` - Fetch web resource
 13. \`save_memory key="k" content="v"\` - Persist data
 14. \`load_memory key="k"\` - Load data
-15. \`grep path="file" pattern="regex" maxResults="10"\` - Search file with line numbers (use before \`edit_line\`)
-16. \`edit_line path="file" lineNumber="42" oldText="old" newText="new"\` - Edit specific line
+15. \`grep path="file" pattern="regex" maxResults="10"\` - Search file with line numbers
 
 ### Git
 16. \`git_status\` - Working tree status
@@ -145,7 +144,7 @@ ${mcpSection}
 
 **File Edits:**
 - **PREFERRED**: Use \`edit_section\` for existing files (read exact text first, then replace)
-- Line-specific edits: Use \`grep\` → \`edit_line\`
+- Targeted edits: Use \`edit_file\` with unique surrounding context
 - New files only: Use \`propose_edit\` with full content
 - Never use placeholders like "// ... rest" - always provide complete code
 

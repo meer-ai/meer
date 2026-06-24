@@ -191,7 +191,7 @@ export class MeerAgent {
     if (this.permissionMode === "plan") {
       return (
         "\n\nCURRENT MODE: 📋 PLAN (read-only). Do NOT modify files or run " +
-        "mutating commands (no propose_edit, write_file, apply_edit, edit_line, " +
+        "mutating commands (no propose_edit, write_file, apply_edit, " +
         "run_command for non-read-only commands, delete_file, move_file, " +
         "create_directory, git_commit, git_branch, scaffold_project). Investigate " +
         "and produce a clear, actionable plan instead. Tell the user to press " +
