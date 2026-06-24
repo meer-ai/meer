@@ -21,7 +21,6 @@ export const ALL_TOOLS = [
   // File editing
   'propose_edit',
   'edit_section',
-  'edit_line',
 
   // Command execution
   'run_command',
@@ -58,7 +57,6 @@ export const TOOL_CATEGORIES = {
   WRITE: [
     'propose_edit',
     'edit_section',
-    'edit_line',
   ],
   EXECUTE: [
     'run_command',

@@ -103,7 +103,7 @@ export function describeToolWorkflowStage(toolName: string): string {
   if (["security_scan", "validate_project", "check_syntax", "code_review", "check_complexity", "detect_smells", "analyze_coverage", "run_tests"].includes(name)) {
     return "Scan project health";
   }
-  if (["propose_edit", "edit_line", "write_file", "delete_file", "move_file", "create_directory", "format_code", "organize_imports", "fix_lint"].includes(name)) {
+  if (["propose_edit", "delete_file", "move_file", "create_directory", "format_code", "organize_imports", "fix_lint"].includes(name)) {
     return "Apply code changes";
   }
   if (name.startsWith("git_")) {

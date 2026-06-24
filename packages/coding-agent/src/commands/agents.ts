@@ -219,7 +219,7 @@ async function createAgent(scope: AgentScope): Promise<void> {
   // Map tool categories to actual tools
   const toolMap: Record<string, string[]> = {
     Read: ['read_file', 'grep', 'find_files', 'list_files', 'read_many_files'],
-    Edit: ['propose_edit', 'edit_section', 'edit_line'],
+    Edit: ['propose_edit', 'edit_section'],
     Bash: ['run_command'],
     Web: ['google_search', 'brave_search', 'web_fetch'],
   };

@@ -1966,53 +1966,6 @@ export function grep(
 }
 
 /**
- * Tool: Edit a specific line in a file
- * Useful for precise edits when you know the exact line number from grep
- */
-export function editLine(
-  filepath: string,
-  lineNumber: number,
-  oldText: string,
-  newText: string,
-  cwd: string
-): FileEdit {
-  const fullPath = resolvePath(filepath, cwd);
-
-  if (!existsSync(fullPath)) {
-    throw new Error(`File not found: ${filepath}`);
-  }
-
-  const content = readFileSync(fullPath, "utf-8");
-  const lines = content.split("\n");
-
-  // Validate line number
-  if (lineNumber < 1 || lineNumber > lines.length) {
-    throw new Error(`Line number ${lineNumber} is out of range (file has ${lines.length} lines)`);
-  }
-
-  const lineIndex = lineNumber - 1;
-  const currentLine = lines[lineIndex];
-
-  // Verify old text matches
-  if (!currentLine.includes(oldText)) {
-    throw new Error(
-      `Line ${lineNumber} does not contain "${oldText}".\nActual line: ${currentLine}`
-    );
-  }
-
-  // Replace the line
-  lines[lineIndex] = currentLine.replace(oldText, newText);
-  const newContent = lines.join("\n");
-
-  return {
-    path: filepath,
-    oldContent: content,
-    newContent,
-    description: `Edit line ${lineNumber}: replace "${oldText}" with "${newText}"`,
-  };
-}
-
-/**
  * Helper: Check if a file is a code file that supports syntax validation
  */
 function isCodeFile(filepath: string): boolean {

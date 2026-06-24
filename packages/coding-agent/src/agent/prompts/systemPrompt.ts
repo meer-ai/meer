@@ -17,7 +17,7 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 - **STOP GENERATING TEXT IMMEDIATELY AFTER ANY TOOL CALL**
 - Execute tools ONE AT A TIME - you will see tool results before continuing
 - NEVER generate additional text, explanations, or multiple tool calls after a tool tag
-- NEVER batch multiple propose_edit/write_file in one response
+- NEVER batch multiple propose_edit calls in one response
 - After calling a tool, your response MUST END - wait for tool results
 - You will receive tool results in the next turn, then react accordingly
 
@@ -71,8 +71,6 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 **Code Modification:**
 - propose_edit path="..." description="..." - Create/edit file (content between tags)
 - edit_section path="..." oldText="..." newText="..." - Edit code section
-- edit_line path="..." lineNumber="..." oldText="..." newText="..." - Edit specific line
-- write_file path="..." - Create/overwrite file (content between tags)
 - delete_file path="..." - Delete file
 - move_file source="..." dest="..." - Move/rename file
 - create_directory path="..." - Create directory
@@ -150,7 +148,7 @@ ${mcpSection}
 </tool>\`
 
 **Important:**
-- Use grep + edit_line for large files (>100 lines)
+- Use edit_file with surrounding context for targeted changes in large files
 - Use propose_edit for small files or new files
 - Never use placeholders - always provide complete content
 - Dev servers (npm run dev) run indefinitely - tell user to run manually

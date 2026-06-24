@@ -1,16 +1,18 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { resolve } from "node:path";
 import type { FileEdit, ToolResult } from "../../tools/index.js";
 import * as tools from "../../tools/index.js";
 import type { Provider } from "@meer-ai/ai/base.js";
 import type { MCPTool } from "../../mcp/types.js";
 import type { AgentTool, AgentToolCallResult } from "../runtime/types.js";
 import { extractLeadingCd } from "../../utils/shell-cd.js";
+import { withFileMutationQueue } from "../../tools/file-mutation-queue.js";
 export interface MeerAgentToolContext {
   cwd: string;
   provider?: Provider;
   /**
-   * Required for tools that generate FileEdit payloads (propose_edit, edit_line).
+   * Required for tools that generate FileEdit payloads (propose_edit).
    */
   reviewFileEdit?: (edit: FileEdit) => Promise<boolean>;
   /**
@@ -420,23 +422,25 @@ async function callMeerTool(
       const path = String(input.path);
       const contents = String(input.contents ?? input.content ?? "");
       const description =
-        typeof input.description === "string"
-          ? input.description
-          : "Edit file";
-      const edit = tools.proposeEdit(path, contents, description, context.cwd);
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Edit skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
+        typeof input.description === "string" ? input.description : "Edit file";
+      return withFileMutationQueue(resolve(context.cwd, path), async () => {
+        const edit = tools.proposeEdit(path, contents, description, context.cwd);
+        if (!(await ensureEditApproval(context, edit))) {
+          return `⏭️ Edit skipped for ${edit.path}`;
+        }
+        return unwrapStructured(tools.applyEdit(edit, context.cwd));
+      });
     }
     case "edit_file": {
       const path = String(input.path);
-      const edits = normalizeEditFileEdits(input);
-      const edit = tools.editFileSections(path, edits, context.cwd);
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Edit skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
+      return withFileMutationQueue(resolve(context.cwd, path), async () => {
+        const edits = normalizeEditFileEdits(input);
+        const edit = tools.editFileSections(path, edits, context.cwd);
+        if (!(await ensureEditApproval(context, edit))) {
+          return `⏭️ Edit skipped for ${edit.path}`;
+        }
+        return unwrapStructured(tools.applyEdit(edit, context.cwd));
+      });
     }
     case "run_command": {
       const rawCommand = input.command;
@@ -720,23 +724,6 @@ async function callMeerTool(
         })
       );
     }
-    case "edit_line": {
-      const path = String(input.path);
-      const lineNumber = Number(input.lineNumber);
-      const oldText = String(input.oldText ?? "");
-      const newText = String(input.newText ?? "");
-      const edit = tools.editLine(
-        path,
-        lineNumber,
-        oldText,
-        newText,
-        context.cwd
-      );
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Line edit skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
-    }
     case "git_status": {
       return unwrap(tools.gitStatus(context.cwd));
     }
@@ -811,18 +798,6 @@ async function callMeerTool(
           delete: deleteBranch,
         })
       );
-    }
-    case "write_file": {
-      const path = String(input.path);
-      const contents = String(input.contents ?? input.content ?? "");
-      const description = typeof input.description === "string"
-        ? input.description
-        : "Write file";
-      const edit = tools.proposeEdit(path, contents, description, context.cwd);
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Write skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
     }
     case "delete_file": {
       const path = String(input.path);
@@ -1397,19 +1372,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("grep", input as Record<string, unknown>, context),
   },
   {
-    name: "edit_line",
-    description:
-      "Edit a specific line in a file after confirming the change.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      lineNumber: z.coerce.number().int().positive(),
-      oldText: z.string().default(""),
-      newText: z.string().default(""),
-    }),
-    execute: (input, context) =>
-      callMeerTool("edit_line", input as Record<string, unknown>, context),
-  },
-  {
     name: "git_status",
     description: "Show current git working tree status.",
     schema: z.object({}),
@@ -1462,16 +1424,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("git_branch", input as Record<string, unknown>, context),
-  },
-  {
-    name: "write_file",
-    description: "Write a file with the provided contents.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      contents: z.string().min(1, "contents is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool("write_file", input as Record<string, unknown>, context),
   },
   {
     name: "delete_file",
