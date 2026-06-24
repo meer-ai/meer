@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { resolve } from "node:path";
 import type { FileEdit, ToolResult } from "../../tools/index.js";
 import * as tools from "../../tools/index.js";
 import type { Provider } from "@meer-ai/ai/base.js";
 import type { MCPTool } from "../../mcp/types.js";
 import type { AgentTool, AgentToolCallResult } from "../runtime/types.js";
 import { extractLeadingCd } from "../../utils/shell-cd.js";
+import { withFileMutationQueue } from "../../tools/file-mutation-queue.js";
 export interface MeerAgentToolContext {
   cwd: string;
   provider?: Provider;
@@ -420,23 +422,25 @@ async function callMeerTool(
       const path = String(input.path);
       const contents = String(input.contents ?? input.content ?? "");
       const description =
-        typeof input.description === "string"
-          ? input.description
-          : "Edit file";
-      const edit = tools.proposeEdit(path, contents, description, context.cwd);
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Edit skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
+        typeof input.description === "string" ? input.description : "Edit file";
+      return withFileMutationQueue(resolve(context.cwd, path), async () => {
+        const edit = tools.proposeEdit(path, contents, description, context.cwd);
+        if (!(await ensureEditApproval(context, edit))) {
+          return `⏭️ Edit skipped for ${edit.path}`;
+        }
+        return unwrapStructured(tools.applyEdit(edit, context.cwd));
+      });
     }
     case "edit_file": {
       const path = String(input.path);
-      const edits = normalizeEditFileEdits(input);
-      const edit = tools.editFileSections(path, edits, context.cwd);
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Edit skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
+      return withFileMutationQueue(resolve(context.cwd, path), async () => {
+        const edits = normalizeEditFileEdits(input);
+        const edit = tools.editFileSections(path, edits, context.cwd);
+        if (!(await ensureEditApproval(context, edit))) {
+          return `⏭️ Edit skipped for ${edit.path}`;
+        }
+        return unwrapStructured(tools.applyEdit(edit, context.cwd));
+      });
     }
     case "run_command": {
       const rawCommand = input.command;
