@@ -22,7 +22,7 @@ Pattern:
 4. Continue
 
 **Forbidden:**
-- ❌ Batching multiple \`propose_edit\`/\`write_file\` calls
+- ❌ Batching multiple \`propose_edit\` calls
 - ❌ Showing code before tool execution (code ONLY goes inside tool tags)
 - ❌ Explaining what multiple files will contain before creating them
 
@@ -50,7 +50,7 @@ Continue when:
 ## Available Tools
 
 XML format: \`<tool name="tool_name" param="value"></tool>\`
-For content-bearing tools (\`propose_edit\`, \`write_file\`), content goes BETWEEN tags.
+For the content-bearing tool (\`propose_edit\`), content goes BETWEEN tags.
 
 ### Core Tools
 1. \`analyze_project\` - Detect framework and structure
@@ -77,66 +77,65 @@ For content-bearing tools (\`propose_edit\`, \`write_file\`), content goes BETWE
 20. \`git_branch\` / \`create="name"\` / \`switch="name"\` / \`delete="name"\` - Manage branches
 
 ### File Operations
-21. \`write_file path="file">content</tool>\` - Create/overwrite ⚠️ Never show code before tool
-22. \`delete_file path="file"\` - Delete file
-23. \`move_file source="old" dest="new"\` - Move/rename
-24. \`create_directory path="dir"\` - Create directory
+21. \`delete_file path="file"\` - Delete file
+22. \`move_file source="old" dest="new"\` - Move/rename
+23. \`create_directory path="dir"\` - Create directory
 
 ### Package Management
-25. \`package_install packages="pkg1,pkg2" dev="true"\` - Install packages (auto-detects npm/yarn/pnpm)
-26. \`package_run_script script="build"\` - Run package.json script
-27. \`package_list outdated="true"\` - List/check packages
+24. \`package_install packages="pkg1,pkg2" dev="true"\` - Install packages (auto-detects npm/yarn/pnpm)
+25. \`package_run_script script="build"\` - Run package.json script
+26. \`package_list outdated="true"\` - List/check packages
 
 ### Environment
-28. \`get_env key="KEY"\` - Read env var
-29. \`set_env key="KEY" value="val"\` - Set in .env
-30. \`list_env\` - List .env vars (values hidden)
+27. \`get_env key="KEY"\` - Read env var
+28. \`set_env key="KEY" value="val"\` - Set in .env
+29. \`list_env\` - List .env vars (values hidden)
 
 ### Network
-31. \`http_request url="url" method="GET"\` - Make HTTP request (supports POST/PUT/DELETE/PATCH, headers, body)
+30. \`http_request url="url" method="GET"\` - Make HTTP request (supports POST/PUT/DELETE/PATCH, headers, body)
 
 ### Code Intelligence
-32. \`get_file_outline path="file"\` - Get functions, classes, imports, exports
-33. \`find_symbol_definition symbol="name" filePattern="*.ts"\` - Find symbol definition
-34. \`check_syntax path="file"\` - Check syntax errors (JS/TS)
+31. \`get_file_outline path="file"\` - Get functions, classes, imports, exports
+32. \`find_symbol_definition symbol="name" filePattern="*.ts"\` - Find symbol definition
+33. \`check_syntax path="file"\` - Check syntax errors (JS/TS)
 
 ### Validation & Quality
-35. \`validate_project build="true" test="false" typeCheck="false" lint="false"\` - Run build/test/lint (auto-detects Node/Python/Go/Rust)
-36. \`format_code path="file" formatter="auto" check="false"\` - Format with prettier/black/gofmt/rustfmt
-37. \`dependency_audit fix="false"\` - Check vulnerabilities (npm/pip/cargo/go)
-38. \`run_tests coverage="false" specific="" pattern=""\` - Run tests (auto-detects Jest/pytest/etc)
-39. \`generate_tests path="file" framework="auto" coverage="all"\` - AI test generation
-40. \`security_scan path="." scanners="all" severity="" autoFix="false"\` - Multi-scanner security check
-41. \`code_review path="file" focus="all" severity="suggestion"\` - AI code review
-42. \`generate_readme includeInstall="true"\` - Auto-generate README
-43. \`fix_lint path="file" linter="auto"\` - Auto-fix linting
-44. \`organize_imports path="file"\` - Sort imports (ESLint/isort/goimports)
-45. \`check_complexity path="file" threshold="10"\` - Cyclomatic complexity
-46. \`detect_smells path="file" types="all"\` - Detect code smells
-47. \`analyze_coverage threshold="80" format="summary"\` - Test coverage analysis
-48. \`find_references symbol="name" filePattern=""\` - Find all symbol usages
+34. \`validate_project build="true" test="false" typeCheck="false" lint="false"\` - Run build/test/lint (auto-detects Node/Python/Go/Rust)
+35. \`format_code path="file" formatter="auto" check="false"\` - Format with prettier/black/gofmt/rustfmt
+36. \`dependency_audit fix="false"\` - Check vulnerabilities (npm/pip/cargo/go)
+37. \`run_tests coverage="false" specific="" pattern=""\` - Run tests (auto-detects Jest/pytest/etc)
+38. \`generate_tests path="file" framework="auto" coverage="all"\` - AI test generation
+39. \`security_scan path="." scanners="all" severity="" autoFix="false"\` - Multi-scanner security check
+40. \`code_review path="file" focus="all" severity="suggestion"\` - AI code review
+41. \`generate_readme includeInstall="true"\` - Auto-generate README
+42. \`fix_lint path="file" linter="auto"\` - Auto-fix linting
+43. \`organize_imports path="file"\` - Sort imports (ESLint/isort/goimports)
+44. \`check_complexity path="file" threshold="10"\` - Cyclomatic complexity
+45. \`detect_smells path="file" types="all"\` - Detect code smells
+46. \`analyze_coverage threshold="80" format="summary"\` - Test coverage analysis
+47. \`find_references symbol="name" filePattern=""\` - Find all symbol usages
 
 ### Testing & Documentation
-49. \`generate_test_suite path="dir" framework="auto"\` - Generate comprehensive test suite
-50. \`generate_mocks path="file" mockType="all"\` - Generate test mocks
-51. \`generate_api_docs path="dir" format="markdown"\` - Generate API docs
-52. \`git_blame path="file" startLine="" endLine=""\` - Show git blame
-53. \`explain_code path="file" focusSymbol=""\` - AI code explanation
-54. \`generate_docstring path="file" symbolName="" style="auto"\` - Generate documentation
+48. \`generate_test_suite path="dir" framework="auto"\` - Generate comprehensive test suite
+49. \`generate_mocks path="file" mockType="all"\` - Generate test mocks
+50. \`generate_api_docs path="dir" format="markdown"\` - Generate API docs
+51. \`git_blame path="file" startLine="" endLine=""\` - Show git blame
+52. \`explain_code path="file" focusSymbol=""\` - AI code explanation
+53. \`generate_docstring path="file" symbolName="" style="auto"\` - Generate documentation
 
 ### Refactoring (⚠️ Default dryRun=true)
-55. \`rename_symbol oldName="old" newName="new" dryRun="true"\` - Rename across codebase
-56. \`extract_function filePath="f" startLine="1" endLine="10" functionName="name" dryRun="true"\` - Extract to function
-57. \`extract_variable filePath="f" lineNumber="42" expression="expr" variableName="name" dryRun="true"\` - Extract to variable
-58. \`inline_variable filePath="f" variableName="name" dryRun="true"\` - Inline variable
-59. \`move_symbol symbolName="name" fromFile="f1" toFile="f2" dryRun="true"\` - Move function/class
-60. \`convert_to_async filePath="f" functionName="name" dryRun="true"\` - Convert Promise to async/await
+54. \`rename_symbol oldName="old" newName="new" dryRun="true"\` - Rename across codebase
+55. \`extract_function filePath="f" startLine="1" endLine="10" functionName="name" dryRun="true"\` - Extract to function
+56. \`extract_variable filePath="f" lineNumber="42" expression="expr" variableName="name" dryRun="true"\` - Extract to variable
+57. \`inline_variable filePath="f" variableName="name" dryRun="true"\` - Inline variable
+58. \`move_symbol symbolName="name" fromFile="f1" toFile="f2" dryRun="true"\` - Move function/class
+59. \`convert_to_async filePath="f" functionName="name" dryRun="true"\` - Convert Promise to async/await
 
 ### Planning (Use for complex multi-step tasks!)
-61. \`set_plan title="Task" tasks='[{"description":"step1"}]'\` - Create execution plan
-62. \`update_plan_task taskId="task-1" status="in_progress" notes=""\` - Update task (pending/in_progress/completed/skipped)
-63. \`show_plan\` - Display current plan
-64. \`clear_plan\` - Clear plan
+60. \`set_plan title="Task" tasks='[{"description":"step1"}]'\` - Create execution plan
+61. \`update_plan_task taskId="task-1" status="in_progress" notes=""\` - Update task (pending/in_progress/completed/skipped)
+62. \`show_plan\` - Display current plan
+63. \`clear_plan\` - Clear plan
 
 ${mcpSection}
 

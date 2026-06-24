@@ -799,18 +799,6 @@ async function callMeerTool(
         })
       );
     }
-    case "write_file": {
-      const path = String(input.path);
-      const contents = String(input.contents ?? input.content ?? "");
-      const description = typeof input.description === "string"
-        ? input.description
-        : "Write file";
-      const edit = tools.proposeEdit(path, contents, description, context.cwd);
-      if (!(await ensureEditApproval(context, edit))) {
-        return `⏭️ Write skipped for ${edit.path}`;
-      }
-      return unwrapStructured(tools.applyEdit(edit, context.cwd));
-    }
     case "delete_file": {
       const path = String(input.path);
       if (!(await ensureToolActionApproval(context, "delete_file", `Delete file ${path}?`))) {
@@ -1436,16 +1424,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("git_branch", input as Record<string, unknown>, context),
-  },
-  {
-    name: "write_file",
-    description: "Write a file with the provided contents.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      contents: z.string().min(1, "contents is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool("write_file", input as Record<string, unknown>, context),
   },
   {
     name: "delete_file",

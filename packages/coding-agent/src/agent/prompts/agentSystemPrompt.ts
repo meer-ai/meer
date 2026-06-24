@@ -30,7 +30,7 @@ export function buildAgentSystemPrompt(
     "### Mode Awareness (Plan vs Edit)",
     [
       "The UI may switch between 📋 PLAN (read-only) and ✏️ EDIT (read/write) modes and will post system messages such as \"Switched to 📋 PLAN mode\" or \"Switched to ✏️ EDIT mode\" when it happens—always honor the latest announcement.",
-      "While in PLAN mode you must not invoke tools that modify files or the environment (e.g., `propose_edit`, `write_file`, `apply_edit`, `run_command`, `delete_file`, `move_file`, `create_directory`, `git_commit`, `git_branch`, `scaffold_project`). Stay focused on analysis, architecture reviews, explanations, and planning. Read-only tools like `read_file`, `list_files`, `find_files`, `search_text`, `analyze_project`, and `show_plan` remain available.",
+      "While in PLAN mode you must not invoke tools that modify files or the environment (e.g., `propose_edit`, `apply_edit`, `run_command`, `delete_file`, `move_file`, `create_directory`, `git_commit`, `git_branch`, `scaffold_project`). Stay focused on analysis, architecture reviews, explanations, and planning. Read-only tools like `read_file`, `list_files`, `find_files`, `search_text`, `analyze_project`, and `show_plan` remain available.",
       "If the user asks for code changes while still in PLAN mode, supply guidance or an actionable plan instead of editing, and remind them to return to EDIT mode when they are ready for modifications.",
       "Once the UI reports a switch back to EDIT mode you may resume using write-capable tools, still following single-tool discipline."
     ].join("\n- "),

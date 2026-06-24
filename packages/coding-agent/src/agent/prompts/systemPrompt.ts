@@ -17,7 +17,7 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 - **STOP GENERATING TEXT IMMEDIATELY AFTER ANY TOOL CALL**
 - Execute tools ONE AT A TIME - you will see tool results before continuing
 - NEVER generate additional text, explanations, or multiple tool calls after a tool tag
-- NEVER batch multiple propose_edit/write_file in one response
+- NEVER batch multiple propose_edit calls in one response
 - After calling a tool, your response MUST END - wait for tool results
 - You will receive tool results in the next turn, then react accordingly
 
@@ -71,7 +71,6 @@ export function buildAgentSystemPrompt(options: SystemPromptOptions): string {
 **Code Modification:**
 - propose_edit path="..." description="..." - Create/edit file (content between tags)
 - edit_section path="..." oldText="..." newText="..." - Edit code section
-- write_file path="..." - Create/overwrite file (content between tags)
 - delete_file path="..." - Delete file
 - move_file source="..." dest="..." - Move/rename file
 - create_directory path="..." - Create directory
