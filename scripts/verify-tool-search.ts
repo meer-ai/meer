@@ -45,6 +45,7 @@ const tool = buildToolSearchTool(() => catalog, activated);
 assert.equal(tool.name, "tool_search", "tool name");
 const res = await tool.execute("tc-1", { query: "create github pull request", maxResults: 1 });
 assert.ok(activated.has("github:create_pr"), "activates the matched tool (sticky in the set)");
+assert.equal(activated.size, 1, "exactly one tool activated with maxResults:1");
 assert.match(res.content, /github:create_pr/, "summary names the activated tool");
 // now the selector surfaces it
 assert.equal(
