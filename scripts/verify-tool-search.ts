@@ -43,7 +43,7 @@ assert.equal(selectActiveMcpTools(catalog, activated, true).length, 0, "search +
 // the tool: activation + session-stickiness (mutates the shared set)
 const tool = buildToolSearchTool(() => catalog, activated);
 assert.equal(tool.name, "tool_search", "tool name");
-const res = await tool.execute("tc-1", { query: "create github pull request" });
+const res = await tool.execute("tc-1", { query: "create github pull request", maxResults: 1 });
 assert.ok(activated.has("github:create_pr"), "activates the matched tool (sticky in the set)");
 assert.match(res.content, /github:create_pr/, "summary names the activated tool");
 // now the selector surfaces it

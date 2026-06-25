@@ -74,7 +74,7 @@ export function buildToolSearchTool(
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords describing the capability you need." },
-        maxResults: { type: "number", description: "Max tools to activate (default 1)." },
+        maxResults: { type: "number", description: "Max tools to activate (default 5)." },
       },
       required: ["query"],
     },
@@ -83,7 +83,7 @@ export function buildToolSearchTool(
       const maxResults =
         typeof input.maxResults === "number" && input.maxResults > 0
           ? Math.floor(input.maxResults)
-          : 1;
+          : 5;
       const catalog = getCatalog();
       const matches = rankMcpTools(catalog, query, maxResults);
 
