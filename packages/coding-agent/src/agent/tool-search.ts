@@ -35,7 +35,7 @@ export function rankMcpTools(
     })
     .filter((s) => s.score > 0)
     .sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
-  return scored.slice(0, Math.max(0, maxResults)).map((s) => s.tool);
+  return scored.slice(0, maxResults).map((s) => s.tool);
 }
 
 /** The set of MCP tools to expose as real tools this build. */

@@ -58,6 +58,7 @@ assert.ok(contents.some((c) => c.includes("a-ran")), "tool_a runs on turn 1");
 assert.ok(contents.some((c) => c.includes("b-ran")), "tool_b callable on turn 2 (resolver re-read)");
 
 // Backward-compat: the array form still executes tools.
+aRan = false;
 const arrProvider = new TwoStepProvider();
 const arrMessages = await runLoop(
   [{ role: "user", content: "go" }],

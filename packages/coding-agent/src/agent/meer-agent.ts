@@ -990,6 +990,7 @@ export class MeerAgent {
   }
 
   private buildAgentTools(): AgentTool[] {
+    const useSearch = shouldUseToolSearch(this.mcpTools.length);
     const skillTools = this.buildSkillTools();
     const legacyTools = createMeerAgentTools(
       {
@@ -1028,10 +1029,8 @@ export class MeerAgent {
           this.shellCwd = path;
         },
       },
-      { mcpTools: selectActiveMcpTools(this.mcpTools, this.activatedMcpToolNames, shouldUseToolSearch(this.mcpTools.length)) }
+      { mcpTools: selectActiveMcpTools(this.mcpTools, this.activatedMcpToolNames, useSearch) }
     );
-
-    const useSearch = shouldUseToolSearch(this.mcpTools.length);
     const searchTools = useSearch
       ? [buildToolSearchTool(() => this.mcpTools, this.activatedMcpToolNames)]
       : [];

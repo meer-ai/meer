@@ -153,6 +153,7 @@ export async function runLoop(
         turns++;
         await emit({ type: "turn_start" });
 
+        // Re-resolve tools each turn so tools activated mid-interaction (e.g. via tool_search) become callable on the next turn.
         const activeTools = resolveTools();
         const toolDefs = buildToolDefinitions(activeTools);
         const toolMap = new Map(activeTools.map((t) => [t.name, t]));
