@@ -571,9 +571,11 @@ async function callMeerTool(
         typeof input.body === "string" ? input.body : undefined;
       const saveTo =
         typeof input.saveTo === "string" ? input.saveTo : undefined;
-      // When body is provided (or method is non-GET), route to httpRequest
-      // which has a real fetch implementation (webFetch is a placeholder).
-      if (body !== undefined || (method && method !== "GET")) {
+      // When body, custom headers, or a non-GET method is provided, route to
+      // httpRequest which has a real fetch implementation (webFetch is a
+      // placeholder). Header-bearing GETs (e.g. authed requests) must reach the
+      // real impl so their headers are not dropped.
+      if (body !== undefined || (method && method !== "GET") || headers !== undefined) {
         const timeout =
           input.timeout !== undefined ? Number(input.timeout) : undefined;
         const result = await tools.httpRequest(url, {
@@ -660,7 +662,7 @@ async function callMeerTool(
       return unwrap(result);
     }
     case "grep": {
-      const path = String(input.path ?? "");
+      const path = String(input.path ?? ".");
       const pattern = String(input.pattern ?? "");
       const caseSensitive =
         input.caseSensitive !== undefined ? Boolean(input.caseSensitive) : undefined;
@@ -971,7 +973,7 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     description:
       "Search within a specific file and return matching line numbers. When includePattern or excludePattern is provided, searches across the workspace (absorbs search_text include/exclude capability).",
     schema: z.object({
-      path: z.string().min(1, "path is required"),
+      path: z.string().optional(),
       pattern: z.string().min(1, "pattern is required"),
       caseSensitive: z.union([z.boolean(), z.string()]).optional(),
       maxResults: z.coerce.number().int().positive().optional(),
