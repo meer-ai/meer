@@ -168,7 +168,12 @@ export class ContextPreprocessor {
 
       for (const line of lines) {
         const statusCode = line.substring(0, 2);
-        const filepath = line.substring(3).trim();
+        let filepath = line.substring(3).trim();
+        // Renamed entries are formatted as `old-path -> new-path`; take the
+        // post-arrow portion so the path actually resolves on disk.
+        if (statusCode[0] === 'R' && filepath.includes(' -> ')) {
+          filepath = filepath.split(' -> ').pop()!.trim();
+        }
         if (filepath && statusCode !== '??' ) {
           files.push({
             path: filepath,
