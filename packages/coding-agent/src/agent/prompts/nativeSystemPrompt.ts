@@ -104,6 +104,7 @@ ${environmentSection}
 - Always check command output for errors before proceeding
 - For long-running or interactive commands that should stay alive (e.g. dev servers), use \`run_command\` with \`background: true\`
 - For git, package management, builds, tests, linting, and formatting, use \`run_command\` (e.g. \`git status\`, \`git commit -m "..."\`, \`npm test\`, \`npx prettier -w .\`). There are no dedicated tools for these.
+- When you need an integration capability that is not in your current tool list (and many MCP tools exist), call \`tool_search\` with keywords to find and activate the right tool, then call that tool by name on a following step.
 
 **For multi-step tasks:**
 - Use \`update_plan\` (op="set") to create a task list for complex work

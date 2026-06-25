@@ -5,6 +5,11 @@ import { MCPManager } from "../mcp/manager.js";
 import type { MCPInitProgress } from "../mcp/manager.js";
 import type { MCPTool } from "../mcp/types.js";
 import { createMeerAgentTools } from "./tools/agent.js";
+import {
+  shouldUseToolSearch,
+  selectActiveMcpTools,
+  buildToolSearchTool,
+} from "./tool-search.js";
 import type { AgentTool } from "@meer-ai/agent/types.js";
 import type { AgentToolCallResult } from "./runtime/types.js";
 import { runLoop } from "@meer-ai/agent/loop.js";
@@ -127,6 +132,8 @@ export class MeerAgent {
   private sessionAllowedTools = new Set<string>();
   private mcpManager = MCPManager.getInstance();
   private mcpTools: MCPTool[] = [];
+  /** MCP tools the model has activated via tool_search; sticky for the session. */
+  private activatedMcpToolNames = new Set<string>();
   private abortController: AbortController | null = null;
   private isRunning = false;
   private enableMemory: boolean;
@@ -306,8 +313,6 @@ export class MeerAgent {
         // MCP tools even on the very first message.
         await this.mcpManager.whenReady().catch(() => {});
         this.mcpTools = this.mcpManager.listAllTools();
-
-        const agentTools = this.buildAgentTools();
 
         const basePrompt =
           options?.systemPrompt ??
@@ -491,7 +496,7 @@ export class MeerAgent {
         try {
           const newMessages = await runLoop(
             inputMessages,
-            agentTools,
+            () => this.buildAgentTools(),
             this.provider,
             {
               systemPrompt,
@@ -1023,11 +1028,17 @@ export class MeerAgent {
           this.shellCwd = path;
         },
       },
-      { mcpTools: this.mcpTools }
+      { mcpTools: selectActiveMcpTools(this.mcpTools, this.activatedMcpToolNames, shouldUseToolSearch(this.mcpTools.length)) }
     );
+
+    const useSearch = shouldUseToolSearch(this.mcpTools.length);
+    const searchTools = useSearch
+      ? [buildToolSearchTool(() => this.mcpTools, this.activatedMcpToolNames)]
+      : [];
 
     return [
       ...skillTools,
+      ...searchTools,
       ...legacyTools.map((tool) => ({
         name: tool.name,
         description: tool.description,
