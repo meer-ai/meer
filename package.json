@@ -1,6 +1,6 @@
 {
   "name": "meerai",
-  "version": "0.6.42",
+  "version": "0.6.43",
   "description": "MeerAI - Dive deep into your code. An open-source, local-first AI CLI for developers.",
   "type": "module",
   "packageManager": "pnpm@9.12.3",
