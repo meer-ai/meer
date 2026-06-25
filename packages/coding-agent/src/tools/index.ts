@@ -2037,38 +2037,6 @@ export async function googleSearch(
 /**
  * Tool: Web Fetch for downloading resources
  */
-export function webFetch(
-  url: string,
-  options: {
-    method?: "GET" | "POST" | "PUT" | "DELETE";
-    headers?: Record<string, string>;
-    saveTo?: string;
-  } = {}
-): ToolResult {
-  try {
-    toolLog(chalk.gray(`  🌐 Fetching: ${url}`));
-
-    // Note: This is a placeholder implementation
-    // In a real implementation, you would use a proper HTTP client like axios or fetch
-
-    return {
-      tool: "web_fetch",
-      result: `Web Fetch for "${url}":\n\nNote: This is a placeholder implementation. In a real CLI, you would:\n1. Use axios or node-fetch for HTTP requests\n2. Handle different response types (JSON, text, binary)\n3. Support authentication and custom headers\n4. Implement proper error handling and timeouts\n5. Support file downloads and saving to disk\n\nFor now, you can manually visit: ${url}`,
-    };
-  } catch (error) {
-    return {
-      tool: "web_fetch",
-      result: "",
-      error: formatErrorWithContext(error, {
-        source: "tool",
-        name: "web_fetch",
-        operation: options.method || "GET",
-        target: url,
-      }),
-    };
-  }
-}
-
 /**
  * Tool: Save memory for persistent knowledge storage
  */
@@ -2389,6 +2357,8 @@ export async function httpRequest(
     headers?: Record<string, string>;
     body?: string;
     timeout?: number;
+    saveTo?: string;
+    cwd?: string;
   } = {}
 ): Promise<ToolResult> {
   try {
@@ -2408,6 +2378,24 @@ export async function httpRequest(
       result = JSON.stringify(json, null, 2);
     } else {
       result = await response.text();
+    }
+
+    // Optional download: write the raw response body to disk (resolved
+    // against cwd). Returns a save summary instead of the body so a large
+    // download doesn't flood the model's context.
+    if (options.saveTo) {
+      const target = resolvePath(options.saveTo, options.cwd ?? process.cwd());
+      const dir = dirname(target);
+      if (!existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      writeFileSync(target, result, "utf-8");
+      return {
+        tool: "http_request",
+        result: `Status: ${response.status} ${response.statusText}\nSaved ${formatBytes(
+          Buffer.byteLength(result)
+        )} to ${target}`,
+      };
     }
 
     return {

@@ -589,28 +589,19 @@ async function callMeerTool(
         typeof input.body === "string" ? input.body : undefined;
       const saveTo =
         typeof input.saveTo === "string" ? input.saveTo : undefined;
-      // When body, custom headers, or a non-GET method is provided, route to
-      // httpRequest which has a real fetch implementation (webFetch is a
-      // placeholder). Header-bearing GETs (e.g. authed requests) must reach the
-      // real impl so their headers are not dropped.
-      if (body !== undefined || (method && method !== "GET") || headers !== undefined) {
-        const timeout =
-          input.timeout !== undefined ? Number(input.timeout) : undefined;
-        const result = await tools.httpRequest(url, {
-          method,
-          headers,
-          body,
-          timeout,
-        });
-        return unwrap(result);
-      }
-      return unwrap(
-        tools.webFetch(url, {
-          method,
-          headers,
-          saveTo,
-        })
-      );
+      const timeout =
+        input.timeout !== undefined ? Number(input.timeout) : undefined;
+      // Every web_fetch — plain GET, header/body/method requests, and saveTo
+      // downloads — uses the real fetch implementation (httpRequest).
+      const result = await tools.httpRequest(url, {
+        method,
+        headers,
+        body,
+        timeout,
+        saveTo,
+        cwd: context.cwd,
+      });
+      return unwrap(result);
     }
     case "save_memory": {
       const key = String(input.key);
