@@ -128,7 +128,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
     const message = firstString(a, ["message", "msg"]);
     if (message) return `"${message}"`;
   }
-  if (/symbol|reference|rename|definition|move_symbol/.test(lower)) {
+  if (/symbol|reference|rename|definition/.test(lower)) {
     const symbol = firstString(a, ["symbol", "symbolName", "name", "oldName", "identifier"]);
     if (symbol) return symbol;
   }
@@ -140,12 +140,6 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
     const key = firstString(a, ["key", "query", "name", "title"]);
     if (key) return key;
   }
-  if (/extract_function|extract_variable|inline_variable/.test(lower)) {
-    const name = firstString(a, ["name", "functionName", "variableName"]);
-    const path = getFilePath(args);
-    if (path && name) return `${path} → ${name}`;
-  }
-
   const path = getFilePath(args);
   if (path) return path;
 

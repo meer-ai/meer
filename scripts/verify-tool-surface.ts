@@ -19,4 +19,11 @@ for (const removed of [
   assert.ok(!names.has(removed), `${removed} must be removed`);
 }
 
+for (const removed of [
+  "rename_symbol", "extract_function", "extract_variable",
+  "inline_variable", "move_symbol", "convert_to_async",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+
 console.log("tool surface verification passed");
