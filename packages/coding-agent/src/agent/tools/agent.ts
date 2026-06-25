@@ -722,42 +722,8 @@ async function callMeerTool(
         })
       );
     }
-    case "set_plan": {
-      const title =
-        typeof input.title === "string" ? input.title : "Task Plan";
-      const tasksInput = input.tasks;
-      const tasks =
-        Array.isArray(tasksInput)
-          ? tasksInput.map((task) =>
-              typeof task === "object" && task !== null && "description" in task
-                ? { description: String((task as any).description) }
-                : { description: String(task) }
-            )
-          : typeof tasksInput === "string"
-          ? tasksInput
-              .split(",")
-              .map((t) => t.trim())
-              .filter(Boolean)
-              .map((description) => ({ description }))
-          : [];
-      return unwrap(tools.setPlan(title, tasks, context.cwd));
-    }
-    case "update_plan_task": {
-      const taskId = String(input.taskId);
-      const status = String(input.status ?? "pending") as
-        | "pending"
-        | "in_progress"
-        | "completed"
-        | "skipped";
-      const notes =
-        typeof input.notes === "string" ? input.notes : undefined;
-      return unwrap(tools.updatePlanTask(taskId, status, notes));
-    }
-    case "show_plan": {
-      return unwrap(tools.showPlan());
-    }
-    case "clear_plan": {
-      return unwrap(tools.clearPlan());
+    case "update_plan": {
+      return unwrap(tools.updatePlan(input as Parameters<typeof tools.updatePlan>[0], context.cwd));
     }
     case "find_references": {
       const symbol = String(input.symbol);
@@ -1032,57 +998,22 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       ),
   },
   {
-    name: "set_plan",
-    description: "Create or reset an execution plan with tasks.",
+    name: "update_plan",
+    description:
+      "Manage the task plan. op=\"set\" creates/replaces the plan (title + tasks[]); op=\"update\" sets a task's status (taskId + status); op=\"clear\" removes the plan.",
     schema: z.object({
+      op: z.enum(["set", "update", "clear"]).default("set"),
       title: z.string().optional(),
-      tasks: z
-        .union([
-          z.string(),
-          z.array(
-            z.union([
-              z.string(),
-              z.object({
-                description: z.string(),
-              }),
-            ])
-          ),
-        ])
-        .optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("set_plan", input as Record<string, unknown>, context),
-  },
-  {
-    name: "update_plan_task",
-    description: "Update the status of a plan task.",
-    schema: z.object({
-      taskId: z.string().min(1, "taskId is required"),
-      status: z
-        .enum(["pending", "in_progress", "completed", "skipped"])
-        .default("pending"),
+      tasks: z.union([
+        z.array(z.object({ description: z.string() })),
+        z.string(),
+      ]).optional(),
+      taskId: z.string().optional(),
+      status: z.enum(["pending", "in_progress", "completed", "skipped"]).optional(),
       notes: z.string().optional(),
     }),
     execute: (input, context) =>
-      callMeerTool(
-        "update_plan_task",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "show_plan",
-    description: "Display the current execution plan.",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("show_plan", input as Record<string, unknown>, context),
-  },
-  {
-    name: "clear_plan",
-    description: "Clear the active execution plan.",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("clear_plan", input as Record<string, unknown>, context),
+      callMeerTool("update_plan", input as Record<string, unknown>, context),
   },
   {
     name: "request_user_input",

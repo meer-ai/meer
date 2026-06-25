@@ -67,4 +67,9 @@ assert.ok(lf.includes("maxDepth"), "list_files must absorb read_folder maxDepth"
 const wf = JSON.stringify(byName.get("web_fetch")?.inputSchema ?? {});
 assert.ok(wf.includes("method"), "web_fetch must absorb http_request method");
 
+for (const removed of ["set_plan", "update_plan_task", "show_plan", "clear_plan"]) {
+  assert.ok(!names.has(removed), `${removed} must be consolidated into update_plan`);
+}
+assert.ok(names.has("update_plan"), "update_plan must exist");
+
 console.log("tool surface verification passed");

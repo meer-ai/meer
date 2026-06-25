@@ -131,7 +131,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
     const symbol = firstString(a, ["symbol", "symbolName", "name", "oldName", "identifier"]);
     if (symbol) return symbol;
   }
-  if (/set_plan|create_plan/.test(lower)) {
+  if (/update_plan|set_plan|create_plan/.test(lower)) {
     const title = firstString(a, ["title", "goal", "name"]);
     if (title) return title;
   }

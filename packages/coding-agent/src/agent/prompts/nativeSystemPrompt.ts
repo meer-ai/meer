@@ -106,8 +106,8 @@ ${environmentSection}
 - For git, package management, builds, tests, linting, and formatting, use \`run_command\` (e.g. \`git status\`, \`git commit -m "..."\`, \`npm test\`, \`npx prettier -w .\`). There are no dedicated tools for these.
 
 **For multi-step tasks:**
-- Use \`set_plan\` to create a task list for complex work
-- Update tasks with \`update_plan_task\` as you complete them
+- Use \`update_plan\` (op="set") to create a task list for complex work
+- Update tasks with \`update_plan\` (op="update") as you complete them
 - Keep making progress — don't stop and explain after every tool call unless something unexpected happened
 - If the user must choose between concrete options, use \`request_user_input\` instead of dumping a numbered questionnaire into plain chat
 

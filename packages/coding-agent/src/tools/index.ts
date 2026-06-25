@@ -2915,6 +2915,39 @@ export function findSymbolDefinition(
       }
     }
 
+export function updatePlan(
+  input: {
+    op?: string;
+    title?: string;
+    tasks?: unknown;
+    taskId?: string;
+    status?: string;
+    notes?: string;
+  },
+  cwd: string
+): ToolResult {
+  const op = String(input.op ?? "set");
+  if (op === "clear") return clearPlan();
+  if (op === "update") {
+    const status = (input.status ?? "pending") as
+      "pending" | "in_progress" | "completed" | "skipped";
+    return updatePlanTask(String(input.taskId), status,
+      typeof input.notes === "string" ? input.notes : undefined);
+  }
+  // op === "set"
+  const tasksInput = input.tasks;
+  const tasks = Array.isArray(tasksInput)
+    ? tasksInput.map((t) =>
+        typeof t === "object" && t !== null && "description" in t
+          ? { description: String((t as { description: unknown }).description) }
+          : { description: String(t) })
+    : typeof tasksInput === "string"
+    ? tasksInput.split(",").map((t) => t.trim()).filter(Boolean)
+        .map((description) => ({ description }))
+    : [];
+  return setPlan(String(input.title ?? "Plan"), tasks, cwd);
+}
+
 /**
  * Tool: Clear the current plan
  */
