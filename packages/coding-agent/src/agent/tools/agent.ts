@@ -717,25 +717,6 @@ async function callMeerTool(
       }
       return unwrap(tools.moveFile(source, dest, context.cwd));
     }
-    case "create_directory": {
-      const path = String(input.path);
-      if (!(await ensureToolActionApproval(context, "create_directory", `Create directory ${path}?`))) {
-        return `⚠️ Directory creation cancelled: ${path}`;
-      }
-      return unwrap(tools.createDirectory(path, context.cwd));
-    }
-    case "get_env": {
-      const key = String(input.key);
-      return unwrap(tools.getEnv(key, context.cwd));
-    }
-    case "set_env": {
-      const key = String(input.key);
-      const value = String(input.value ?? "");
-      if (!(await ensureToolActionApproval(context, "set_env", `Set environment variable ${key}=${value}?`))) {
-        return `⚠️ Environment variable modification cancelled: ${key}`;
-      }
-      return unwrap(tools.setEnv(key, value, context.cwd));
-    }
     case "http_request": {
       const url = String(input.url);
       const method =
@@ -1072,38 +1053,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("move_file", input as Record<string, unknown>, context),
-  },
-  {
-    name: "create_directory",
-    description: "Create a new directory recursively.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "create_directory",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "get_env",
-    description: "Read an environment variable from process or .env file.",
-    schema: z.object({
-      key: z.string().min(1, "key is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool("get_env", input as Record<string, unknown>, context),
-  },
-  {
-    name: "set_env",
-    description: "Set or update a key in the .env file.",
-    schema: z.object({
-      key: z.string().min(1, "key is required"),
-      value: z.string().default(""),
-    }),
-    execute: (input, context) =>
-      callMeerTool("set_env", input as Record<string, unknown>, context),
   },
   {
     name: "http_request",

@@ -192,8 +192,7 @@ export class MeerAgent {
       return (
         "\n\nCURRENT MODE: 📋 PLAN (read-only). Do NOT modify files or run " +
         "mutating commands (no propose_edit, apply_edit, " +
-        "run_command for non-read-only commands, delete_file, move_file, " +
-        "create_directory). Investigate " +
+        "run_command for non-read-only commands, delete_file, move_file). Investigate " +
         "and produce a clear, actionable plan instead. Tell the user to press " +
         "Shift+Tab to switch to edit mode when they're ready to apply changes."
       );
@@ -932,9 +931,9 @@ export class MeerAgent {
   }
 
   /**
-   * Approve a mutating tool action (delete_file, move_file, create_directory,
-   * set_env). Mirrors confirmCommand's trust semantics but is keyed by tool name
-   * so "Always allow" remembers the whole tool, not a string.
+   * Approve a mutating tool action (delete_file, move_file). Mirrors
+   * confirmCommand's trust semantics but is keyed by tool name so "Always allow"
+   * remembers the whole tool, not a string.
    */
   private async confirmToolAction(toolName: string, action: string): Promise<boolean> {
     const mode: TrustMode = this.config.trustMode ?? "trusted";

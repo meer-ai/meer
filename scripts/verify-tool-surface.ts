@@ -45,4 +45,10 @@ for (const removed of [
   assert.ok(!names.has(removed), `${removed} must be removed (use run_command)`);
 }
 
+for (const removed of ["create_directory", "get_env", "set_env"]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+assert.ok(names.has("delete_file"), "delete_file must remain");
+assert.ok(names.has("move_file"), "move_file must remain");
+
 console.log("tool surface verification passed");

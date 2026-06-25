@@ -12,8 +12,7 @@ export function isMutationTool(name: string): boolean {
     lower.includes("apply_edit") ||
     lower.includes("move") ||
     lower.includes("rename") ||
-    lower.includes("delete") ||
-    lower.includes("create_directory")
+    lower.includes("delete")
   );
 }
 

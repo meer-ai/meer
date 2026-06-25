@@ -97,7 +97,7 @@ export function describeToolWorkflowStage(toolName: string): string {
   if (["read_file", "read_many_files", "grep", "search_text", "semantic_search", "find_references", "get_file_outline", "find_symbol_definition"].includes(name)) {
     return "Inspect source code";
   }
-  if (["propose_edit", "delete_file", "move_file", "create_directory"].includes(name)) {
+  if (["propose_edit", "delete_file", "move_file"].includes(name)) {
     return "Apply code changes";
   }
   if (["run_command"].includes(name)) {
