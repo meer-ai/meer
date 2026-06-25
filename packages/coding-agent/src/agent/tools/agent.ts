@@ -98,10 +98,8 @@ const PRIMITIVE_INPUT_COERCIONS: Record<
 > = {
   read_file: (value) => ({ path: value }),
   list_files: (value) => ({ path: value }),
-  read_folder: (value) => ({ path: value }),
   run_command: (value) => ({ command: value }),
   find_files: (value) => ({ pattern: value }),
-  search_text: (value) => ({ term: value }),
   grep: (value) => {
     const [path, pattern] = value.split(/\s+/, 2);
     if (pattern) {
@@ -416,6 +414,12 @@ async function callMeerTool(
         typeof rawPath === "string" && rawPath.trim().length > 0
           ? rawPath
           : ".";
+      const maxDepth =
+        input.maxDepth !== undefined ? Number(input.maxDepth) : undefined;
+      // When maxDepth is provided, route to readFolder for recursive listing.
+      if (maxDepth !== undefined) {
+        return unwrap(tools.readFolder(path, context.cwd, { maxDepth }));
+      }
       return unwrap(tools.listFiles(path, context.cwd));
     }
     case "propose_edit": {
@@ -448,6 +452,24 @@ async function callMeerTool(
       if (!command) {
         throw new Error("run_command requires a command string.");
       }
+
+      // Background branch: route to the managed background terminal when
+      // background is truthy. Like the foreground path, it goes through the
+      // command-approval gate first (so review modes still prompt; trusted /
+      // auto-approve modes pass straight through).
+      const isBackground =
+        input.background === true ||
+        (typeof input.background === "string" && input.background.toLowerCase() === "true");
+      if (isBackground) {
+        if (!(await ensureCommandApproval(context, command))) {
+          return `⚠️ Command cancelled: ${command}`;
+        }
+        return startBackgroundCommand(context, {
+          command,
+          cwd: typeof input.cwd === "string" ? input.cwd : undefined,
+        });
+      }
+
       if (!(await ensureCommandApproval(context, command))) {
         return `⚠️ Command cancelled: ${command}`;
       }
@@ -543,51 +565,6 @@ async function callMeerTool(
         tools.readManyFiles(files, context.cwd, maxFiles ?? 10)
       );
     }
-    case "search_text": {
-      const term = String(input.term);
-      const filePattern =
-        typeof input.filePattern === "string" ? input.filePattern : undefined;
-      const includePattern =
-        typeof input.includePattern === "string" ? input.includePattern : undefined;
-      const excludePattern =
-        typeof input.excludePattern === "string" ? input.excludePattern : undefined;
-      const caseSensitive =
-        input.caseSensitive !== undefined
-          ? Boolean(input.caseSensitive)
-          : undefined;
-      const wholeWord =
-        input.wholeWord !== undefined ? Boolean(input.wholeWord) : undefined;
-      return unwrap(
-        tools.searchText(term, context.cwd, {
-          filePattern,
-          includePattern,
-          excludePattern,
-          caseSensitive,
-          wholeWord,
-        })
-      );
-    }
-    case "read_folder": {
-      const path = input.path ? String(input.path) : ".";
-      const maxDepth =
-        input.maxDepth !== undefined ? Number(input.maxDepth) : undefined;
-      const includeStats =
-        input.includeStats !== undefined ? Boolean(input.includeStats) : undefined;
-      const fileTypesInput = input.fileTypes;
-      const fileTypes =
-        typeof fileTypesInput === "string"
-          ? fileTypesInput.split(",").map((f) => f.trim()).filter(Boolean)
-          : Array.isArray(fileTypesInput)
-          ? fileTypesInput.map((f) => String(f))
-          : undefined;
-      return unwrap(
-        tools.readFolder(path, context.cwd, {
-          maxDepth,
-          includeStats,
-          fileTypes,
-        })
-      );
-    }
     case "google_search": {
       const query = String(input.query);
       const maxResults =
@@ -608,8 +585,25 @@ async function callMeerTool(
         typeof input.headers === "object" && input.headers !== null
           ? (input.headers as Record<string, string>)
           : undefined;
+      const body =
+        typeof input.body === "string" ? input.body : undefined;
       const saveTo =
         typeof input.saveTo === "string" ? input.saveTo : undefined;
+      // When body, custom headers, or a non-GET method is provided, route to
+      // httpRequest which has a real fetch implementation (webFetch is a
+      // placeholder). Header-bearing GETs (e.g. authed requests) must reach the
+      // real impl so their headers are not dropped.
+      if (body !== undefined || (method && method !== "GET") || headers !== undefined) {
+        const timeout =
+          input.timeout !== undefined ? Number(input.timeout) : undefined;
+        const result = await tools.httpRequest(url, {
+          method,
+          headers,
+          body,
+          timeout,
+        });
+        return unwrap(result);
+      }
       return unwrap(
         tools.webFetch(url, {
           method,
@@ -643,28 +637,6 @@ async function callMeerTool(
     case "load_memory": {
       const key = String(input.key);
       return unwrap(tools.loadMemory(key, context.cwd));
-    }
-    case "scaffold_project": {
-      const projectType = String(input.projectType ?? input.type ?? "").trim();
-      const projectName = String(
-        input.projectName ?? input.name ?? ""
-      ).trim();
-      if (!projectType || !projectName) {
-        throw new Error(
-          "scaffold_project requires both projectType and projectName."
-        );
-      }
-      return unwrap(
-        tools.scaffoldProject(projectType, projectName, context.cwd)
-      );
-    }
-    case "suggest_setup": {
-      const request = String(input.request ?? input.userRequest ?? "").trim();
-      if (!request) {
-        throw new Error("suggest_setup requires a non-empty request.");
-      }
-      const analysis = tools.analyzeProject(context.cwd);
-      return unwrap(tools.suggestSetup(request, analysis));
     }
     case "semantic_search": {
       const query = String(input.query ?? input.term ?? "").trim();
@@ -708,7 +680,12 @@ async function callMeerTool(
       return unwrap(result);
     }
     case "grep": {
-      const path = String(input.path ?? "");
+      // Detect whether the caller supplied an explicit file path BEFORE
+      // applying the "." default — a bare grep (no path) should search the
+      // whole workspace, not try to read "." as a single file.
+      const hasExplicitPath =
+        typeof input.path === "string" && input.path.trim().length > 0;
+      const path = hasExplicitPath ? String(input.path) : ".";
       const pattern = String(input.pattern ?? "");
       const caseSensitive =
         input.caseSensitive !== undefined ? Boolean(input.caseSensitive) : undefined;
@@ -716,86 +693,35 @@ async function callMeerTool(
         input.maxResults !== undefined ? Number(input.maxResults) : undefined;
       const contextLines =
         input.contextLines !== undefined ? Number(input.contextLines) : undefined;
+      const includePattern =
+        typeof input.includePattern === "string" ? input.includePattern : undefined;
+      const excludePattern =
+        typeof input.excludePattern === "string" ? input.excludePattern : undefined;
+      // When include/exclude patterns are provided, route to searchText which
+      // handles glob-pattern file filtering natively (grep is single-file).
+      if (includePattern !== undefined || excludePattern !== undefined) {
+        return unwrap(
+          tools.searchText(pattern, context.cwd, {
+            filePattern: includePattern,
+            excludePattern,
+            caseSensitive,
+          })
+        );
+      }
+      // Bare grep with no explicit file path: search the whole workspace via
+      // searchText (single-file tools.grep would readFileSync(".") → EISDIR).
+      if (!hasExplicitPath) {
+        return unwrap(
+          tools.searchText(pattern, context.cwd, {
+            caseSensitive,
+          })
+        );
+      }
       return unwrap(
         tools.grep(path, pattern, context.cwd, {
           caseSensitive,
           maxResults,
           contextLines,
-        })
-      );
-    }
-    case "git_status": {
-      return unwrap(tools.gitStatus(context.cwd));
-    }
-    case "git_diff": {
-      const staged =
-        input.staged !== undefined ? Boolean(input.staged) : undefined;
-      const filepath =
-        typeof input.filepath === "string" ? input.filepath : undefined;
-      const unified =
-        input.unified !== undefined ? Number(input.unified) : undefined;
-      return unwrap(
-        tools.gitDiff(context.cwd, {
-          staged,
-          filepath,
-          unified,
-        })
-      );
-    }
-    case "git_log": {
-      const maxCount =
-        input.maxCount !== undefined ? Number(input.maxCount) : undefined;
-      const author =
-        typeof input.author === "string" ? input.author : undefined;
-      const since =
-        typeof input.since === "string" ? input.since : undefined;
-      const until =
-        typeof input.until === "string" ? input.until : undefined;
-      const filepath =
-        typeof input.filepath === "string" ? input.filepath : undefined;
-      return unwrap(
-        tools.gitLog(context.cwd, {
-          maxCount,
-          author,
-          since,
-          until,
-          filepath,
-        })
-      );
-    }
-    case "git_commit": {
-      const message = String(input.message);
-      const addAll =
-        input.addAll !== undefined ? Boolean(input.addAll) : undefined;
-      const filesInput = input.files;
-      const files =
-        typeof filesInput === "string"
-          ? filesInput.split(",").map((f) => f.trim()).filter(Boolean)
-          : Array.isArray(filesInput)
-          ? filesInput.map((f) => String(f))
-          : undefined;
-      return unwrap(
-        tools.gitCommit(message, context.cwd, {
-          addAll,
-          files,
-        })
-      );
-    }
-    case "git_branch": {
-      const list =
-        input.list !== undefined ? Boolean(input.list) : undefined;
-      const create =
-        typeof input.create === "string" ? input.create : undefined;
-      const switchTo =
-        typeof input.switch === "string" ? input.switch : undefined;
-      const deleteBranch =
-        typeof input.delete === "string" ? input.delete : undefined;
-      return unwrap(
-        tools.gitBranch(context.cwd, {
-          list,
-          create,
-          switch: switchTo,
-          delete: deleteBranch,
         })
       );
     }
@@ -814,98 +740,6 @@ async function callMeerTool(
       }
       return unwrap(tools.moveFile(source, dest, context.cwd));
     }
-    case "create_directory": {
-      const path = String(input.path);
-      if (!(await ensureToolActionApproval(context, "create_directory", `Create directory ${path}?`))) {
-        return `⚠️ Directory creation cancelled: ${path}`;
-      }
-      return unwrap(tools.createDirectory(path, context.cwd));
-    }
-    case "package_install": {
-      const packagesInput = input.packages;
-      const packages =
-        typeof packagesInput === "string"
-          ? packagesInput.split(",").map((p) => p.trim()).filter(Boolean)
-          : Array.isArray(packagesInput)
-          ? packagesInput.map((p) => String(p))
-          : [];
-      const manager =
-        typeof input.manager === "string"
-          ? (input.manager as "npm" | "yarn" | "pnpm")
-          : undefined;
-      const dev =
-        input.dev !== undefined ? Boolean(input.dev) : undefined;
-      const globalInstall =
-        input.global !== undefined ? Boolean(input.global) : undefined;
-      const scopeLabel = globalInstall ? "globally" : "locally";
-      const packageLabel = packages.join(", ");
-      if (!(await ensureToolActionApproval(context, "package_install", `Install ${packageLabel} ${scopeLabel}?`))) {
-        return `⚠️ Package install cancelled: ${packageLabel}`;
-      }
-      return unwrap(
-        tools.packageInstall(packages, context.cwd, {
-          manager,
-          dev,
-          global: globalInstall,
-        })
-      );
-    }
-    case "package_run_script": {
-      const script = String(input.script);
-      const manager =
-        typeof input.manager === "string"
-          ? (input.manager as "npm" | "yarn" | "pnpm")
-          : undefined;
-      return unwrap(
-        tools.packageRunScript(script, context.cwd, {
-          manager,
-        })
-      );
-    }
-    case "package_list": {
-      const outdated =
-        input.outdated !== undefined ? Boolean(input.outdated) : undefined;
-      return unwrap(
-        tools.packageList(context.cwd, {
-          outdated,
-        })
-      );
-    }
-    case "get_env": {
-      const key = String(input.key);
-      return unwrap(tools.getEnv(key, context.cwd));
-    }
-    case "set_env": {
-      const key = String(input.key);
-      const value = String(input.value ?? "");
-      if (!(await ensureToolActionApproval(context, "set_env", `Set environment variable ${key}=${value}?`))) {
-        return `⚠️ Environment variable modification cancelled: ${key}`;
-      }
-      return unwrap(tools.setEnv(key, value, context.cwd));
-    }
-    case "list_env": {
-      return unwrap(tools.listEnv(context.cwd));
-    }
-    case "http_request": {
-      const url = String(input.url);
-      const method =
-        typeof input.method === "string" ? (input.method as any) : undefined;
-      const headers =
-        typeof input.headers === "object" && input.headers !== null
-          ? (input.headers as Record<string, string>)
-          : undefined;
-      const body =
-        typeof input.body === "string" ? input.body : undefined;
-      const timeout =
-        input.timeout !== undefined ? Number(input.timeout) : undefined;
-      const result = await tools.httpRequest(url, {
-        method,
-        headers,
-        body,
-        timeout,
-      });
-      return unwrap(result);
-    }
     case "get_file_outline": {
       const path = String(input.path);
       return unwrap(tools.getFileOutline(path, context.cwd));
@@ -920,200 +754,12 @@ async function callMeerTool(
         })
       );
     }
-    case "check_syntax": {
-      const path = String(input.path);
-      return unwrap(tools.checkSyntax(path, context.cwd));
-    }
-    case "validate_project": {
-      return unwrap(tools.validateProject(context.cwd, input));
-    }
-    case "set_plan": {
-      const title =
-        typeof input.title === "string" ? input.title : "Task Plan";
-      const tasksInput = input.tasks;
-      const tasks =
-        Array.isArray(tasksInput)
-          ? tasksInput.map((task) =>
-              typeof task === "object" && task !== null && "description" in task
-                ? { description: String((task as any).description) }
-                : { description: String(task) }
-            )
-          : typeof tasksInput === "string"
-          ? tasksInput
-              .split(",")
-              .map((t) => t.trim())
-              .filter(Boolean)
-              .map((description) => ({ description }))
-          : [];
-      return unwrap(tools.setPlan(title, tasks, context.cwd));
-    }
-    case "update_plan_task": {
-      const taskId = String(input.taskId);
-      const status = String(input.status ?? "pending") as
-        | "pending"
-        | "in_progress"
-        | "completed"
-        | "skipped";
-      const notes =
-        typeof input.notes === "string" ? input.notes : undefined;
-      return unwrap(tools.updatePlanTask(taskId, status, notes));
-    }
-    case "show_plan": {
-      return unwrap(tools.showPlan());
-    }
-    case "clear_plan": {
-      return unwrap(tools.clearPlan());
-    }
-    case "explain_code": {
-      const path = String(input.path);
-      const startLine =
-        input.startLine !== undefined ? Number(input.startLine) : undefined;
-      const endLine =
-        input.endLine !== undefined ? Number(input.endLine) : undefined;
-      const focusSymbol =
-        typeof input.focusSymbol === "string" ? input.focusSymbol : undefined;
-      return unwrap(
-        tools.explainCode(path, context.cwd, {
-          startLine,
-          endLine,
-          focusSymbol,
-        })
-      );
-    }
-    case "generate_docstring": {
-      const path = String(input.path);
-      return unwrap(tools.generateDocstring(path, context.cwd, input));
-    }
-    case "format_code": {
-      const path = String(input.path);
-      return unwrap(tools.formatCode(path, context.cwd, input));
-    }
-    case "dependency_audit": {
-      return unwrap(tools.dependencyAudit(context.cwd, input));
-    }
-    case "run_tests": {
-      return unwrap(tools.runTests(context.cwd, input));
-    }
-    case "generate_tests": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateTests(path, context.cwd, input));
-    }
-    case "security_scan": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.securityScan(path, context.cwd, input));
-    }
-    case "code_review": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.codeReview(path, context.cwd, input));
-    }
-    case "generate_readme": {
-      return unwrap(tools.generateReadme(context.cwd, input));
-    }
-    case "fix_lint": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.fixLint(path, context.cwd, input));
-    }
-    case "organize_imports": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.organizeImports(path, context.cwd, input));
-    }
-    case "check_complexity": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.checkComplexity(path, context.cwd, input));
-    }
-    case "detect_smells": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.detectSmells(path, context.cwd, input));
-    }
-    case "analyze_coverage": {
-      return unwrap(tools.analyzeCoverage(context.cwd, input));
+    case "update_plan": {
+      return unwrap(tools.updatePlan(input as Parameters<typeof tools.updatePlan>[0], context.cwd));
     }
     case "find_references": {
       const symbol = String(input.symbol);
       return unwrap(tools.findReferences(symbol, context.cwd, input));
-    }
-    case "generate_test_suite": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateTestSuite(path, context.cwd, input));
-    }
-    case "generate_mocks": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateMocks(path, context.cwd, input));
-    }
-    case "generate_api_docs": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateApiDocs(path, context.cwd, input));
-    }
-    case "git_blame": {
-      const path = String(input.path);
-      return unwrap(tools.gitBlame(path, context.cwd, input));
-    }
-    case "rename_symbol": {
-      const oldName = String(input.oldName);
-      const newName = String(input.newName);
-      return unwrap(
-        tools.renameSymbol(oldName, newName, context.cwd, input)
-      );
-    }
-    case "extract_function": {
-      const filePath = String(input.filePath);
-      const startLine = Number(input.startLine);
-      const endLine = Number(input.endLine);
-      const functionName = String(input.functionName);
-      return unwrap(
-        tools.extractFunction(
-          filePath,
-          startLine,
-          endLine,
-          functionName,
-          context.cwd,
-          input
-        )
-      );
-    }
-    case "extract_variable": {
-      const filePath = String(input.filePath);
-      const lineNumber = Number(input.lineNumber);
-      const expression = String(input.expression);
-      const variableName = String(input.variableName);
-      return unwrap(
-        tools.extractVariable(
-          filePath,
-          lineNumber,
-          expression,
-          variableName,
-          context.cwd,
-          input
-        )
-      );
-    }
-    case "inline_variable": {
-      const filePath = String(input.filePath);
-      const variableName = String(input.variableName);
-      return unwrap(
-        tools.inlineVariable(filePath, variableName, context.cwd, input)
-      );
-    }
-    case "move_symbol": {
-      const symbolName = String(input.symbolName);
-      const fromFile = String(input.fromFile);
-      const toFile = String(input.toFile);
-      return unwrap(
-        tools.moveSymbol(
-          symbolName,
-          fromFile,
-          toFile,
-          context.cwd,
-          input
-        )
-      );
-    }
-    case "convert_to_async": {
-      const filePath = String(input.filePath);
-      const functionName = String(input.functionName);
-      return unwrap(
-        tools.convertToAsync(filePath, functionName, context.cwd, input)
-      );
     }
     default: {
       throw new Error(`Unsupported tool: ${name}`);
@@ -1128,19 +774,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     schema: z.object({}),
     execute: (input, context) =>
       callMeerTool("analyze_project", input as Record<string, unknown>, context),
-  },
-  {
-    name: "suggest_setup",
-    description:
-      "Offer setup recommendations based on the user request and project analysis.",
-    schema: z.object({
-      request: z
-        .string()
-        .min(1, "request is required")
-        .describe("The user request to guide setup suggestions."),
-    }),
-    execute: (input, context) =>
-      callMeerTool("suggest_setup", input as Record<string, unknown>, context),
   },
   {
     name: "read_file",
@@ -1163,9 +796,10 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "list_files",
-    description: "List files and folders in a directory.",
+    description: "List files and folders in a directory. When maxDepth is provided, lists recursively up to that depth (absorbs read_folder capability).",
     schema: z.object({
       path: z.string().optional(),
+      maxDepth: z.coerce.number().int().positive().optional(),
     }),
     execute: (input, context) => {
       const normalized =
@@ -1221,10 +855,17 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "run_command",
-    description: "Execute a shell command inside the project workspace.",
+    description: "Execute a shell command inside the project workspace. Pass background: true to start a long-running or interactive command in a managed background terminal session instead of waiting for it to complete.",
     schema: z.object({
       command: z.string().min(1, "command is required"),
       timeoutMs: z.coerce.number().positive().optional(),
+      background: z.union([z.boolean(), z.string()]).optional(),
+      cwd: z
+        .string()
+        .optional()
+        .describe(
+          "Working directory for the background process. Only applied when background is true; the foreground path derives its cwd from leading `cd` segments in the command."
+        ),
     }),
     execute: (input, context) =>
       callMeerTool("run_command", input as Record<string, unknown>, context),
@@ -1252,20 +893,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("read_many_files", input as Record<string, unknown>, context),
-  },
-  {
-    name: "search_text",
-    description: "Search for a text term across the workspace.",
-    schema: z.object({
-      term: z.string().min(1, "term is required"),
-      filePattern: z.string().optional(),
-      caseSensitive: z.union([z.boolean(), z.string()]).optional(),
-      wholeWord: z.union([z.boolean(), z.string()]).optional(),
-      includePattern: z.string().optional(),
-      excludePattern: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("search_text", input as Record<string, unknown>, context),
   },
   {
     name: "semantic_search",
@@ -1298,18 +925,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("semantic_search", input as Record<string, unknown>, context),
   },
   {
-    name: "read_folder",
-    description: "Recursively inspect a folder structure.",
-    schema: z.object({
-      path: z.string().optional(),
-      maxDepth: z.coerce.number().int().positive().optional(),
-      includeStats: z.union([z.boolean(), z.string()]).optional(),
-      fileTypes: z.union([z.string(), z.array(z.string())]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("read_folder", input as Record<string, unknown>, context),
-  },
-  {
     name: "google_search",
     description:
       "Search the web using Brave Search (requires BRAVE_API_KEY) with a manual fallback link.",
@@ -1323,13 +938,14 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "web_fetch",
-    description: "Fetch a URL (placeholder implementation).",
+    description: "Fetch a URL. Supports GET/POST/PUT/DELETE/PATCH with optional headers and body (absorbs http_request capability).",
     schema: z.object({
       url: z.string().min(1, "url is required"),
       method: z
-        .enum(["GET", "POST", "PUT", "DELETE"])
+        .enum(["GET", "POST", "PUT", "DELETE", "PATCH"])
         .optional(),
       headers: z.record(z.string()).optional(),
+      body: z.string().optional(),
       saveTo: z.string().optional(),
     }),
     execute: (input, context) =>
@@ -1360,70 +976,18 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   {
     name: "grep",
     description:
-      "Search within a specific file and return matching line numbers.",
+      "Search within a specific file and return matching line numbers. When includePattern or excludePattern is provided, searches across the workspace (absorbs search_text include/exclude capability).",
     schema: z.object({
-      path: z.string().min(1, "path is required"),
+      path: z.string().optional(),
       pattern: z.string().min(1, "pattern is required"),
       caseSensitive: z.union([z.boolean(), z.string()]).optional(),
       maxResults: z.coerce.number().int().positive().optional(),
       contextLines: z.coerce.number().int().nonnegative().optional(),
+      includePattern: z.string().optional(),
+      excludePattern: z.string().optional(),
     }),
     execute: (input, context) =>
       callMeerTool("grep", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_status",
-    description: "Show current git working tree status.",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("git_status", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_diff",
-    description: "Show git diff for staged or unstaged changes.",
-    schema: z.object({
-      staged: z.union([z.boolean(), z.string()]).optional(),
-      filepath: z.string().optional(),
-      unified: z.coerce.number().int().nonnegative().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_diff", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_log",
-    description: "Show git commit history with optional filters.",
-    schema: z.object({
-      maxCount: z.coerce.number().int().positive().optional(),
-      author: z.string().optional(),
-      since: z.string().optional(),
-      until: z.string().optional(),
-      filepath: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_log", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_commit",
-    description: "Create a git commit with optional staging behaviour.",
-    schema: z.object({
-      message: z.string().min(1, "message is required"),
-      addAll: z.union([z.boolean(), z.string()]).optional(),
-      files: z.union([z.string(), z.array(z.string())]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_commit", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_branch",
-    description: "Manage git branches (list/create/switch/delete).",
-    schema: z.object({
-      list: z.union([z.boolean(), z.string()]).optional(),
-      create: z.string().optional(),
-      switch: z.string().optional(),
-      delete: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_branch", input as Record<string, unknown>, context),
   },
   {
     name: "delete_file",
@@ -1443,118 +1007,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("move_file", input as Record<string, unknown>, context),
-  },
-  {
-    name: "create_directory",
-    description: "Create a new directory recursively.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "create_directory",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "package_install",
-    description: "Install packages with npm, yarn, or pnpm.",
-    schema: z.object({
-      packages: z.union([z.string(), z.array(z.string())]),
-      manager: z.enum(["npm", "yarn", "pnpm"]).optional(),
-      dev: z.union([z.boolean(), z.string()]).optional(),
-      global: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "package_install",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "package_run_script",
-    description: "Run a package.json script with the preferred manager.",
-    schema: z.object({
-      script: z.string().min(1, "script is required"),
-      manager: z.enum(["npm", "yarn", "pnpm"]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "package_run_script",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "package_list",
-    description: "List installed packages or check for outdated ones.",
-    schema: z.object({
-      outdated: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("package_list", input as Record<string, unknown>, context),
-  },
-  {
-    name: "scaffold_project",
-    description:
-      "Scaffold a new project such as React, Vue, Next.js, Node, Python, Go, or Rust.",
-    schema: z.object({
-      projectType: z
-        .string()
-        .min(1, "projectType is required")
-        .describe(
-          "Project type to scaffold (react, vue, angular, next, nuxt, node, python, go, rust)."
-        ),
-      projectName: z
-        .string()
-        .min(1, "projectName is required")
-        .describe("Directory name for the new project."),
-    }),
-    execute: (input, context) =>
-      callMeerTool("scaffold_project", input as Record<string, unknown>, context),
-  },
-  {
-    name: "get_env",
-    description: "Read an environment variable from process or .env file.",
-    schema: z.object({
-      key: z.string().min(1, "key is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool("get_env", input as Record<string, unknown>, context),
-  },
-  {
-    name: "set_env",
-    description: "Set or update a key in the .env file.",
-    schema: z.object({
-      key: z.string().min(1, "key is required"),
-      value: z.string().default(""),
-    }),
-    execute: (input, context) =>
-      callMeerTool("set_env", input as Record<string, unknown>, context),
-  },
-  {
-    name: "list_env",
-    description: "List keys stored in the .env file (values hidden).",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("list_env", input as Record<string, unknown>, context),
-  },
-  {
-    name: "http_request",
-    description: "Make an HTTP request using undici.",
-    schema: z.object({
-      url: z.string().min(1, "url is required"),
-      method: z
-        .enum(["GET", "POST", "PUT", "DELETE", "PATCH"])
-        .optional(),
-      headers: z.record(z.string()).optional(),
-      body: z.string().optional(),
-      timeout: z.coerce.number().int().positive().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("http_request", input as Record<string, unknown>, context),
   },
   {
     name: "get_file_outline",
@@ -1585,83 +1037,22 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       ),
   },
   {
-    name: "check_syntax",
-    description: "Validate JavaScript/TypeScript syntax for a file.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool("check_syntax", input as Record<string, unknown>, context),
-  },
-  {
-    name: "validate_project",
+    name: "update_plan",
     description:
-      "Run build/test/lint/type-check validation tailored to the project type.",
+      "Manage the task plan. op=\"set\" creates/replaces the plan (title + tasks[]); op=\"update\" sets a task's status (taskId + status); op=\"clear\" removes the plan.",
     schema: z.object({
-      build: z.union([z.boolean(), z.string()]).optional(),
-      test: z.union([z.boolean(), z.string()]).optional(),
-      lint: z.union([z.boolean(), z.string()]).optional(),
-      typeCheck: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "validate_project",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "set_plan",
-    description: "Create or reset an execution plan with tasks.",
-    schema: z.object({
+      op: z.enum(["set", "update", "clear"]).default("set"),
       title: z.string().optional(),
-      tasks: z
-        .union([
-          z.string(),
-          z.array(
-            z.union([
-              z.string(),
-              z.object({
-                description: z.string(),
-              }),
-            ])
-          ),
-        ])
-        .optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("set_plan", input as Record<string, unknown>, context),
-  },
-  {
-    name: "update_plan_task",
-    description: "Update the status of a plan task.",
-    schema: z.object({
-      taskId: z.string().min(1, "taskId is required"),
-      status: z
-        .enum(["pending", "in_progress", "completed", "skipped"])
-        .default("pending"),
+      tasks: z.union([
+        z.array(z.object({ description: z.string() })),
+        z.string(),
+      ]).optional(),
+      taskId: z.string().optional(),
+      status: z.enum(["pending", "in_progress", "completed", "skipped"]).optional(),
       notes: z.string().optional(),
     }),
     execute: (input, context) =>
-      callMeerTool(
-        "update_plan_task",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "show_plan",
-    description: "Display the current execution plan.",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("show_plan", input as Record<string, unknown>, context),
-  },
-  {
-    name: "clear_plan",
-    description: "Clear the active execution plan.",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("clear_plan", input as Record<string, unknown>, context),
+      callMeerTool("update_plan", input as Record<string, unknown>, context),
   },
   {
     name: "request_user_input",
@@ -1695,210 +1086,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       requestStructuredUserInput(context, input),
   },
   {
-    name: "start_background_command",
-    description:
-      "Start a long-running or interactive shell command in a managed background terminal session.",
-    schema: z.object({
-      command: z.string().min(1, "command is required"),
-      cwd: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      startBackgroundCommand(context, input),
-  },
-  {
-    name: "explain_code",
-    description: "Extract a code section with context for explanation.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      startLine: z.coerce.number().int().positive().optional(),
-      endLine: z.coerce.number().int().positive().optional(),
-      focusSymbol: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("explain_code", input as Record<string, unknown>, context),
-  },
-  {
-    name: "generate_docstring",
-    description: "Prepare context for generating documentation or docstrings.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      symbolName: z.string().optional(),
-      style: z.string().optional(),
-      startLine: z.coerce.number().int().positive().optional(),
-      endLine: z.coerce.number().int().positive().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_docstring",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "format_code",
-    description: "Format code using project-aware formatters.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      formatter: z.string().optional(),
-      check: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("format_code", input as Record<string, unknown>, context),
-  },
-  {
-    name: "dependency_audit",
-    description: "Audit project dependencies for vulnerabilities.",
-    schema: z.object({
-      fix: z.union([z.boolean(), z.string()]).optional(),
-      production: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "dependency_audit",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "run_tests",
-    description: "Run the project test suite with optional coverage.",
-    schema: z.object({
-      coverage: z.union([z.boolean(), z.string()]).optional(),
-      specific: z.string().optional(),
-      pattern: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("run_tests", input as Record<string, unknown>, context),
-  },
-  {
-    name: "generate_tests",
-    description: "Generate test suggestions for a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      framework: z.string().optional(),
-      coverage: z.string().optional(),
-      focusFunction: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_tests",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "security_scan",
-    description: "Run security scanners across the project.",
-    schema: z.object({
-      path: z.string().default(""),
-      scanners: z.string().optional(),
-      severity: z.string().optional(),
-      autoFix: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "security_scan",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "code_review",
-    description: "Perform AI-assisted code review on a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      focus: z.string().optional(),
-      severity: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("code_review", input as Record<string, unknown>, context),
-  },
-  {
-    name: "generate_readme",
-    description: "Generate README content for the current project.",
-    schema: z.object({
-      includeInstall: z.union([z.boolean(), z.string()]).optional(),
-      includeUsage: z.union([z.boolean(), z.string()]).optional(),
-      includeApi: z.union([z.boolean(), z.string()]).optional(),
-      includeContributing: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_readme",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "fix_lint",
-    description: "Auto-fix lint issues for a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      linter: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("fix_lint", input as Record<string, unknown>, context),
-  },
-  {
-    name: "organize_imports",
-    description: "Organize imports within a file.",
-    schema: z.object({
-      path: z.string().default(""),
-      organizer: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "organize_imports",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "check_complexity",
-    description: "Analyze code complexity thresholds.",
-    schema: z.object({
-      path: z.string().default(""),
-      threshold: z.coerce.number().int().positive().optional(),
-      includeDetails: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "check_complexity",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "detect_smells",
-    description: "Detect code smells and anti-patterns.",
-    schema: z.object({
-      path: z.string().default(""),
-      types: z.string().optional(),
-      severity: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "detect_smells",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "analyze_coverage",
-    description: "Analyze test coverage reports and highlight gaps.",
-    schema: z.object({
-      threshold: z.coerce.number().int().positive().optional(),
-      format: z.string().optional(),
-      includeUncovered: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "analyze_coverage",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
     name: "find_references",
     description: "Find references to a symbol across the project.",
     schema: z.object({
@@ -1911,160 +1098,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     execute: (input, context) =>
       callMeerTool(
         "find_references",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "generate_test_suite",
-    description: "Generate a comprehensive test suite plan for a module.",
-    schema: z.object({
-      path: z.string().default(""),
-      framework: z.string().optional(),
-      includeUnit: z.union([z.boolean(), z.string()]).optional(),
-      includeIntegration: z.union([z.boolean(), z.string()]).optional(),
-      includeE2E: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_test_suite",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "generate_mocks",
-    description: "Generate mock data/functions for testing contexts.",
-    schema: z.object({
-      path: z.string().default(""),
-      mockType: z.string().optional(),
-      framework: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_mocks",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "generate_api_docs",
-    description: "Generate API documentation scaffolding for a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      format: z.string().optional(),
-      includeExamples: z.union([z.boolean(), z.string()]).optional(),
-      includeTypes: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_api_docs",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "git_blame",
-    description: "Display git blame information for a file.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      startLine: z.coerce.number().int().positive().optional(),
-      endLine: z.coerce.number().int().positive().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_blame", input as Record<string, unknown>, context),
-  },
-  {
-    name: "rename_symbol",
-    description: "Rename a symbol across the codebase (text-based).",
-    schema: z.object({
-      oldName: z.string().min(1, "oldName is required"),
-      newName: z.string().min(1, "newName is required"),
-      filePattern: z.string().optional(),
-      dryRun: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "rename_symbol",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "extract_function",
-    description: "Extract code into a new function.",
-    schema: z.object({
-      filePath: z.string().min(1, "filePath is required"),
-      startLine: z.coerce.number().int().positive(),
-      endLine: z.coerce.number().int().positive(),
-      functionName: z.string().min(1, "functionName is required"),
-      insertLocation: z.string().optional(),
-      dryRun: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "extract_function",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "extract_variable",
-    description: "Extract an expression into a new variable.",
-    schema: z.object({
-      filePath: z.string().min(1, "filePath is required"),
-      lineNumber: z.coerce.number().int().positive(),
-      expression: z.string().min(1, "expression is required"),
-      variableName: z.string().min(1, "variableName is required"),
-      replaceAll: z.union([z.boolean(), z.string()]).optional(),
-      dryRun: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "extract_variable",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "inline_variable",
-    description: "Inline a variable into its usages.",
-    schema: z.object({
-      filePath: z.string().min(1, "filePath is required"),
-      variableName: z.string().min(1, "variableName is required"),
-      dryRun: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "inline_variable",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "move_symbol",
-    description: "Move a symbol from one file to another.",
-    schema: z.object({
-      symbolName: z.string().min(1, "symbolName is required"),
-      fromFile: z.string().min(1, "fromFile is required"),
-      toFile: z.string().min(1, "toFile is required"),
-      addImport: z.union([z.boolean(), z.string()]).optional(),
-      dryRun: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("move_symbol", input as Record<string, unknown>, context),
-  },
-  {
-    name: "convert_to_async",
-    description: "Convert promise/callback based code to async/await.",
-    schema: z.object({
-      filePath: z.string().min(1, "filePath is required"),
-      functionName: z.string().min(1, "functionName is required"),
-      dryRun: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "convert_to_async",
         input as Record<string, unknown>,
         context
       ),

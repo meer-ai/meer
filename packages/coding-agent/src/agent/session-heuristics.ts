@@ -91,25 +91,16 @@ export function describeInitialWorkflowStage(userMessage: string): string {
 export function describeToolWorkflowStage(toolName: string): string {
   const name = toolName.toLowerCase();
 
-  if (["analyze_project", "list_files", "find_files", "read_folder"].includes(name)) {
+  if (["analyze_project", "list_files", "find_files"].includes(name)) {
     return "Inspect repository layout";
   }
-  if (["read_file", "read_many_files", "grep", "search_text", "semantic_search", "find_references", "get_file_outline", "find_symbol_definition", "explain_code"].includes(name)) {
+  if (["read_file", "read_many_files", "grep", "semantic_search", "find_references", "get_file_outline", "find_symbol_definition"].includes(name)) {
     return "Inspect source code";
   }
-  if (["dependency_audit", "package_list", "package_install"].includes(name)) {
-    return "Audit dependencies";
-  }
-  if (["security_scan", "validate_project", "check_syntax", "code_review", "check_complexity", "detect_smells", "analyze_coverage", "run_tests"].includes(name)) {
-    return "Scan project health";
-  }
-  if (["propose_edit", "delete_file", "move_file", "create_directory", "format_code", "organize_imports", "fix_lint"].includes(name)) {
+  if (["propose_edit", "delete_file", "move_file"].includes(name)) {
     return "Apply code changes";
   }
-  if (name.startsWith("git_")) {
-    return "Inspect git state";
-  }
-  if (["run_command", "package_run_script"].includes(name)) {
+  if (["run_command"].includes(name)) {
     return "Run project command";
   }
 

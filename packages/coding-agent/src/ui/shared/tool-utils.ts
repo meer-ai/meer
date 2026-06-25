@@ -12,16 +12,15 @@ export function isMutationTool(name: string): boolean {
     lower.includes("apply_edit") ||
     lower.includes("move") ||
     lower.includes("rename") ||
-    lower.includes("delete") ||
-    lower.includes("create_directory")
+    lower.includes("delete")
   );
 }
 
 export function classifyTool(name: string): "mutation" | "file" | "shell" | "generic" {
   const lower = name.toLowerCase();
-  if (/run_command|bash|exec|package_run_script/.test(lower)) return "shell";
+  if (/run_command|bash|exec/.test(lower)) return "shell";
   if (isMutationTool(lower)) return "mutation";
-  if (/read_file|read_folder|read_many|list_files|find_files/.test(lower)) {
+  if (/read_file|read_many|list_files|find_files/.test(lower)) {
     return "file";
   }
   return "generic";
@@ -93,7 +92,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
   const lower = toolName.toLowerCase();
   const a = args ?? {};
 
-  if (/run_command|bash|exec|package_run_script/.test(lower)) {
+  if (/run_command|bash|exec/.test(lower)) {
     const command = getCommand(args);
     return command ? `$ ${command}` : "";
   }
@@ -101,7 +100,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
     const path = getFilePath(args);
     if (path) return `${path}${formatLineRange(a)}`;
   }
-  if (/list_files|read_folder|list_dir|directory/.test(lower)) {
+  if (/list_files|list_dir|directory/.test(lower)) {
     const path = getFilePath(args) || firstString(a, ["cwd", "root"]);
     const pattern = firstString(a, ["pattern", "glob", "includePattern"]);
     if (path && pattern) return `${path} · ${pattern}`;
@@ -120,19 +119,19 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
       return `${method} ${url}`;
     }
   }
-  if (/package_install|install_package|add_dependency/.test(lower)) {
+  if (/install_package|add_dependency/.test(lower)) {
     const pkgs = asList(a.packages ?? a.package ?? a.dependencies);
     if (pkgs) return pkgs;
   }
-  if (/git_commit|commit/.test(lower)) {
+  if (/commit/.test(lower)) {
     const message = firstString(a, ["message", "msg"]);
     if (message) return `"${message}"`;
   }
-  if (/symbol|reference|rename|definition|move_symbol/.test(lower)) {
+  if (/symbol|reference|rename|definition/.test(lower)) {
     const symbol = firstString(a, ["symbol", "symbolName", "name", "oldName", "identifier"]);
     if (symbol) return symbol;
   }
-  if (/set_plan|create_plan/.test(lower)) {
+  if (/update_plan|set_plan|create_plan/.test(lower)) {
     const title = firstString(a, ["title", "goal", "name"]);
     if (title) return title;
   }
@@ -140,12 +139,6 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
     const key = firstString(a, ["key", "query", "name", "title"]);
     if (key) return key;
   }
-  if (/extract_function|extract_variable|inline_variable/.test(lower)) {
-    const name = firstString(a, ["name", "functionName", "variableName"]);
-    const path = getFilePath(args);
-    if (path && name) return `${path} → ${name}`;
-  }
-
   const path = getFilePath(args);
   if (path) return path;
 

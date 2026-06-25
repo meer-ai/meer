@@ -5,6 +5,9 @@ import { runCommand } from "@meer-ai/coding-agent/tools/index.js";
 const context = {
   cwd: process.cwd(),
   reviewFileEdit: async () => true,
+  // Auto-approve shell commands so the background run_command path (now gated
+  // through ensureCommandApproval) passes through without prompting.
+  confirmCommand: async () => true,
   promptForm: async () => ({
     tech_stack: "next-postgres",
     priorities: ["events", "dashboards"],
@@ -22,7 +25,6 @@ const exportedNames = toolkit.map((tool) => tool.name).sort();
 
 const expectedNames = [
   "analyze_project",
-  "suggest_setup",
   "read_file",
   "list_files",
   "edit_file",
@@ -30,65 +32,19 @@ const expectedNames = [
   "run_command",
   "find_files",
   "read_many_files",
-  "search_text",
   "semantic_search",
-  "read_folder",
   "google_search",
   "web_fetch",
   "save_memory",
   "load_memory",
   "grep",
-  "git_status",
-  "git_diff",
-  "git_log",
-  "git_commit",
-  "git_branch",
   "delete_file",
   "move_file",
-  "create_directory",
-  "package_install",
-  "package_run_script",
-  "package_list",
-  "scaffold_project",
-  "get_env",
-  "set_env",
-  "list_env",
-  "http_request",
   "get_file_outline",
   "find_symbol_definition",
-  "check_syntax",
-  "validate_project",
-  "set_plan",
-  "update_plan_task",
-  "show_plan",
-  "clear_plan",
-  "request_user_input",
-  "start_background_command",
-  "explain_code",
-  "generate_docstring",
-  "format_code",
-  "dependency_audit",
-  "run_tests",
-  "generate_tests",
-  "security_scan",
-  "code_review",
-  "generate_readme",
-  "fix_lint",
-  "organize_imports",
-  "check_complexity",
-  "detect_smells",
-  "analyze_coverage",
   "find_references",
-  "generate_test_suite",
-  "generate_mocks",
-  "generate_api_docs",
-  "git_blame",
-  "rename_symbol",
-  "extract_function",
-  "extract_variable",
-  "inline_variable",
-  "move_symbol",
-  "convert_to_async",
+  "request_user_input",
+  "update_plan",
 ].sort();
 
 const missing = expectedNames.filter((name) => !exportedNames.includes(name));
@@ -134,30 +90,35 @@ const questionnaireResult = await requestUserInputTool.call({
 assert.match(questionnaireResult, /"tech_stack": "next-postgres"/);
 assert.match(questionnaireResult, /"priorities": \[/);
 
-const backgroundCommandTool = toolkit.find(
-  (tool) => tool.name === "start_background_command"
-);
-assert(backgroundCommandTool, "start_background_command tool should exist");
-const backgroundResult = await backgroundCommandTool.call({
+const runCommandTool = toolkit.find((tool) => tool.name === "run_command");
+assert(runCommandTool, "run_command tool should exist");
+// start_background_command folded into run_command(background:true)
+const backgroundResult = await runCommandTool.call({
   command: "npm run dev",
+  background: true,
 });
-assert.match(backgroundResult, /Started background terminal bg-test-1/);
+assert.match(
+  typeof backgroundResult === "string"
+    ? backgroundResult
+    : JSON.stringify(backgroundResult),
+  /Started background terminal bg-test-1/
+);
 
-const setPlanTool = toolkit.find((tool) => tool.name === "set_plan");
-const updatePlanTaskTool = toolkit.find((tool) => tool.name === "update_plan_task");
-assert(setPlanTool, "set_plan tool should exist");
-assert(updatePlanTaskTool, "update_plan_task tool should exist");
+const updatePlanTool = toolkit.find((tool) => tool.name === "update_plan");
+assert(updatePlanTool, "update_plan tool should exist");
 
-const planResult = await setPlanTool.call({
+const planResult = await updatePlanTool.call({
+  op: "set",
   title: "Verify task ids",
-  tasks: ["Inspect repo", "Patch issue"],
+  tasks: [{ description: "Inspect repo" }, { description: "Patch issue" }],
 });
 assert.match(planResult, /task-1/);
 assert.match(planResult, /task-2/);
 
 const updateVariants = ["1", "task-2", "Task 1", "task 2"];
 for (const taskId of updateVariants) {
-  const result = await updatePlanTaskTool.call({
+  const result = await updatePlanTool.call({
+    op: "update",
     taskId,
     status: "in_progress",
   });

@@ -11,4 +11,71 @@ assert.ok(names.has("propose_edit"), "propose_edit must remain");
 assert.ok(!names.has("edit_line"), "edit_line must be removed");
 assert.ok(!names.has("write_file"), "write_file must be removed (use propose_edit)");
 
+for (const removed of [
+  "explain_code", "generate_docstring", "generate_tests", "code_review",
+  "generate_readme", "generate_test_suite", "generate_mocks", "generate_api_docs",
+  "check_complexity", "detect_smells",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+
+for (const removed of [
+  "rename_symbol", "extract_function", "extract_variable",
+  "inline_variable", "move_symbol", "convert_to_async",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+
+for (const removed of ["suggest_setup", "scaffold_project", "list_env"]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+
+for (const removed of [
+  "git_status", "git_diff", "git_log", "git_commit", "git_branch", "git_blame",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed (use run_command)`);
+}
+assert.ok(names.has("run_command"), "run_command must remain");
+
+for (const removed of [
+  "package_install", "package_run_script", "package_list", "validate_project",
+  "dependency_audit", "run_tests", "security_scan", "format_code", "fix_lint",
+  "organize_imports", "analyze_coverage", "check_syntax",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed (use run_command)`);
+}
+
+for (const removed of ["create_directory", "get_env", "set_env"]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+assert.ok(names.has("delete_file"), "delete_file must remain");
+assert.ok(names.has("move_file"), "move_file must remain");
+
+for (const removed of ["search_text", "read_folder", "http_request"]) {
+  assert.ok(!names.has(removed), `${removed} must be merged away`);
+}
+for (const kept of ["grep", "list_files", "web_fetch"]) {
+  assert.ok(names.has(kept), `${kept} must remain as merge target`);
+}
+// merged params present on the survivors
+const byName = new Map(tools.map((t) => [t.name, t]));
+const gp = JSON.stringify(byName.get("grep")?.inputSchema ?? {});
+assert.ok(gp.includes("excludePattern") || gp.includes("includePattern"),
+  "grep must absorb search_text include/exclude params");
+const lf = JSON.stringify(byName.get("list_files")?.inputSchema ?? {});
+assert.ok(lf.includes("maxDepth"), "list_files must absorb read_folder maxDepth");
+const wf = JSON.stringify(byName.get("web_fetch")?.inputSchema ?? {});
+assert.ok(wf.includes("method"), "web_fetch must absorb http_request method");
+
+for (const removed of ["set_plan", "update_plan_task", "show_plan", "clear_plan"]) {
+  assert.ok(!names.has(removed), `${removed} must be consolidated into update_plan`);
+}
+assert.ok(names.has("update_plan"), "update_plan must exist");
+
+// Task 9: start_background_command folded into run_command
+assert.ok(!names.has("start_background_command"),
+  "start_background_command must be folded into run_command");
+const rc = JSON.stringify(byName.get("run_command")?.inputSchema ?? {});
+assert.ok(rc.includes("background"), "run_command must gain a background flag");
+
 console.log("tool surface verification passed");

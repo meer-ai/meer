@@ -192,8 +192,7 @@ export class MeerAgent {
       return (
         "\n\nCURRENT MODE: 📋 PLAN (read-only). Do NOT modify files or run " +
         "mutating commands (no propose_edit, apply_edit, " +
-        "run_command for non-read-only commands, delete_file, move_file, " +
-        "create_directory, git_commit, git_branch, scaffold_project). Investigate " +
+        "run_command for non-read-only commands, delete_file, move_file). Investigate " +
         "and produce a clear, actionable plan instead. Tell the user to press " +
         "Shift+Tab to switch to edit mode when they're ready to apply changes."
       );
@@ -932,9 +931,9 @@ export class MeerAgent {
   }
 
   /**
-   * Approve a mutating tool action (delete_file, move_file, create_directory,
-   * package_install, set_env). Mirrors confirmCommand's trust semantics but is
-   * keyed by tool name so "Always allow" remembers the whole tool, not a string.
+   * Approve a mutating tool action (delete_file, move_file). Mirrors
+   * confirmCommand's trust semantics but is keyed by tool name so "Always allow"
+   * remembers the whole tool, not a string.
    */
   private async confirmToolAction(toolName: string, action: string): Promise<boolean> {
     const mode: TrustMode = this.config.trustMode ?? "trusted";
@@ -1151,7 +1150,7 @@ export function formatToolTranscript(toolName: string, result: string): string {
 
   // Existing per-tool preview (file-read tools) — kept because it gives the
   // model a more useful "head" instead of a "tail" for files.
-  if (["read_file", "list_files", "read_folder", "read_many_files"].includes(toolName)) {
+  if (["read_file", "list_files", "read_many_files"].includes(toolName)) {
     const lines = normalized.split("\n");
     if (normalized.length > 4000 || lines.length > 120) {
       const previewLines = lines.slice(0, 80).join("\n");
