@@ -11,4 +11,12 @@ assert.ok(names.has("propose_edit"), "propose_edit must remain");
 assert.ok(!names.has("edit_line"), "edit_line must be removed");
 assert.ok(!names.has("write_file"), "write_file must be removed (use propose_edit)");
 
+for (const removed of [
+  "explain_code", "generate_docstring", "generate_tests", "code_review",
+  "generate_readme", "generate_test_suite", "generate_mocks", "generate_api_docs",
+  "check_complexity", "detect_smells",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+
 console.log("tool surface verification passed");

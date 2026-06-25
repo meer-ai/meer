@@ -94,13 +94,13 @@ export function describeToolWorkflowStage(toolName: string): string {
   if (["analyze_project", "list_files", "find_files", "read_folder"].includes(name)) {
     return "Inspect repository layout";
   }
-  if (["read_file", "read_many_files", "grep", "search_text", "semantic_search", "find_references", "get_file_outline", "find_symbol_definition", "explain_code"].includes(name)) {
+  if (["read_file", "read_many_files", "grep", "search_text", "semantic_search", "find_references", "get_file_outline", "find_symbol_definition"].includes(name)) {
     return "Inspect source code";
   }
   if (["dependency_audit", "package_list", "package_install"].includes(name)) {
     return "Audit dependencies";
   }
-  if (["security_scan", "validate_project", "check_syntax", "code_review", "check_complexity", "detect_smells", "analyze_coverage", "run_tests"].includes(name)) {
+  if (["security_scan", "validate_project", "check_syntax", "analyze_coverage", "run_tests"].includes(name)) {
     return "Scan project health";
   }
   if (["propose_edit", "delete_file", "move_file", "create_directory", "format_code", "organize_imports", "fix_lint"].includes(name)) {

@@ -964,26 +964,6 @@ async function callMeerTool(
     case "clear_plan": {
       return unwrap(tools.clearPlan());
     }
-    case "explain_code": {
-      const path = String(input.path);
-      const startLine =
-        input.startLine !== undefined ? Number(input.startLine) : undefined;
-      const endLine =
-        input.endLine !== undefined ? Number(input.endLine) : undefined;
-      const focusSymbol =
-        typeof input.focusSymbol === "string" ? input.focusSymbol : undefined;
-      return unwrap(
-        tools.explainCode(path, context.cwd, {
-          startLine,
-          endLine,
-          focusSymbol,
-        })
-      );
-    }
-    case "generate_docstring": {
-      const path = String(input.path);
-      return unwrap(tools.generateDocstring(path, context.cwd, input));
-    }
     case "format_code": {
       const path = String(input.path);
       return unwrap(tools.formatCode(path, context.cwd, input));
@@ -994,20 +974,9 @@ async function callMeerTool(
     case "run_tests": {
       return unwrap(tools.runTests(context.cwd, input));
     }
-    case "generate_tests": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateTests(path, context.cwd, input));
-    }
     case "security_scan": {
       const path = String(input.path ?? "");
       return unwrap(tools.securityScan(path, context.cwd, input));
-    }
-    case "code_review": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.codeReview(path, context.cwd, input));
-    }
-    case "generate_readme": {
-      return unwrap(tools.generateReadme(context.cwd, input));
     }
     case "fix_lint": {
       const path = String(input.path ?? "");
@@ -1017,32 +986,12 @@ async function callMeerTool(
       const path = String(input.path ?? "");
       return unwrap(tools.organizeImports(path, context.cwd, input));
     }
-    case "check_complexity": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.checkComplexity(path, context.cwd, input));
-    }
-    case "detect_smells": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.detectSmells(path, context.cwd, input));
-    }
     case "analyze_coverage": {
       return unwrap(tools.analyzeCoverage(context.cwd, input));
     }
     case "find_references": {
       const symbol = String(input.symbol);
       return unwrap(tools.findReferences(symbol, context.cwd, input));
-    }
-    case "generate_test_suite": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateTestSuite(path, context.cwd, input));
-    }
-    case "generate_mocks": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateMocks(path, context.cwd, input));
-    }
-    case "generate_api_docs": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.generateApiDocs(path, context.cwd, input));
     }
     case "git_blame": {
       const path = String(input.path);
@@ -1706,35 +1655,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       startBackgroundCommand(context, input),
   },
   {
-    name: "explain_code",
-    description: "Extract a code section with context for explanation.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      startLine: z.coerce.number().int().positive().optional(),
-      endLine: z.coerce.number().int().positive().optional(),
-      focusSymbol: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("explain_code", input as Record<string, unknown>, context),
-  },
-  {
-    name: "generate_docstring",
-    description: "Prepare context for generating documentation or docstrings.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      symbolName: z.string().optional(),
-      style: z.string().optional(),
-      startLine: z.coerce.number().int().positive().optional(),
-      endLine: z.coerce.number().int().positive().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_docstring",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
     name: "format_code",
     description: "Format code using project-aware formatters.",
     schema: z.object({
@@ -1771,22 +1691,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("run_tests", input as Record<string, unknown>, context),
   },
   {
-    name: "generate_tests",
-    description: "Generate test suggestions for a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      framework: z.string().optional(),
-      coverage: z.string().optional(),
-      focusFunction: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_tests",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
     name: "security_scan",
     description: "Run security scanners across the project.",
     schema: z.object({
@@ -1798,33 +1702,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     execute: (input, context) =>
       callMeerTool(
         "security_scan",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "code_review",
-    description: "Perform AI-assisted code review on a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      focus: z.string().optional(),
-      severity: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("code_review", input as Record<string, unknown>, context),
-  },
-  {
-    name: "generate_readme",
-    description: "Generate README content for the current project.",
-    schema: z.object({
-      includeInstall: z.union([z.boolean(), z.string()]).optional(),
-      includeUsage: z.union([z.boolean(), z.string()]).optional(),
-      includeApi: z.union([z.boolean(), z.string()]).optional(),
-      includeContributing: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_readme",
         input as Record<string, unknown>,
         context
       ),
@@ -1849,36 +1726,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     execute: (input, context) =>
       callMeerTool(
         "organize_imports",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "check_complexity",
-    description: "Analyze code complexity thresholds.",
-    schema: z.object({
-      path: z.string().default(""),
-      threshold: z.coerce.number().int().positive().optional(),
-      includeDetails: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "check_complexity",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "detect_smells",
-    description: "Detect code smells and anti-patterns.",
-    schema: z.object({
-      path: z.string().default(""),
-      types: z.string().optional(),
-      severity: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "detect_smells",
         input as Record<string, unknown>,
         context
       ),
@@ -1911,54 +1758,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     execute: (input, context) =>
       callMeerTool(
         "find_references",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "generate_test_suite",
-    description: "Generate a comprehensive test suite plan for a module.",
-    schema: z.object({
-      path: z.string().default(""),
-      framework: z.string().optional(),
-      includeUnit: z.union([z.boolean(), z.string()]).optional(),
-      includeIntegration: z.union([z.boolean(), z.string()]).optional(),
-      includeE2E: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_test_suite",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "generate_mocks",
-    description: "Generate mock data/functions for testing contexts.",
-    schema: z.object({
-      path: z.string().default(""),
-      mockType: z.string().optional(),
-      framework: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_mocks",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "generate_api_docs",
-    description: "Generate API documentation scaffolding for a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      format: z.string().optional(),
-      includeExamples: z.union([z.boolean(), z.string()]).optional(),
-      includeTypes: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "generate_api_docs",
         input as Record<string, unknown>,
         context
       ),
