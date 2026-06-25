@@ -724,56 +724,6 @@ async function callMeerTool(
       }
       return unwrap(tools.createDirectory(path, context.cwd));
     }
-    case "package_install": {
-      const packagesInput = input.packages;
-      const packages =
-        typeof packagesInput === "string"
-          ? packagesInput.split(",").map((p) => p.trim()).filter(Boolean)
-          : Array.isArray(packagesInput)
-          ? packagesInput.map((p) => String(p))
-          : [];
-      const manager =
-        typeof input.manager === "string"
-          ? (input.manager as "npm" | "yarn" | "pnpm")
-          : undefined;
-      const dev =
-        input.dev !== undefined ? Boolean(input.dev) : undefined;
-      const globalInstall =
-        input.global !== undefined ? Boolean(input.global) : undefined;
-      const scopeLabel = globalInstall ? "globally" : "locally";
-      const packageLabel = packages.join(", ");
-      if (!(await ensureToolActionApproval(context, "package_install", `Install ${packageLabel} ${scopeLabel}?`))) {
-        return `⚠️ Package install cancelled: ${packageLabel}`;
-      }
-      return unwrap(
-        tools.packageInstall(packages, context.cwd, {
-          manager,
-          dev,
-          global: globalInstall,
-        })
-      );
-    }
-    case "package_run_script": {
-      const script = String(input.script);
-      const manager =
-        typeof input.manager === "string"
-          ? (input.manager as "npm" | "yarn" | "pnpm")
-          : undefined;
-      return unwrap(
-        tools.packageRunScript(script, context.cwd, {
-          manager,
-        })
-      );
-    }
-    case "package_list": {
-      const outdated =
-        input.outdated !== undefined ? Boolean(input.outdated) : undefined;
-      return unwrap(
-        tools.packageList(context.cwd, {
-          outdated,
-        })
-      );
-    }
     case "get_env": {
       const key = String(input.key);
       return unwrap(tools.getEnv(key, context.cwd));
@@ -820,13 +770,6 @@ async function callMeerTool(
         })
       );
     }
-    case "check_syntax": {
-      const path = String(input.path);
-      return unwrap(tools.checkSyntax(path, context.cwd));
-    }
-    case "validate_project": {
-      return unwrap(tools.validateProject(context.cwd, input));
-    }
     case "set_plan": {
       const title =
         typeof input.title === "string" ? input.title : "Task Plan";
@@ -863,31 +806,6 @@ async function callMeerTool(
     }
     case "clear_plan": {
       return unwrap(tools.clearPlan());
-    }
-    case "format_code": {
-      const path = String(input.path);
-      return unwrap(tools.formatCode(path, context.cwd, input));
-    }
-    case "dependency_audit": {
-      return unwrap(tools.dependencyAudit(context.cwd, input));
-    }
-    case "run_tests": {
-      return unwrap(tools.runTests(context.cwd, input));
-    }
-    case "security_scan": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.securityScan(path, context.cwd, input));
-    }
-    case "fix_lint": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.fixLint(path, context.cwd, input));
-    }
-    case "organize_imports": {
-      const path = String(input.path ?? "");
-      return unwrap(tools.organizeImports(path, context.cwd, input));
-    }
-    case "analyze_coverage": {
-      return unwrap(tools.analyzeCoverage(context.cwd, input));
     }
     case "find_references": {
       const symbol = String(input.symbol);
@@ -1169,45 +1087,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       ),
   },
   {
-    name: "package_install",
-    description: "Install packages with npm, yarn, or pnpm.",
-    schema: z.object({
-      packages: z.union([z.string(), z.array(z.string())]),
-      manager: z.enum(["npm", "yarn", "pnpm"]).optional(),
-      dev: z.union([z.boolean(), z.string()]).optional(),
-      global: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "package_install",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "package_run_script",
-    description: "Run a package.json script with the preferred manager.",
-    schema: z.object({
-      script: z.string().min(1, "script is required"),
-      manager: z.enum(["npm", "yarn", "pnpm"]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "package_run_script",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "package_list",
-    description: "List installed packages or check for outdated ones.",
-    schema: z.object({
-      outdated: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("package_list", input as Record<string, unknown>, context),
-  },
-  {
     name: "get_env",
     description: "Read an environment variable from process or .env file.",
     schema: z.object({
@@ -1265,32 +1144,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     execute: (input, context) =>
       callMeerTool(
         "find_symbol_definition",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "check_syntax",
-    description: "Validate JavaScript/TypeScript syntax for a file.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-    }),
-    execute: (input, context) =>
-      callMeerTool("check_syntax", input as Record<string, unknown>, context),
-  },
-  {
-    name: "validate_project",
-    description:
-      "Run build/test/lint/type-check validation tailored to the project type.",
-    schema: z.object({
-      build: z.union([z.boolean(), z.string()]).optional(),
-      test: z.union([z.boolean(), z.string()]).optional(),
-      lint: z.union([z.boolean(), z.string()]).optional(),
-      typeCheck: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "validate_project",
         input as Record<string, unknown>,
         context
       ),
@@ -1389,97 +1242,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       startBackgroundCommand(context, input),
-  },
-  {
-    name: "format_code",
-    description: "Format code using project-aware formatters.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      formatter: z.string().optional(),
-      check: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("format_code", input as Record<string, unknown>, context),
-  },
-  {
-    name: "dependency_audit",
-    description: "Audit project dependencies for vulnerabilities.",
-    schema: z.object({
-      fix: z.union([z.boolean(), z.string()]).optional(),
-      production: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "dependency_audit",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "run_tests",
-    description: "Run the project test suite with optional coverage.",
-    schema: z.object({
-      coverage: z.union([z.boolean(), z.string()]).optional(),
-      specific: z.string().optional(),
-      pattern: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("run_tests", input as Record<string, unknown>, context),
-  },
-  {
-    name: "security_scan",
-    description: "Run security scanners across the project.",
-    schema: z.object({
-      path: z.string().default(""),
-      scanners: z.string().optional(),
-      severity: z.string().optional(),
-      autoFix: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "security_scan",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "fix_lint",
-    description: "Auto-fix lint issues for a path.",
-    schema: z.object({
-      path: z.string().default(""),
-      linter: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("fix_lint", input as Record<string, unknown>, context),
-  },
-  {
-    name: "organize_imports",
-    description: "Organize imports within a file.",
-    schema: z.object({
-      path: z.string().default(""),
-      organizer: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "organize_imports",
-        input as Record<string, unknown>,
-        context
-      ),
-  },
-  {
-    name: "analyze_coverage",
-    description: "Analyze test coverage reports and highlight gaps.",
-    schema: z.object({
-      threshold: z.coerce.number().int().positive().optional(),
-      format: z.string().optional(),
-      includeUncovered: z.union([z.boolean(), z.string()]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool(
-        "analyze_coverage",
-        input as Record<string, unknown>,
-        context
-      ),
   },
   {
     name: "find_references",

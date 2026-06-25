@@ -37,4 +37,12 @@ for (const removed of [
 }
 assert.ok(names.has("run_command"), "run_command must remain");
 
+for (const removed of [
+  "package_install", "package_run_script", "package_list", "validate_project",
+  "dependency_audit", "run_tests", "security_scan", "format_code", "fix_lint",
+  "organize_imports", "analyze_coverage", "check_syntax",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed (use run_command)`);
+}
+
 console.log("tool surface verification passed");

@@ -933,8 +933,8 @@ export class MeerAgent {
 
   /**
    * Approve a mutating tool action (delete_file, move_file, create_directory,
-   * package_install, set_env). Mirrors confirmCommand's trust semantics but is
-   * keyed by tool name so "Always allow" remembers the whole tool, not a string.
+   * set_env). Mirrors confirmCommand's trust semantics but is keyed by tool name
+   * so "Always allow" remembers the whole tool, not a string.
    */
   private async confirmToolAction(toolName: string, action: string): Promise<boolean> {
     const mode: TrustMode = this.config.trustMode ?? "trusted";

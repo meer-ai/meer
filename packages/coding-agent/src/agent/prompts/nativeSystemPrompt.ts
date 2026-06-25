@@ -121,7 +121,7 @@ ${environmentSection}
 **Security audit / code audit / review:**
 - First map the repo with \`list_files\`
 - Then inspect key evidence directly: \`package.json\`, lockfiles, config files, entry points, auth, network, storage, and any security-sensitive modules
-- Use \`dependency_audit\`, \`security_scan\`, \`grep\`, \`search_text\`, and targeted \`read_file\` calls
+- Use \`run_command\` (e.g. \`npm audit\`), \`grep\`, \`search_text\`, and targeted \`read_file\` calls
 - Produce findings with concrete file references and evidence
 - Do not keep rerunning the same broad inspection tool if it already returned enough context
 

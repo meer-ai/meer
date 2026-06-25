@@ -19,7 +19,7 @@ export function isMutationTool(name: string): boolean {
 
 export function classifyTool(name: string): "mutation" | "file" | "shell" | "generic" {
   const lower = name.toLowerCase();
-  if (/run_command|bash|exec|package_run_script/.test(lower)) return "shell";
+  if (/run_command|bash|exec/.test(lower)) return "shell";
   if (isMutationTool(lower)) return "mutation";
   if (/read_file|read_folder|read_many|list_files|find_files/.test(lower)) {
     return "file";
@@ -93,7 +93,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
   const lower = toolName.toLowerCase();
   const a = args ?? {};
 
-  if (/run_command|bash|exec|package_run_script/.test(lower)) {
+  if (/run_command|bash|exec/.test(lower)) {
     const command = getCommand(args);
     return command ? `$ ${command}` : "";
   }
@@ -120,7 +120,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
       return `${method} ${url}`;
     }
   }
-  if (/package_install|install_package|add_dependency/.test(lower)) {
+  if (/install_package|add_dependency/.test(lower)) {
     const pkgs = asList(a.packages ?? a.package ?? a.dependencies);
     if (pkgs) return pkgs;
   }
