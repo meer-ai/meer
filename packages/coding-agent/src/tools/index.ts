@@ -2785,7 +2785,7 @@ export function findSymbolDefinition(
           return {
             tool: "update_plan_task",
             result: "",
-            error: "No active plan. Use set_plan to create a plan first.",
+            error: "No active plan. Use update_plan (op=\"set\") to create a plan first.",
           };
         }
 
@@ -2850,65 +2850,6 @@ export function findSymbolDefinition(
       } catch (error) {
         return {
           tool: "update_plan_task",
-          result: "",
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-    }
-
-    /**
-     * Tool: Show the current plan
-     */
-    export function showPlan(): ToolResult {
-      try {
-        const plan = planStore.getSnapshot();
-        if (!plan) {
-          return {
-            tool: "show_plan",
-            result: "No active plan.",
-          };
-        }
-
-    const output = [
-      chalk.bold.blue(`\n📋 Current Plan: ${plan.title}`),
-      "",
-      ...plan.tasks.map((task, index) => {
-        const icon =
-          task.status === "completed"
-            ? "✅"
-            : task.status === "in_progress"
-            ? "⏳"
-            : task.status === "skipped"
-            ? "⏭️"
-            : "📌";
-        const color =
-          task.status === "completed"
-            ? chalk.green
-            : task.status === "in_progress"
-            ? chalk.yellow
-            : task.status === "skipped"
-            ? chalk.gray
-            : chalk.white;
-        let line = `  ${chalk.gray(`${index + 1}.`)} ${icon} ${color(task.description)} ${chalk.gray(`(${task.id})`)}`;
-        if (task.notes) {
-          line += `\n     ${chalk.gray(`Note: ${task.notes}`)}`;
-        }
-        return line;
-      }),
-      "",
-      chalk.gray(
-        `Progress: ${plan.tasks.filter((t) => t.status === "completed").length}/${plan.tasks.length} tasks completed`
-      ),
-    ].join("\n");
-
-        return {
-          tool: "show_plan",
-          result: output,
-          plan,
-        };
-      } catch (error) {
-        return {
-          tool: "show_plan",
           result: "",
           error: error instanceof Error ? error.message : String(error),
         };
