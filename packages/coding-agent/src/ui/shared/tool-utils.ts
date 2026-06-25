@@ -124,7 +124,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
     const pkgs = asList(a.packages ?? a.package ?? a.dependencies);
     if (pkgs) return pkgs;
   }
-  if (/git_commit|commit/.test(lower)) {
+  if (/commit/.test(lower)) {
     const message = firstString(a, ["message", "msg"]);
     if (message) return `"${message}"`;
   }

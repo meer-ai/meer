@@ -103,6 +103,7 @@ ${environmentSection}
 - Dev servers (\`npm run dev\`) run indefinitely — tell the user to start them manually
 - Always check command output for errors before proceeding
 - For long-running or interactive commands that should stay alive, use \`start_background_command\` instead of \`run_command\`
+- For git, package management, builds, tests, linting, and formatting, use \`run_command\` (e.g. \`git status\`, \`git commit -m "..."\`, \`npm test\`, \`npx prettier -w .\`). There are no dedicated tools for these.
 
 **For multi-step tasks:**
 - Use \`set_plan\` to create a task list for complex work

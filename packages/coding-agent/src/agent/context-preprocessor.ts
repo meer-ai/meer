@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join, relative } from 'path';
+import { execSync } from 'child_process';
 import { glob } from 'glob';
 
 export interface RelevantFile {
@@ -149,27 +150,38 @@ export class ContextPreprocessor {
    * Find files in git diff (uncommitted changes)
    */
   private async findInGitDiff(): Promise<RelevantFile[]> {
-    const { gitStatus } = await import('../tools/index.js');
-    const result = gitStatus(this.cwd, { silent: true });
-
-    if (result.error) return [];
-
-    // Parse git status output
-    const lines = result.result.split('\n');
-    const files: RelevantFile[] = [];
-
-    for (const line of lines) {
-      const match = line.match(/modified:\s+(.+)/);
-      if (match) {
-        files.push({
-          path: match[1].trim(),
-          relevanceScore: 0.95,
-          reason: 'Has uncommitted changes',
-        });
-      }
+    try {
+      // Check if we're in a git repo
+      execSync('git rev-parse --git-dir', { cwd: this.cwd, stdio: 'pipe' });
+    } catch {
+      return [];
     }
 
-    return files.slice(0, 5);
+    try {
+      const status = execSync('git status --porcelain', {
+        cwd: this.cwd,
+        encoding: 'utf-8',
+      });
+
+      const files: RelevantFile[] = [];
+      const lines = status.split('\n').filter((line) => line.trim());
+
+      for (const line of lines) {
+        const statusCode = line.substring(0, 2);
+        const filepath = line.substring(3).trim();
+        if (filepath && statusCode !== '??' ) {
+          files.push({
+            path: filepath,
+            relevanceScore: 0.95,
+            reason: 'Has uncommitted changes',
+          });
+        }
+      }
+
+      return files.slice(0, 5);
+    } catch {
+      return [];
+    }
   }
 
   /**

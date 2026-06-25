@@ -30,4 +30,11 @@ for (const removed of ["suggest_setup", "scaffold_project", "list_env"]) {
   assert.ok(!names.has(removed), `${removed} must be removed`);
 }
 
+for (const removed of [
+  "git_status", "git_diff", "git_log", "git_commit", "git_branch", "git_blame",
+]) {
+  assert.ok(!names.has(removed), `${removed} must be removed (use run_command)`);
+}
+assert.ok(names.has("run_command"), "run_command must remain");
+
 console.log("tool surface verification passed");

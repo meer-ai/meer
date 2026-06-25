@@ -702,81 +702,6 @@ async function callMeerTool(
         })
       );
     }
-    case "git_status": {
-      return unwrap(tools.gitStatus(context.cwd));
-    }
-    case "git_diff": {
-      const staged =
-        input.staged !== undefined ? Boolean(input.staged) : undefined;
-      const filepath =
-        typeof input.filepath === "string" ? input.filepath : undefined;
-      const unified =
-        input.unified !== undefined ? Number(input.unified) : undefined;
-      return unwrap(
-        tools.gitDiff(context.cwd, {
-          staged,
-          filepath,
-          unified,
-        })
-      );
-    }
-    case "git_log": {
-      const maxCount =
-        input.maxCount !== undefined ? Number(input.maxCount) : undefined;
-      const author =
-        typeof input.author === "string" ? input.author : undefined;
-      const since =
-        typeof input.since === "string" ? input.since : undefined;
-      const until =
-        typeof input.until === "string" ? input.until : undefined;
-      const filepath =
-        typeof input.filepath === "string" ? input.filepath : undefined;
-      return unwrap(
-        tools.gitLog(context.cwd, {
-          maxCount,
-          author,
-          since,
-          until,
-          filepath,
-        })
-      );
-    }
-    case "git_commit": {
-      const message = String(input.message);
-      const addAll =
-        input.addAll !== undefined ? Boolean(input.addAll) : undefined;
-      const filesInput = input.files;
-      const files =
-        typeof filesInput === "string"
-          ? filesInput.split(",").map((f) => f.trim()).filter(Boolean)
-          : Array.isArray(filesInput)
-          ? filesInput.map((f) => String(f))
-          : undefined;
-      return unwrap(
-        tools.gitCommit(message, context.cwd, {
-          addAll,
-          files,
-        })
-      );
-    }
-    case "git_branch": {
-      const list =
-        input.list !== undefined ? Boolean(input.list) : undefined;
-      const create =
-        typeof input.create === "string" ? input.create : undefined;
-      const switchTo =
-        typeof input.switch === "string" ? input.switch : undefined;
-      const deleteBranch =
-        typeof input.delete === "string" ? input.delete : undefined;
-      return unwrap(
-        tools.gitBranch(context.cwd, {
-          list,
-          create,
-          switch: switchTo,
-          delete: deleteBranch,
-        })
-      );
-    }
     case "delete_file": {
       const path = String(input.path);
       if (!(await ensureToolActionApproval(context, "delete_file", `Delete file ${path}?`))) {
@@ -967,10 +892,6 @@ async function callMeerTool(
     case "find_references": {
       const symbol = String(input.symbol);
       return unwrap(tools.findReferences(symbol, context.cwd, input));
-    }
-    case "git_blame": {
-      const path = String(input.path);
-      return unwrap(tools.gitBlame(path, context.cwd, input));
     }
     default: {
       throw new Error(`Unsupported tool: ${name}`);
@@ -1214,60 +1135,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("grep", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_status",
-    description: "Show current git working tree status.",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("git_status", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_diff",
-    description: "Show git diff for staged or unstaged changes.",
-    schema: z.object({
-      staged: z.union([z.boolean(), z.string()]).optional(),
-      filepath: z.string().optional(),
-      unified: z.coerce.number().int().nonnegative().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_diff", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_log",
-    description: "Show git commit history with optional filters.",
-    schema: z.object({
-      maxCount: z.coerce.number().int().positive().optional(),
-      author: z.string().optional(),
-      since: z.string().optional(),
-      until: z.string().optional(),
-      filepath: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_log", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_commit",
-    description: "Create a git commit with optional staging behaviour.",
-    schema: z.object({
-      message: z.string().min(1, "message is required"),
-      addAll: z.union([z.boolean(), z.string()]).optional(),
-      files: z.union([z.string(), z.array(z.string())]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_commit", input as Record<string, unknown>, context),
-  },
-  {
-    name: "git_branch",
-    description: "Manage git branches (list/create/switch/delete).",
-    schema: z.object({
-      list: z.union([z.boolean(), z.string()]).optional(),
-      create: z.string().optional(),
-      switch: z.string().optional(),
-      delete: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_branch", input as Record<string, unknown>, context),
   },
   {
     name: "delete_file",
@@ -1630,17 +1497,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
         input as Record<string, unknown>,
         context
       ),
-  },
-  {
-    name: "git_blame",
-    description: "Display git blame information for a file.",
-    schema: z.object({
-      path: z.string().min(1, "path is required"),
-      startLine: z.coerce.number().int().positive().optional(),
-      endLine: z.coerce.number().int().positive().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("git_blame", input as Record<string, unknown>, context),
   },
 ];
 

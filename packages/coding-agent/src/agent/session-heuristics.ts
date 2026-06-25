@@ -106,9 +106,6 @@ export function describeToolWorkflowStage(toolName: string): string {
   if (["propose_edit", "delete_file", "move_file", "create_directory", "format_code", "organize_imports", "fix_lint"].includes(name)) {
     return "Apply code changes";
   }
-  if (name.startsWith("git_")) {
-    return "Inspect git state";
-  }
   if (["run_command", "package_run_script"].includes(name)) {
     return "Run project command";
   }
