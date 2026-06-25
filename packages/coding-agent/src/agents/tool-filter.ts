@@ -15,7 +15,6 @@ export const ALL_TOOLS = [
   'list_files',
   'find_files',
   'read_many_files',
-  'read_folder',
   'grep',
 
   // File editing
@@ -32,7 +31,6 @@ export const ALL_TOOLS = [
 
   // Project analysis
   'analyze_project',
-  'search_text',
 
   // Memory
   'save_memory',
@@ -49,9 +47,7 @@ export const TOOL_CATEGORIES = {
     'list_files',
     'find_files',
     'read_many_files',
-    'read_folder',
     'grep',
-    'search_text',
     'analyze_project',
   ],
   WRITE: [

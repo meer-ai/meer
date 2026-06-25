@@ -20,7 +20,7 @@ export function classifyTool(name: string): "mutation" | "file" | "shell" | "gen
   const lower = name.toLowerCase();
   if (/run_command|bash|exec/.test(lower)) return "shell";
   if (isMutationTool(lower)) return "mutation";
-  if (/read_file|read_folder|read_many|list_files|find_files/.test(lower)) {
+  if (/read_file|read_many|list_files|find_files/.test(lower)) {
     return "file";
   }
   return "generic";
@@ -100,7 +100,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
     const path = getFilePath(args);
     if (path) return `${path}${formatLineRange(a)}`;
   }
-  if (/list_files|read_folder|list_dir|directory/.test(lower)) {
+  if (/list_files|list_dir|directory/.test(lower)) {
     const path = getFilePath(args) || firstString(a, ["cwd", "root"]);
     const pattern = firstString(a, ["pattern", "glob", "includePattern"]);
     if (path && pattern) return `${path} · ${pattern}`;

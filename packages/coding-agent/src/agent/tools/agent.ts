@@ -98,10 +98,8 @@ const PRIMITIVE_INPUT_COERCIONS: Record<
 > = {
   read_file: (value) => ({ path: value }),
   list_files: (value) => ({ path: value }),
-  read_folder: (value) => ({ path: value }),
   run_command: (value) => ({ command: value }),
   find_files: (value) => ({ pattern: value }),
-  search_text: (value) => ({ term: value }),
   grep: (value) => {
     const [path, pattern] = value.split(/\s+/, 2);
     if (pattern) {
@@ -416,6 +414,12 @@ async function callMeerTool(
         typeof rawPath === "string" && rawPath.trim().length > 0
           ? rawPath
           : ".";
+      const maxDepth =
+        input.maxDepth !== undefined ? Number(input.maxDepth) : undefined;
+      // When maxDepth is provided, route to readFolder for recursive listing.
+      if (maxDepth !== undefined) {
+        return unwrap(tools.readFolder(path, context.cwd, { maxDepth }));
+      }
       return unwrap(tools.listFiles(path, context.cwd));
     }
     case "propose_edit": {
@@ -543,51 +547,6 @@ async function callMeerTool(
         tools.readManyFiles(files, context.cwd, maxFiles ?? 10)
       );
     }
-    case "search_text": {
-      const term = String(input.term);
-      const filePattern =
-        typeof input.filePattern === "string" ? input.filePattern : undefined;
-      const includePattern =
-        typeof input.includePattern === "string" ? input.includePattern : undefined;
-      const excludePattern =
-        typeof input.excludePattern === "string" ? input.excludePattern : undefined;
-      const caseSensitive =
-        input.caseSensitive !== undefined
-          ? Boolean(input.caseSensitive)
-          : undefined;
-      const wholeWord =
-        input.wholeWord !== undefined ? Boolean(input.wholeWord) : undefined;
-      return unwrap(
-        tools.searchText(term, context.cwd, {
-          filePattern,
-          includePattern,
-          excludePattern,
-          caseSensitive,
-          wholeWord,
-        })
-      );
-    }
-    case "read_folder": {
-      const path = input.path ? String(input.path) : ".";
-      const maxDepth =
-        input.maxDepth !== undefined ? Number(input.maxDepth) : undefined;
-      const includeStats =
-        input.includeStats !== undefined ? Boolean(input.includeStats) : undefined;
-      const fileTypesInput = input.fileTypes;
-      const fileTypes =
-        typeof fileTypesInput === "string"
-          ? fileTypesInput.split(",").map((f) => f.trim()).filter(Boolean)
-          : Array.isArray(fileTypesInput)
-          ? fileTypesInput.map((f) => String(f))
-          : undefined;
-      return unwrap(
-        tools.readFolder(path, context.cwd, {
-          maxDepth,
-          includeStats,
-          fileTypes,
-        })
-      );
-    }
     case "google_search": {
       const query = String(input.query);
       const maxResults =
@@ -608,8 +567,23 @@ async function callMeerTool(
         typeof input.headers === "object" && input.headers !== null
           ? (input.headers as Record<string, string>)
           : undefined;
+      const body =
+        typeof input.body === "string" ? input.body : undefined;
       const saveTo =
         typeof input.saveTo === "string" ? input.saveTo : undefined;
+      // When body is provided (or method is non-GET), route to httpRequest
+      // which has a real fetch implementation (webFetch is a placeholder).
+      if (body !== undefined || (method && method !== "GET")) {
+        const timeout =
+          input.timeout !== undefined ? Number(input.timeout) : undefined;
+        const result = await tools.httpRequest(url, {
+          method,
+          headers,
+          body,
+          timeout,
+        });
+        return unwrap(result);
+      }
       return unwrap(
         tools.webFetch(url, {
           method,
@@ -694,6 +668,21 @@ async function callMeerTool(
         input.maxResults !== undefined ? Number(input.maxResults) : undefined;
       const contextLines =
         input.contextLines !== undefined ? Number(input.contextLines) : undefined;
+      const includePattern =
+        typeof input.includePattern === "string" ? input.includePattern : undefined;
+      const excludePattern =
+        typeof input.excludePattern === "string" ? input.excludePattern : undefined;
+      // When include/exclude patterns are provided, route to searchText which
+      // handles glob-pattern file filtering natively (grep is single-file).
+      if (includePattern !== undefined || excludePattern !== undefined) {
+        return unwrap(
+          tools.searchText(pattern, context.cwd, {
+            filePattern: includePattern,
+            excludePattern,
+            caseSensitive,
+          })
+        );
+      }
       return unwrap(
         tools.grep(path, pattern, context.cwd, {
           caseSensitive,
@@ -716,26 +705,6 @@ async function callMeerTool(
         return `⚠️ Move cancelled: ${source} → ${dest}`;
       }
       return unwrap(tools.moveFile(source, dest, context.cwd));
-    }
-    case "http_request": {
-      const url = String(input.url);
-      const method =
-        typeof input.method === "string" ? (input.method as any) : undefined;
-      const headers =
-        typeof input.headers === "object" && input.headers !== null
-          ? (input.headers as Record<string, string>)
-          : undefined;
-      const body =
-        typeof input.body === "string" ? input.body : undefined;
-      const timeout =
-        input.timeout !== undefined ? Number(input.timeout) : undefined;
-      const result = await tools.httpRequest(url, {
-        method,
-        headers,
-        body,
-        timeout,
-      });
-      return unwrap(result);
     }
     case "get_file_outline": {
       const path = String(input.path);
@@ -827,9 +796,10 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "list_files",
-    description: "List files and folders in a directory.",
+    description: "List files and folders in a directory. When maxDepth is provided, lists recursively up to that depth (absorbs read_folder capability).",
     schema: z.object({
       path: z.string().optional(),
+      maxDepth: z.coerce.number().int().positive().optional(),
     }),
     execute: (input, context) => {
       const normalized =
@@ -918,20 +888,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("read_many_files", input as Record<string, unknown>, context),
   },
   {
-    name: "search_text",
-    description: "Search for a text term across the workspace.",
-    schema: z.object({
-      term: z.string().min(1, "term is required"),
-      filePattern: z.string().optional(),
-      caseSensitive: z.union([z.boolean(), z.string()]).optional(),
-      wholeWord: z.union([z.boolean(), z.string()]).optional(),
-      includePattern: z.string().optional(),
-      excludePattern: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("search_text", input as Record<string, unknown>, context),
-  },
-  {
     name: "semantic_search",
     description:
       "Run a semantic (embedding-powered) search across the workspace.",
@@ -962,18 +918,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("semantic_search", input as Record<string, unknown>, context),
   },
   {
-    name: "read_folder",
-    description: "Recursively inspect a folder structure.",
-    schema: z.object({
-      path: z.string().optional(),
-      maxDepth: z.coerce.number().int().positive().optional(),
-      includeStats: z.union([z.boolean(), z.string()]).optional(),
-      fileTypes: z.union([z.string(), z.array(z.string())]).optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("read_folder", input as Record<string, unknown>, context),
-  },
-  {
     name: "google_search",
     description:
       "Search the web using Brave Search (requires BRAVE_API_KEY) with a manual fallback link.",
@@ -987,13 +931,14 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "web_fetch",
-    description: "Fetch a URL (placeholder implementation).",
+    description: "Fetch a URL. Supports GET/POST/PUT/DELETE/PATCH with optional headers and body (absorbs http_request capability).",
     schema: z.object({
       url: z.string().min(1, "url is required"),
       method: z
-        .enum(["GET", "POST", "PUT", "DELETE"])
+        .enum(["GET", "POST", "PUT", "DELETE", "PATCH"])
         .optional(),
       headers: z.record(z.string()).optional(),
+      body: z.string().optional(),
       saveTo: z.string().optional(),
     }),
     execute: (input, context) =>
@@ -1024,13 +969,15 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   {
     name: "grep",
     description:
-      "Search within a specific file and return matching line numbers.",
+      "Search within a specific file and return matching line numbers. When includePattern or excludePattern is provided, searches across the workspace (absorbs search_text include/exclude capability).",
     schema: z.object({
       path: z.string().min(1, "path is required"),
       pattern: z.string().min(1, "pattern is required"),
       caseSensitive: z.union([z.boolean(), z.string()]).optional(),
       maxResults: z.coerce.number().int().positive().optional(),
       contextLines: z.coerce.number().int().nonnegative().optional(),
+      includePattern: z.string().optional(),
+      excludePattern: z.string().optional(),
     }),
     execute: (input, context) =>
       callMeerTool("grep", input as Record<string, unknown>, context),
@@ -1053,21 +1000,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("move_file", input as Record<string, unknown>, context),
-  },
-  {
-    name: "http_request",
-    description: "Make an HTTP request using undici.",
-    schema: z.object({
-      url: z.string().min(1, "url is required"),
-      method: z
-        .enum(["GET", "POST", "PUT", "DELETE", "PATCH"])
-        .optional(),
-      headers: z.record(z.string()).optional(),
-      body: z.string().optional(),
-      timeout: z.coerce.number().int().positive().optional(),
-    }),
-    execute: (input, context) =>
-      callMeerTool("http_request", input as Record<string, unknown>, context),
   },
   {
     name: "get_file_outline",

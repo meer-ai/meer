@@ -1150,7 +1150,7 @@ export function formatToolTranscript(toolName: string, result: string): string {
 
   // Existing per-tool preview (file-read tools) — kept because it gives the
   // model a more useful "head" instead of a "tail" for files.
-  if (["read_file", "list_files", "read_folder", "read_many_files"].includes(toolName)) {
+  if (["read_file", "list_files", "read_many_files"].includes(toolName)) {
     const lines = normalized.split("\n");
     if (normalized.length > 4000 || lines.length > 120) {
       const previewLines = lines.slice(0, 80).join("\n");

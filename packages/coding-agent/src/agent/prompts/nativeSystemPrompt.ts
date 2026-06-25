@@ -113,7 +113,7 @@ ${environmentSection}
 
 **For code understanding:**
 - Start with \`analyze_project\` or \`list_files\` to orient yourself
-- Use \`search_text\` or \`grep\` to find relevant code
+- Use \`grep\` to find relevant code
 - Read actual file contents before making claims about what the code does
 
 ## Task Playbooks
@@ -121,7 +121,7 @@ ${environmentSection}
 **Security audit / code audit / review:**
 - First map the repo with \`list_files\`
 - Then inspect key evidence directly: \`package.json\`, lockfiles, config files, entry points, auth, network, storage, and any security-sensitive modules
-- Use \`run_command\` (e.g. \`npm audit\`), \`grep\`, \`search_text\`, and targeted \`read_file\` calls
+- Use \`run_command\` (e.g. \`npm audit\`), \`grep\`, and targeted \`read_file\` calls
 - Produce findings with concrete file references and evidence
 - Do not keep rerunning the same broad inspection tool if it already returned enough context
 
@@ -150,7 +150,7 @@ ${environmentSection}
 **Analysis / audit / review requests** (technical debt audit, code review, security audit, dependency review, architecture review, etc.):
 - Start with \`list_files\` to map the project structure
 - Read key files (\`package.json\`, entry points, config files, main source directories)
-- Use \`grep\` / \`search_text\` to find patterns (TODOs, deprecated APIs, security issues, etc.)
+- Use \`grep\` to find patterns (TODOs, deprecated APIs, security issues, etc.)
 - Summarize findings with specific file:line references
 - Do NOT answer from memory — always read the actual code first
 - After enough evidence is gathered, stop scanning and synthesize findings instead of looping on more inventory tools

@@ -51,4 +51,20 @@ for (const removed of ["create_directory", "get_env", "set_env"]) {
 assert.ok(names.has("delete_file"), "delete_file must remain");
 assert.ok(names.has("move_file"), "move_file must remain");
 
+for (const removed of ["search_text", "read_folder", "http_request"]) {
+  assert.ok(!names.has(removed), `${removed} must be merged away`);
+}
+for (const kept of ["grep", "list_files", "web_fetch"]) {
+  assert.ok(names.has(kept), `${kept} must remain as merge target`);
+}
+// merged params present on the survivors
+const byName = new Map(tools.map((t) => [t.name, t]));
+const gp = JSON.stringify(byName.get("grep")?.inputSchema ?? {});
+assert.ok(gp.includes("excludePattern") || gp.includes("includePattern"),
+  "grep must absorb search_text include/exclude params");
+const lf = JSON.stringify(byName.get("list_files")?.inputSchema ?? {});
+assert.ok(lf.includes("maxDepth"), "list_files must absorb read_folder maxDepth");
+const wf = JSON.stringify(byName.get("web_fetch")?.inputSchema ?? {});
+assert.ok(wf.includes("method"), "web_fetch must absorb http_request method");
+
 console.log("tool surface verification passed");
