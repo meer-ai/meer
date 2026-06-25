@@ -453,16 +453,14 @@ async function callMeerTool(
         throw new Error("run_command requires a command string.");
       }
 
-      // Background branch: route to background terminal when background is truthy.
+      // Background branch: route to the managed background terminal when
+      // background is truthy. Matches the removed start_background_command
+      // tool, which delegated straight to the background launcher without the
+      // foreground confirmCommand approval gate.
       const isBackground =
         input.background === true ||
-        input.background === "true" ||
-        input.background === 1 ||
         (typeof input.background === "string" && input.background.toLowerCase() === "true");
       if (isBackground) {
-        if (!(await ensureCommandApproval(context, command))) {
-          return `⚠️ Command cancelled: ${command}`;
-        }
         return startBackgroundCommand(context, {
           command,
           cwd: typeof input.cwd === "string" ? input.cwd : undefined,
@@ -845,7 +843,12 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       command: z.string().min(1, "command is required"),
       timeoutMs: z.coerce.number().positive().optional(),
       background: z.union([z.boolean(), z.string()]).optional(),
-      cwd: z.string().optional(),
+      cwd: z
+        .string()
+        .optional()
+        .describe(
+          "Working directory for the background process. Only applied when background is true; the foreground path derives its cwd from leading `cd` segments in the command."
+        ),
     }),
     execute: (input, context) =>
       callMeerTool("run_command", input as Record<string, unknown>, context),
