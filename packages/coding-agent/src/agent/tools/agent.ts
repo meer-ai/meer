@@ -644,28 +644,6 @@ async function callMeerTool(
       const key = String(input.key);
       return unwrap(tools.loadMemory(key, context.cwd));
     }
-    case "scaffold_project": {
-      const projectType = String(input.projectType ?? input.type ?? "").trim();
-      const projectName = String(
-        input.projectName ?? input.name ?? ""
-      ).trim();
-      if (!projectType || !projectName) {
-        throw new Error(
-          "scaffold_project requires both projectType and projectName."
-        );
-      }
-      return unwrap(
-        tools.scaffoldProject(projectType, projectName, context.cwd)
-      );
-    }
-    case "suggest_setup": {
-      const request = String(input.request ?? input.userRequest ?? "").trim();
-      if (!request) {
-        throw new Error("suggest_setup requires a non-empty request.");
-      }
-      const analysis = tools.analyzeProject(context.cwd);
-      return unwrap(tools.suggestSetup(request, analysis));
-    }
     case "semantic_search": {
       const query = String(input.query ?? input.term ?? "").trim();
       if (!query) {
@@ -883,9 +861,6 @@ async function callMeerTool(
       }
       return unwrap(tools.setEnv(key, value, context.cwd));
     }
-    case "list_env": {
-      return unwrap(tools.listEnv(context.cwd));
-    }
     case "http_request": {
       const url = String(input.url);
       const method =
@@ -1010,19 +985,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     schema: z.object({}),
     execute: (input, context) =>
       callMeerTool("analyze_project", input as Record<string, unknown>, context),
-  },
-  {
-    name: "suggest_setup",
-    description:
-      "Offer setup recommendations based on the user request and project analysis.",
-    schema: z.object({
-      request: z
-        .string()
-        .min(1, "request is required")
-        .describe("The user request to guide setup suggestions."),
-    }),
-    execute: (input, context) =>
-      callMeerTool("suggest_setup", input as Record<string, unknown>, context),
   },
   {
     name: "read_file",
@@ -1379,25 +1341,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
       callMeerTool("package_list", input as Record<string, unknown>, context),
   },
   {
-    name: "scaffold_project",
-    description:
-      "Scaffold a new project such as React, Vue, Next.js, Node, Python, Go, or Rust.",
-    schema: z.object({
-      projectType: z
-        .string()
-        .min(1, "projectType is required")
-        .describe(
-          "Project type to scaffold (react, vue, angular, next, nuxt, node, python, go, rust)."
-        ),
-      projectName: z
-        .string()
-        .min(1, "projectName is required")
-        .describe("Directory name for the new project."),
-    }),
-    execute: (input, context) =>
-      callMeerTool("scaffold_project", input as Record<string, unknown>, context),
-  },
-  {
     name: "get_env",
     description: "Read an environment variable from process or .env file.",
     schema: z.object({
@@ -1415,13 +1358,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       callMeerTool("set_env", input as Record<string, unknown>, context),
-  },
-  {
-    name: "list_env",
-    description: "List keys stored in the .env file (values hidden).",
-    schema: z.object({}),
-    execute: (input, context) =>
-      callMeerTool("list_env", input as Record<string, unknown>, context),
   },
   {
     name: "http_request",

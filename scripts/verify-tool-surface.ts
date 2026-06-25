@@ -26,4 +26,8 @@ for (const removed of [
   assert.ok(!names.has(removed), `${removed} must be removed`);
 }
 
+for (const removed of ["suggest_setup", "scaffold_project", "list_env"]) {
+  assert.ok(!names.has(removed), `${removed} must be removed`);
+}
+
 console.log("tool surface verification passed");

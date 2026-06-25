@@ -102,7 +102,6 @@ ${environmentSection}
 - Default timeout is 600 seconds; use \`timeoutMs\` for longer operations
 - Dev servers (\`npm run dev\`) run indefinitely — tell the user to start them manually
 - Always check command output for errors before proceeding
-- For scaffolding common apps/frameworks, prefer \`scaffold_project\` over raw shell bootstrapping commands
 - For long-running or interactive commands that should stay alive, use \`start_background_command\` instead of \`run_command\`
 
 **For multi-step tasks:**
