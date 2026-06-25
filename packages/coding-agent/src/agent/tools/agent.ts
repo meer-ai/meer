@@ -454,13 +454,16 @@ async function callMeerTool(
       }
 
       // Background branch: route to the managed background terminal when
-      // background is truthy. Matches the removed start_background_command
-      // tool, which delegated straight to the background launcher without the
-      // foreground confirmCommand approval gate.
+      // background is truthy. Like the foreground path, it goes through the
+      // command-approval gate first (so review modes still prompt; trusted /
+      // auto-approve modes pass straight through).
       const isBackground =
         input.background === true ||
         (typeof input.background === "string" && input.background.toLowerCase() === "true");
       if (isBackground) {
+        if (!(await ensureCommandApproval(context, command))) {
+          return `⚠️ Command cancelled: ${command}`;
+        }
         return startBackgroundCommand(context, {
           command,
           cwd: typeof input.cwd === "string" ? input.cwd : undefined,
@@ -677,7 +680,12 @@ async function callMeerTool(
       return unwrap(result);
     }
     case "grep": {
-      const path = String(input.path ?? ".");
+      // Detect whether the caller supplied an explicit file path BEFORE
+      // applying the "." default — a bare grep (no path) should search the
+      // whole workspace, not try to read "." as a single file.
+      const hasExplicitPath =
+        typeof input.path === "string" && input.path.trim().length > 0;
+      const path = hasExplicitPath ? String(input.path) : ".";
       const pattern = String(input.pattern ?? "");
       const caseSensitive =
         input.caseSensitive !== undefined ? Boolean(input.caseSensitive) : undefined;
@@ -696,6 +704,15 @@ async function callMeerTool(
           tools.searchText(pattern, context.cwd, {
             filePattern: includePattern,
             excludePattern,
+            caseSensitive,
+          })
+        );
+      }
+      // Bare grep with no explicit file path: search the whole workspace via
+      // searchText (single-file tools.grep would readFileSync(".") → EISDIR).
+      if (!hasExplicitPath) {
+        return unwrap(
+          tools.searchText(pattern, context.cwd, {
             caseSensitive,
           })
         );

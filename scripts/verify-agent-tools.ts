@@ -5,6 +5,9 @@ import { runCommand } from "@meer-ai/coding-agent/tools/index.js";
 const context = {
   cwd: process.cwd(),
   reviewFileEdit: async () => true,
+  // Auto-approve shell commands so the background run_command path (now gated
+  // through ensureCommandApproval) passes through without prompting.
+  confirmCommand: async () => true,
   promptForm: async () => ({
     tech_stack: "next-postgres",
     priorities: ["events", "dashboards"],
