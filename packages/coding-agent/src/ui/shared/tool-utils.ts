@@ -119,7 +119,7 @@ export function getToolSummary(toolName: string, args?: Record<string, unknown>)
       return `${method} ${url}`;
     }
   }
-  if (/install_package|add_dependency/.test(lower)) {
+  if (/install_package|add_dependency|package_install/.test(lower)) {
     const pkgs = asList(a.packages ?? a.package ?? a.dependencies);
     if (pkgs) return pkgs;
   }
