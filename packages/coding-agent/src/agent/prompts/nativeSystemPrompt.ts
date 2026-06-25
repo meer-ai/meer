@@ -102,7 +102,7 @@ ${environmentSection}
 - Default timeout is 600 seconds; use \`timeoutMs\` for longer operations
 - Dev servers (\`npm run dev\`) run indefinitely — tell the user to start them manually
 - Always check command output for errors before proceeding
-- For long-running or interactive commands that should stay alive, use \`start_background_command\` instead of \`run_command\`
+- For long-running or interactive commands that should stay alive (e.g. dev servers), use \`run_command\` with \`background: true\`
 - For git, package management, builds, tests, linting, and formatting, use \`run_command\` (e.g. \`git status\`, \`git commit -m "..."\`, \`npm test\`, \`npx prettier -w .\`). There are no dedicated tools for these.
 
 **For multi-step tasks:**

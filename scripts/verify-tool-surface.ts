@@ -72,4 +72,10 @@ for (const removed of ["set_plan", "update_plan_task", "show_plan", "clear_plan"
 }
 assert.ok(names.has("update_plan"), "update_plan must exist");
 
+// Task 9: start_background_command folded into run_command
+assert.ok(!names.has("start_background_command"),
+  "start_background_command must be folded into run_command");
+const rc = JSON.stringify(byName.get("run_command")?.inputSchema ?? {});
+assert.ok(rc.includes("background"), "run_command must gain a background flag");
+
 console.log("tool surface verification passed");

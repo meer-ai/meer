@@ -452,6 +452,23 @@ async function callMeerTool(
       if (!command) {
         throw new Error("run_command requires a command string.");
       }
+
+      // Background branch: route to background terminal when background is truthy.
+      const isBackground =
+        input.background === true ||
+        input.background === "true" ||
+        input.background === 1 ||
+        (typeof input.background === "string" && input.background.toLowerCase() === "true");
+      if (isBackground) {
+        if (!(await ensureCommandApproval(context, command))) {
+          return `⚠️ Command cancelled: ${command}`;
+        }
+        return startBackgroundCommand(context, {
+          command,
+          cwd: typeof input.cwd === "string" ? input.cwd : undefined,
+        });
+      }
+
       if (!(await ensureCommandApproval(context, command))) {
         return `⚠️ Command cancelled: ${command}`;
       }
@@ -823,10 +840,12 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
   },
   {
     name: "run_command",
-    description: "Execute a shell command inside the project workspace.",
+    description: "Execute a shell command inside the project workspace. Pass background: true to start a long-running or interactive command in a managed background terminal session instead of waiting for it to complete.",
     schema: z.object({
       command: z.string().min(1, "command is required"),
       timeoutMs: z.coerce.number().positive().optional(),
+      background: z.union([z.boolean(), z.string()]).optional(),
+      cwd: z.string().optional(),
     }),
     execute: (input, context) =>
       callMeerTool("run_command", input as Record<string, unknown>, context),
@@ -1045,17 +1064,6 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     }),
     execute: (input, context) =>
       requestStructuredUserInput(context, input),
-  },
-  {
-    name: "start_background_command",
-    description:
-      "Start a long-running or interactive shell command in a managed background terminal session.",
-    schema: z.object({
-      command: z.string().min(1, "command is required"),
-      cwd: z.string().optional(),
-    }),
-    execute: (input, context) =>
-      startBackgroundCommand(context, input),
   },
   {
     name: "find_references",
