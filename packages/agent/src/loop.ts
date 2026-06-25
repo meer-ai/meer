@@ -90,7 +90,7 @@ async function executeToolCall(
 
 export async function runLoop(
   initialMessages: AgentMessage[],
-  tools: AgentTool[],
+  tools: AgentTool[] | (() => AgentTool[]),
   provider: Provider,
   config: LoopConfig,
   emit: AgentEventSink,
@@ -107,8 +107,7 @@ export async function runLoop(
     ...initialMessages,
   ];
 
-  const toolDefs = buildToolDefinitions(tools);
-  const toolMap = new Map(tools.map((t) => [t.name, t]));
+  const resolveTools = typeof tools === "function" ? tools : () => tools;
   const maxTurns =
     typeof config.maxTurns === "number" && config.maxTurns > 0
       ? config.maxTurns
@@ -153,6 +152,11 @@ export async function runLoop(
 
         turns++;
         await emit({ type: "turn_start" });
+
+        // Re-resolve tools each turn so tools activated mid-interaction (e.g. via tool_search) become callable on the next turn.
+        const activeTools = resolveTools();
+        const toolDefs = buildToolDefinitions(activeTools);
+        const toolMap = new Map(activeTools.map((t) => [t.name, t]));
 
         let assistantText = "";
         let assistantReasoningContent: string | undefined;
