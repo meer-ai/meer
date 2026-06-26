@@ -10,3 +10,4 @@ yarn-error.log*
 .claude/
 *.tgz
 .vscode/
+.superpowers/
