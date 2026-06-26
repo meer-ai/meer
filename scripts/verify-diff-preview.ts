@@ -161,7 +161,7 @@ function renderedText(adapter: TuiChatAdapter): string {
   adapter.completeTool("tc-1", "ok", { path: "src/server.ts", diff: DIFF });
 
   const text = renderedText(adapter);
-  assert.ok(text.includes("edit_file"), "edit row renders");
+  assert.ok(text.includes("Edited"), "edit row renders");
   assert.ok(/\+6\s+-1/.test(text), `stat +6 -1 shown (got: ${text.replace(/\n/g, "⏎")})`);
   assert.ok(text.includes("const port = process.env.PORT"), "diff body rendered");
   assert.ok(text.includes("6 more lines"), "configured diff line budget controls hidden-lines footer");
@@ -170,9 +170,9 @@ function renderedText(adapter: TuiChatAdapter): string {
   adapter.addTool("read_file", { path: "src/server.ts" }, "tc-2");
   adapter.completeTool("tc-2", "ok", { path: "src/server.ts" });
   const text2 = renderedText(adapter);
-  const readIdx = text2.indexOf("read_file");
+  const readIdx = text2.indexOf("Read");
   assert.ok(readIdx >= 0, "read row renders");
-  assert.ok(!/read_file[^\n]*\+\d+\s+-\d+/.test(text2), "read row has no stat");
+  assert.ok(!/Read[^\n]*\+\d+\s+-\d+/.test(text2), "read row has no stat");
 
   adapter.destroy();
 }

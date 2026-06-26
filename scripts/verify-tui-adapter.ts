@@ -207,7 +207,7 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   assert.equal(id, "tc-1");
   adapter.startTool("tc-1");
   let text = renderedText(adapter);
-  assert.ok(text.includes("read_file"), "running tool row renders");
+  assert.ok(text.includes("Reading"), "running tool row renders");
   assert.ok(text.includes("src/x.ts"), "tool summary shows the path");
 
   adapter.completeTool("tc-1");
@@ -218,9 +218,9 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   adapter.endTurn();
 
   text = renderedText(adapter);
-  assert.ok(text.includes("✓ read_file"), "completed tool row keeps its durable mark");
+  assert.ok(text.includes("✓ Read"), "completed tool row keeps its durable mark");
   const intro = text.indexOf("Let me check the file.");
-  const tool = text.indexOf("✓ read_file");
+  const tool = text.indexOf("✓ Read");
   const follow = text.indexOf("The file looks fine.");
   assert.ok(intro >= 0 && tool >= 0 && follow >= 0, "all pieces rendered");
   assert.ok(intro < tool && tool < follow, "text → tool row → text order holds");
@@ -232,7 +232,7 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   adapter.failTool("tc-2", "old_string not found in file");
   adapter.endTurn();
   text = renderedText(adapter);
-  assert.ok(text.includes("✗ edit_file"), "failed tool row marked");
+  assert.ok(text.includes("✗ Edited"), "failed tool row marked");
   assert.ok(text.includes("old_string not found"), "error preview rendered");
 
   adapter.destroy();
@@ -434,7 +434,7 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
     { role: "system", content: "session restored" },
   ]);
   const text = renderedText(adapter);
-  for (const expected of ["restored question", "restored answer", "read_file", "session restored"]) {
+  for (const expected of ["restored question", "restored answer", "Read", "session restored"]) {
     assert.ok(text.includes(expected), `replayed entry renders: ${expected}`);
   }
   adapter.destroy();
@@ -669,7 +669,7 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   adapter.updateToolProgress("tc-compact", "compiling…\nPASS 12 passed");
   adapter.completeTool("tc-compact", "ok");
   let text = renderedText(adapter);
-  assert.ok(text.includes("run_command") && text.includes("$ npm test"), "compact row keeps command summary");
+  assert.ok(text.includes("Ran") && text.includes("$ npm test"), "compact row keeps command summary");
   assert.ok(!text.includes("compiling…"), "compact mode hides command output preview");
 
   adapter.setToolDisplayMode("expanded");
