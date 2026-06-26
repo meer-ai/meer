@@ -140,7 +140,7 @@ export class MeerAgent {
   private enableMemory: boolean;
   private providerType: string;
   private model: string;
-  /** Latest provider-reported prompt-token count; current context occupancy. */
+  /** Latest provider-reported prompt-token count; current context occupancy. Reset on compaction so get_context_remaining doesn't over-report until the next usage event. */
   private lastPromptTokens?: number;
   private skills: Skill[] = [];
   private skillDiagnostics: SkillDiagnostic[] = [];
@@ -797,7 +797,13 @@ export class MeerAgent {
     summaryGenerator?: (input: import("../session/store.js").CompactionSummaryInput) => Promise<string> | string;
   }): Promise<boolean> {
     const result = await memory.compactCurrentSession(this.cwd, options);
-    return Boolean(result);
+    const ok = Boolean(result);
+    if (ok) {
+      // Context just shrank; drop the stale prompt-token count so usage
+      // reflects the compacted transcript until the next provider usage event.
+      this.lastPromptTokens = undefined;
+    }
+    return ok;
   }
 
   private async reviewFileEdit(edit: FileEdit): Promise<boolean> {

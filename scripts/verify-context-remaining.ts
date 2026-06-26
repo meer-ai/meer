@@ -21,6 +21,7 @@ const est = computeContextUsage({
 });
 assert.equal(est.usedTokens, 100000, "estimate is ceil(totalChars / 4)");
 assert.equal(est.estimated, true, "estimate path flagged");
+assert.equal(est.totalTokens, 200000, "window resolved on estimate path too");
 
 // --- formatContextRemaining: real-usage (green) ---
 const green = formatContextRemaining({
