@@ -1,6 +1,6 @@
 {
   "name": "@meer-ai/agent",
-  "version": "0.6.44",
+  "version": "0.6.45",
   "description": "meer's generic agent kernel: the tool-calling loop and orchestration types. Provider-agnostic, UI-agnostic.",
   "type": "module",
   "license": "MIT",
