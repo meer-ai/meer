@@ -10,6 +10,7 @@ import {
   selectActiveMcpTools,
   buildToolSearchTool,
 } from "./tool-search.js";
+import { computeContextUsage } from "./context-usage.js";
 import type { AgentTool } from "@meer-ai/agent/types.js";
 import type { AgentToolCallResult } from "./runtime/types.js";
 import { runLoop } from "@meer-ai/agent/loop.js";
@@ -139,6 +140,8 @@ export class MeerAgent {
   private enableMemory: boolean;
   private providerType: string;
   private model: string;
+  /** Latest provider-reported prompt-token count; current context occupancy. Reset on compaction so get_context_remaining doesn't over-report until the next usage event. */
+  private lastPromptTokens?: number;
   private skills: Skill[] = [];
   private skillDiagnostics: SkillDiagnostic[] = [];
   private editedFiles = new Set<string>();
@@ -460,6 +463,9 @@ export class MeerAgent {
             }
 
             case "usage":
+              if (typeof event.promptTokens === "number") {
+                this.lastPromptTokens = event.promptTokens;
+              }
               this.config.onUsage?.({
                 promptTokens: event.promptTokens,
                 completionTokens: event.completionTokens,
@@ -791,7 +797,13 @@ export class MeerAgent {
     summaryGenerator?: (input: import("../session/store.js").CompactionSummaryInput) => Promise<string> | string;
   }): Promise<boolean> {
     const result = await memory.compactCurrentSession(this.cwd, options);
-    return Boolean(result);
+    const ok = Boolean(result);
+    if (ok) {
+      // Context just shrank; drop the stale prompt-token count so usage
+      // reflects the compacted transcript until the next provider usage event.
+      this.lastPromptTokens = undefined;
+    }
+    return ok;
   }
 
   private async reviewFileEdit(edit: FileEdit): Promise<boolean> {
@@ -1027,6 +1039,14 @@ export class MeerAgent {
         getShellCwd: () => this.shellCwd || this.cwd,
         setShellCwd: (path: string) => {
           this.shellCwd = path;
+        },
+        getContextUsage: () => {
+          const stats = this.getContextStats();
+          return computeContextUsage({
+            lastPromptTokens: this.lastPromptTokens,
+            totalChars: stats?.totalChars ?? 0,
+            model: this.model,
+          });
         },
       },
       { mcpTools: selectActiveMcpTools(this.mcpTools, this.activatedMcpToolNames, useSearch) }
