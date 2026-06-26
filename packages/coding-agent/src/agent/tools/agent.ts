@@ -8,6 +8,10 @@ import type { MCPTool } from "../../mcp/types.js";
 import type { AgentTool, AgentToolCallResult } from "../runtime/types.js";
 import { extractLeadingCd } from "../../utils/shell-cd.js";
 import { withFileMutationQueue } from "../../tools/file-mutation-queue.js";
+import {
+  formatContextRemaining,
+  type ContextUsage,
+} from "../context-usage.js";
 export interface MeerAgentToolContext {
   cwd: string;
   provider?: Provider;
@@ -68,6 +72,11 @@ export interface MeerAgentToolContext {
    * accepting the change.
    */
   setShellCwd?: (path: string) => void;
+  /**
+   * Report current context-window usage for get_context_remaining.
+   * Returns null when usage cannot be determined for this session.
+   */
+  getContextUsage?: () => ContextUsage | null;
 }
 
 export interface MeerAgentToolOptions {
@@ -397,6 +406,9 @@ async function callMeerTool(
   signal?: AbortSignal
 ): Promise<string | AgentToolCallResult> {
   switch (name) {
+    case "get_context_remaining": {
+      return formatContextRemaining(context.getContextUsage?.() ?? null);
+    }
     case "analyze_project": {
       return unwrap(tools.analyzeProject(context.cwd));
     }
@@ -1089,6 +1101,18 @@ const baseToolDefinitions: Array<ToolDefinition<z.ZodTypeAny>> = [
     execute: (input, context) =>
       callMeerTool(
         "find_references",
+        input as Record<string, unknown>,
+        context
+      ),
+  },
+  {
+    name: "get_context_remaining",
+    description:
+      "Report how full the context window is (used/total/remaining tokens, percent, and a status). Call it to check headroom before large operations; treat yellow/red as a cue to be concise or wrap up.",
+    schema: z.object({}),
+    execute: (input, context) =>
+      callMeerTool(
+        "get_context_remaining",
         input as Record<string, unknown>,
         context
       ),

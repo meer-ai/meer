@@ -45,6 +45,7 @@ const expectedNames = [
   "find_references",
   "request_user_input",
   "update_plan",
+  "get_context_remaining",
 ].sort();
 
 const missing = expectedNames.filter((name) => !exportedNames.includes(name));
@@ -124,6 +125,20 @@ for (const taskId of updateVariants) {
   });
   assert.doesNotMatch(result, /not found/i, `task id variant should resolve: ${taskId}`);
 }
+
+const contextTool = toolkit.find(
+  (tool) => tool.name === "get_context_remaining"
+);
+assert(contextTool, "get_context_remaining tool should exist");
+// No getContextUsage wired on this bare context → graceful unavailable line.
+const contextResult = await contextTool.call({});
+assert.match(
+  typeof contextResult === "string"
+    ? contextResult
+    : JSON.stringify(contextResult),
+  /not available in this session/,
+  "get_context_remaining degrades gracefully without a usage provider"
+);
 
 const commandUpdates: string[] = [];
 const commandResult = await runCommand(

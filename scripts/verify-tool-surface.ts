@@ -78,4 +78,7 @@ assert.ok(!names.has("start_background_command"),
 const rc = JSON.stringify(byName.get("run_command")?.inputSchema ?? {});
 assert.ok(rc.includes("background"), "run_command must gain a background flag");
 
+// 22nd tool: context self-awareness.
+assert.ok(names.has("get_context_remaining"), "get_context_remaining must exist");
+
 console.log("tool surface verification passed");
