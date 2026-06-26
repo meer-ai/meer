@@ -4,6 +4,7 @@ import chalk from "chalk";
 import { loadConfig } from "../config.js";
 import type { Provider } from "@meer-ai/ai/base.js";
 import { isRetryableProviderError } from "@meer-ai/core/provider-errors.js";
+import { getToolLabel } from "../ui/shared/tool-utils.js";
 import {
   createRunEventEmitter,
   RUN_PROTOCOL_VERSION,
@@ -322,7 +323,7 @@ export async function runHeadless(
         return;
       }
       const preview = previewArgs(args);
-      write(`→ ${chalk.cyan(tool)}${preview}\n`);
+      write(`→ ${chalk.cyan(getToolLabel(tool, "active"))}${preview}\n`);
     },
     onToolMessage: (tool, result, metadata) => {
       if (isJson) {

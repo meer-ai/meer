@@ -26,6 +26,70 @@ export function classifyTool(name: string): "mutation" | "file" | "shell" | "gen
   return "generic";
 }
 
+interface ToolLabel {
+  /** Present-continuous, shown while the tool is running (e.g. "Running"). */
+  active: string;
+  /** Past tense, shown once the tool has finished (e.g. "Ran"). */
+  done: string;
+}
+
+/**
+ * Friendly verbs for the built-in tools, so the worklog reads like actions
+ * ("Read", "Ran", "Edited") instead of raw tool identifiers ("read_file",
+ * "run_command", "edit_file"). Unknown / MCP tools fall back to a humanized
+ * version of their name.
+ */
+const TOOL_LABELS: Record<string, ToolLabel> = {
+  analyze_project: { active: "Analyzing project", done: "Analyzed project" },
+  read_file: { active: "Reading", done: "Read" },
+  read_many_files: { active: "Reading files", done: "Read files" },
+  list_files: { active: "Listing", done: "Listed" },
+  edit_file: { active: "Editing", done: "Edited" },
+  propose_edit: { active: "Proposing edit", done: "Proposed edit" },
+  run_command: { active: "Running", done: "Ran" },
+  find_files: { active: "Finding files", done: "Found files" },
+  find_symbol_definition: { active: "Finding definition", done: "Found definition" },
+  find_references: { active: "Finding references", done: "Found references" },
+  semantic_search: { active: "Searching", done: "Searched" },
+  grep: { active: "Searching", done: "Searched" },
+  google_search: { active: "Searching the web", done: "Searched the web" },
+  web_fetch: { active: "Fetching", done: "Fetched" },
+  save_memory: { active: "Saving memory", done: "Saved memory" },
+  load_memory: { active: "Loading memory", done: "Loaded memory" },
+  delete_file: { active: "Deleting", done: "Deleted" },
+  move_file: { active: "Moving", done: "Moved" },
+  get_file_outline: { active: "Reading outline", done: "Read outline" },
+  update_plan: { active: "Updating plan", done: "Updated plan" },
+  request_user_input: { active: "Waiting for input", done: "Asked" },
+  get_context_remaining: { active: "Checking context", done: "Checked context" },
+};
+
+/**
+ * Turn a raw tool identifier into a human-readable label: split snake_case and
+ * camelCase into words and sentence-case the result. Used as the fallback for
+ * tools without an entry in {@link TOOL_LABELS} (e.g. MCP-provided tools).
+ */
+export function humanizeToolName(name: string): string {
+  const words = name
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!words) return name;
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * Friendly action label for a tool row, varying by lifecycle state: the
+ * present-continuous form while the tool is in flight, the past-tense form once
+ * it has finished. Falls back to a humanized tool name for unknown tools.
+ */
+export function getToolLabel(name: string, state: "active" | "done"): string {
+  const entry = TOOL_LABELS[name.toLowerCase()];
+  if (entry) return state === "active" ? entry.active : entry.done;
+  return humanizeToolName(name);
+}
+
 export function stripToolHeader(content: string): string {
   return content.replace(/^Tool:\s*\S+\s*\n(?:Result[^\n]*:\s*)?\n?/i, "").trim();
 }

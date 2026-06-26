@@ -21,6 +21,7 @@ import {
   clipLine,
   extractStreamingArgPreview,
   formatDurationMs,
+  getToolLabel,
   getToolSummary,
   parseDiffStat,
   truncateLine,
@@ -447,20 +448,20 @@ export class ToolRowComponent extends Container {
       case "running": {
         const frame = SPINNER_FRAMES[Math.floor(Date.now() / 120) % SPINNER_FRAMES.length];
         icon = s.accent(frame);
-        label = s.text(this.name);
+        label = s.text(getToolLabel(this.name, "active"));
         break;
       }
       case "success":
         icon = kind === "mutation" ? s.warning("●") : s.success("✓");
-        label = s.muted(this.name);
+        label = s.muted(getToolLabel(this.name, "done"));
         break;
       case "error":
         icon = s.danger("✗");
-        label = s.danger(this.name);
+        label = s.danger(getToolLabel(this.name, "done"));
         break;
       case "interrupted":
         icon = s.warning("⊘");
-        label = s.muted(`${this.name} (interrupted)`);
+        label = s.muted(`${getToolLabel(this.name, "done")} (interrupted)`);
         break;
     }
 
