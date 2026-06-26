@@ -1,19 +1,36 @@
+import { randomUUID } from "crypto";
 import { fetchWithTimeout, STREAM_TIMEOUT_MS, REQUEST_TIMEOUT_MS } from "@meer-ai/core/fetch.js";
 import type {
   Provider,
   ChatMessage,
   ChatOptions,
   ProviderMetadata,
+  AgentMessage,
+  ToolDefinition,
+  ProviderEvent,
+  ProviderToolCall,
 } from "../base.js";
 import { AuthClient } from "@meer-ai/core/auth/client.js";
 import { AuthStorage } from "@meer-ai/core/auth/storage.js";
 import { readAttachmentBase64 } from "../attachments.js";
+import { convertAgentMessagesToOpenAI } from "./transform-messages.js";
+import { createProviderToolNameRegistry } from "./toolNames.js";
 
 interface MeerProviderConfig {
   apiKey?: string;
   apiUrl?: string;
   model?: string;
   temperature?: number;
+}
+
+/** OpenAI-shaped tool call as returned by the managed gateway's tool path. */
+interface MeerToolCall {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
 }
 
 interface MeerChatSuccessResponse {
@@ -23,6 +40,8 @@ interface MeerChatSuccessResponse {
     model: string;
     tier?: string;
     was_fallback?: boolean;
+    /** Present only on the tool-calling path (`/api/meer/chat` with `tools`). */
+    tool_calls?: MeerToolCall[];
   };
   usage?: {
     prompt_tokens?: number;
@@ -148,6 +167,110 @@ export class MeerProvider implements Provider {
     }
   }
 
+  /**
+   * Native tool calling through the managed gateway.
+   *
+   * The Meer provider has no client-side LLM access — it proxies to an
+   * OpenAI-compatible upstream via `/api/meer/chat`. So rather than the brittle
+   * `<tool_call>` XML text-protocol (which the routed models don't reliably
+   * emit), we send tools in OpenAI function format and let the upstream do
+   * native function calling. The gateway returns `data.content` plus
+   * `data.tool_calls` (OpenAI shape), which we translate into provider events.
+   *
+   * This is a single round-trip rather than an incremental stream: the gateway
+   * is non-streaming today (it logs usage/quota per response). We emit the whole
+   * assistant turn at once — one text-delta, the tool-call events, then `done`.
+   */
+  async *streamWithTools(
+    messages: AgentMessage[],
+    tools: ToolDefinition[],
+    signal?: AbortSignal
+  ): AsyncIterable<ProviderEvent> {
+    const toolRegistry = createProviderToolNameRegistry(tools);
+    const converted = convertAgentMessagesToOpenAI(
+      toolRegistry.convertAgentMessages(messages)
+    );
+
+    const body: Record<string, unknown> = {
+      messages: converted,
+      model: this.currentModel !== "auto" ? this.currentModel : undefined,
+      options: {
+        temperature: this.config.temperature,
+      },
+    };
+    if (toolRegistry.providerTools.length > 0) {
+      body.tools = toolRegistry.providerTools.map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema,
+        },
+      }));
+      body.tool_choice = "auto";
+    }
+
+    const response = await this.fetchWithAuth<MeerChatSuccessResponse>(
+      "/api/meer/chat",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      }
+    );
+
+    if (!response.success) {
+      throw new Error(
+        response.message ||
+          "Meer provider failed to generate a response. Please try again."
+      );
+    }
+    if (response.data?.model) {
+      this.currentModel = response.data.model;
+    }
+
+    const text = response.data?.content ?? "";
+    if (text) {
+      yield { type: "text-delta", text };
+    }
+
+    const toolCalls: ProviderToolCall[] = (response.data?.tool_calls ?? [])
+      .filter((tc): tc is MeerToolCall & { function: { name: string } } =>
+        Boolean(tc.function?.name)
+      )
+      .map((tc) => {
+        let input: Record<string, unknown> = {};
+        const raw = tc.function.arguments ?? "";
+        try {
+          input = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+        } catch {
+          input = { raw };
+        }
+        return {
+          id: tc.id || randomUUID(),
+          name: toolRegistry.toOriginalName(tc.function.name),
+          input,
+        };
+      });
+
+    for (const toolCall of toolCalls) {
+      yield { type: "tool-call", toolCall };
+    }
+
+    yield {
+      type: "done",
+      rawText: text,
+      turn: { assistantMessage: text, toolCalls, rawText: text },
+      usage: response.usage
+        ? {
+            promptTokens: response.usage.prompt_tokens,
+            completionTokens: response.usage.completion_tokens,
+          }
+        : undefined,
+    };
+  }
+
   async metadata(): Promise<ProviderMetadata> {
     const [models, subscription] = await Promise.all([
       this.listModels(),
@@ -164,7 +287,7 @@ export class MeerProvider implements Provider {
     return {
       name: "Meer Managed Provider",
       version: "1.0.0",
-      capabilities: ["chat", "stream"],
+      capabilities: ["chat", "stream", "tools"],
       models,
       currentModel: this.currentModel,
       plan: planName,

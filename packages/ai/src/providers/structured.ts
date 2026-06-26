@@ -62,8 +62,15 @@ function extractBalancedJson(text: string): string | null {
 
 function stripToolMarkup(text: string): string {
   return text
+    // Complete blocks first.
     .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "")
     .replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "")
+    // Then any unmatched/partial tags a model may emit (a truncated stream or
+    // malformed XML can leave a dangling `<tool_call>` or `</tool_call>` with no
+    // pair). Strip a dangling open tag and everything after it, and any orphan
+    // close tags, so tool markup can never leak into the visible message.
+    .replace(/<tool_call>[\s\S]*$/g, "")
+    .replace(/<\/?tool_call>/g, "")
     .replace(/<\/?tool_name>/g, "")
     .replace(/<\/?tool_input>/g, "")
     .replace(/<\/?tool_result>/g, "")
