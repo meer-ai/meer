@@ -1,6 +1,6 @@
 {
   "name": "@meer-ai/ai",
-  "version": "0.6.48",
+  "version": "0.6.49",
   "description": "meer's LLM I/O layer: the provider contract, conversation message model, and provider implementations.",
   "type": "module",
   "license": "MIT",
