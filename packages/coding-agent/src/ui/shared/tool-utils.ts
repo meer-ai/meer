@@ -62,6 +62,7 @@ const TOOL_LABELS: Record<string, ToolLabel> = {
   update_plan: { active: "Updating plan", done: "Updated plan" },
   request_user_input: { active: "Waiting for input", done: "Asked" },
   get_context_remaining: { active: "Checking context", done: "Checked context" },
+  tool_search: { active: "Finding tools", done: "Found tools" },
 };
 
 /**

@@ -13,6 +13,8 @@ assert.equal(getToolLabel("edit_file", "active"), "Editing");
 assert.equal(getToolLabel("edit_file", "done"), "Edited");
 assert.equal(getToolLabel("delete_file", "done"), "Deleted");
 assert.equal(getToolLabel("grep", "done"), "Searched");
+assert.equal(getToolLabel("tool_search", "active"), "Finding tools");
+assert.equal(getToolLabel("tool_search", "done"), "Found tools");
 
 // --- case-insensitive lookup -------------------------------------------------
 assert.equal(getToolLabel("RUN_COMMAND", "done"), "Ran");

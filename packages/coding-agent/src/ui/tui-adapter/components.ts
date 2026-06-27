@@ -29,6 +29,7 @@ import {
 } from "../shared/tool-utils.js";
 import type { ToolDisplayMode, ToolOutputSettings } from "../ui-settings.js";
 import { getMarkdownTheme, getTuiStyles, type TuiStyles } from "./theme.js";
+import { randomTipIndex, tipForElapsed } from "./work-tips.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -187,6 +188,38 @@ export class AssistantMessageComponent extends Container {
 
   isEmpty(): boolean {
     return this.content.trim().length === 0;
+  }
+}
+
+// ── Work tip ──────────────────────────────────────────────────────────────────
+
+/**
+ * A rotating "↳ Tip: …" hint shown under the working spinner during a turn.
+ *
+ * Renders nothing for the first few seconds of a turn (so quick turns stay
+ * uncluttered), then surfaces a contextual tip and rotates it on a timer. All
+ * timing is derived from the elapsed wall-clock in {@link tipForElapsed}; this
+ * component carries no timer of its own — the loader's animation already
+ * repaints the tree, which re-invokes render() and advances the tip.
+ */
+export class WorkTipComponent implements Component {
+  private readonly startedAt: number;
+  private readonly baseIndex: number;
+  private readonly now: () => number;
+
+  constructor(options?: { now?: () => number; baseIndex?: number }) {
+    this.now = options?.now ?? Date.now;
+    this.startedAt = this.now();
+    this.baseIndex = options?.baseIndex ?? randomTipIndex();
+  }
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    const tip = tipForElapsed(this.now() - this.startedAt, this.baseIndex);
+    if (!tip) return [];
+    const s = getTuiStyles();
+    return [truncateToWidth(`   ${s.muted(`↳ Tip: ${tip}`)}`, width)];
   }
 }
 

@@ -62,6 +62,7 @@ import {
   ToolRowComponent,
   TurnSummaryComponent,
   UserMessageComponent,
+  WorkTipComponent,
 } from "./components.js";
 import { getEditorTheme, getSelectListTheme, getTuiStyles } from "./theme.js";
 import { WAVE_LOADER_INTERVAL_MS, getWaveLoaderFrames } from "../logo.js";
@@ -206,6 +207,8 @@ export class TuiChatAdapter implements ChatAdapter {
   private readonly history = new PromptHistoryStore();
   private footer: FooterComponent;
   private loader: Loader | null = null;
+  /** Rotating "↳ Tip: …" hint shown under the loader during an active turn. */
+  private workTip: WorkTipComponent | null = null;
   /** Standalone spinner for startup work (e.g. MCP connection) shown outside a turn. */
   private startupLoader: Loader | null = null;
   private shortcutsOverlay: OverlayHandle | null = null;
@@ -919,6 +922,7 @@ export class TuiChatAdapter implements ChatAdapter {
       tokensEstimated: this.lastTokenUsage?.estimated,
     };
     this.startLoader("Thinking");
+    this.startWorkTip();
     this.recordTask("turn", "started", "Turn started");
     this.ui.requestRender();
   }
@@ -993,6 +997,21 @@ export class TuiChatAdapter implements ChatAdapter {
       this.loader.stop();
       this.statusContainer.removeChild(this.loader);
       this.loader = null;
+    }
+    this.stopWorkTip();
+  }
+
+  /** Attach the rotating tip line directly under the active turn's loader. */
+  private startWorkTip(): void {
+    if (this.workTip) return;
+    this.workTip = new WorkTipComponent();
+    this.statusContainer.addChild(this.workTip);
+  }
+
+  private stopWorkTip(): void {
+    if (this.workTip) {
+      this.statusContainer.removeChild(this.workTip);
+      this.workTip = null;
     }
   }
 
