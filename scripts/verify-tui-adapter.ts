@@ -759,13 +759,16 @@ async function renderedScreenText(adapter: TuiChatAdapter): Promise<string> {
   let text = renderedText(adapter);
   assert.ok(text.includes("test/test-model"), "status header shows provider/model");
   assert.ok(text.includes(process.cwd()), "status header shows cwd");
-  assert.ok(/~12\.4k\/200\.0k ctx/.test(text), `footer shows ~ctx estimate (got: ${text.split("\n").find((l) => l.includes("ctx")) ?? "no ctx line"})`);
+  // Footer shows the estimate as "~12.4k ctx" (the limit is now conveyed by the
+  // depth gauge instead of an inline /200k), plus the gauge percent (6%).
+  assert.ok(/~12\.4k ctx/.test(text), `footer shows ~ctx estimate (got: ${text.split("\n").find((l) => l.includes("ctx")) ?? "no ctx line"})`);
+  assert.ok(text.includes("6%"), "footer shows the context depth gauge percent");
 
   // Real billed usage renders without the ~ and as "tok", plus cost.
   adapter.updateTokens(12400, 200000, false);
   adapter.updateCost(0.0089);
   text = renderedText(adapter);
-  assert.ok(/12\.4k\/200\.0k tok/.test(text) && !text.includes("~12.4k"), "real usage shows 'tok' without ~");
+  assert.ok(/12\.4k tok/.test(text) && !text.includes("~12.4k"), "real usage shows 'tok' without ~");
   assert.ok(text.includes("$0.0089"), "footer shows real cost");
   adapter.destroy();
 }

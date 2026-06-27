@@ -65,7 +65,9 @@ import {
   WorkTipComponent,
 } from "./components.js";
 import { getEditorTheme, getSelectListTheme, getTuiStyles } from "./theme.js";
-import { WAVE_LOADER_INTERVAL_MS, getWaveLoaderFrames } from "../logo.js";
+import { WAVE_LOADER_INTERVAL_MS, getWaveLoaderFrames, getWaveLoader, type WaveIntensity } from "../logo.js";
+import { phraseForElapsed, randomPhraseIndex } from "./work-phrases.js";
+import { formatWorkMeta } from "./status-format.js";
 
 export interface TuiChatConfig {
   provider: string;
@@ -209,6 +211,14 @@ export class TuiChatAdapter implements ChatAdapter {
   private loader: Loader | null = null;
   /** Rotating "↳ Tip: …" hint shown under the loader during an active turn. */
   private workTip: WorkTipComponent | null = null;
+  /** State for the rotating sea-themed "Thinking" word (see work-phrases.ts). */
+  private thinkingActive = false;
+  private thinkingBase = 0;
+  /** Undecorated current loader text (the sea word or "Running grep"). */
+  private loaderBase = "";
+  private phraseTimer: NodeJS.Timeout | null = null;
+  /** Current spinner intensity; the wave gets choppier while tools run. */
+  private currentIntensity: WaveIntensity = "calm";
   /** Standalone spinner for startup work (e.g. MCP connection) shown outside a turn. */
   private startupLoader: Loader | null = null;
   private shortcutsOverlay: OverlayHandle | null = null;
@@ -708,6 +718,7 @@ export class TuiChatAdapter implements ChatAdapter {
     this.chat.addChild(component);
     this.currentAssistant = component;
     this.turnAssistantParts.push(component);
+    this.setSpinnerIntensity("calm");
     this.setLoaderMessage("Writing response");
     this.recordTask("assistant-stream", "started", "Assistant response");
     this.ui.requestRender();
@@ -727,7 +738,7 @@ export class TuiChatAdapter implements ChatAdapter {
     // a new block. Nothing to flush — components update in place.
     this.currentAssistant = null;
     if (this.turnActive) {
-      this.setLoaderMessage("Thinking");
+      this.setThinkingStatus();
     }
     this.ui.requestRender();
   }
@@ -803,6 +814,7 @@ export class TuiChatAdapter implements ChatAdapter {
       this.currentAssistant = null;
       this.createToolRow(id, toolName, args);
     }
+    this.setSpinnerIntensity("active");
     this.setLoaderMessage(`Running ${toolName}`);
     this.recordTask(id, "started", `Tool ${toolName}`, getToolTimelineDetail(args));
     this.ensureTicker();
@@ -846,7 +858,7 @@ export class TuiChatAdapter implements ChatAdapter {
     row?.setResult(details);
     if (row) this.recordTask(id, "succeeded", `Tool ${row.name}`, getToolTimelineDetail(details));
     this.checkTicker();
-    if (this.turnActive) this.setLoaderMessage("Thinking");
+    if (this.turnActive) this.setThinkingStatus();
     this.ui.requestRender();
   }
 
@@ -921,7 +933,9 @@ export class TuiChatAdapter implements ChatAdapter {
       startTokens: this.lastTokenUsage?.used,
       tokensEstimated: this.lastTokenUsage?.estimated,
     };
-    this.startLoader("Thinking");
+    this.thinkingBase = randomPhraseIndex();
+    this.setThinkingStatus();
+    this.startPhraseTimer();
     this.startWorkTip();
     this.recordTask("turn", "started", "Turn started");
     this.ui.requestRender();
@@ -977,19 +991,35 @@ export class TuiChatAdapter implements ChatAdapter {
   }
 
   private startLoader(message: string): void {
+    this.loaderBase = message;
     if (!this.loader) {
       const s = getTuiStyles();
+      const wave = getWaveLoader(this.currentIntensity);
       this.loader = new Loader(
         this.ui,
         (text) => s.accent(text),
         (text) => s.muted(text),
         message,
-        { frames: getWaveLoaderFrames(), intervalMs: WAVE_LOADER_INTERVAL_MS }
+        { frames: wave.frames, intervalMs: wave.intervalMs }
       );
       this.statusContainer.addChild(this.loader);
     }
     this.loader.setMessage(this.decorateLoaderMessage(message));
     this.loader.start();
+  }
+
+  /**
+   * Modulate the wave loader by what meer is doing: a calm swell while it
+   * thinks, choppier and faster while a tool runs. No-op when already at that
+   * intensity so we don't thrash the animation.
+   */
+  private setSpinnerIntensity(intensity: WaveIntensity): void {
+    if (intensity === this.currentIntensity) return;
+    this.currentIntensity = intensity;
+    if (this.loader) {
+      const wave = getWaveLoader(intensity);
+      this.loader.setIndicator({ frames: wave.frames, intervalMs: wave.intervalMs });
+    }
   }
 
   private stopLoader(): void {
@@ -999,6 +1029,8 @@ export class TuiChatAdapter implements ChatAdapter {
       this.loader = null;
     }
     this.stopWorkTip();
+    this.stopPhraseTimer();
+    this.currentIntensity = "calm";
   }
 
   /** Attach the rotating tip line directly under the active turn's loader. */
@@ -1017,12 +1049,68 @@ export class TuiChatAdapter implements ChatAdapter {
 
   private setLoaderMessage(message: string): void {
     if (this.turnActive) {
+      // A concrete status (Running grep, Writing response) takes over from the
+      // rotating "Thinking" word until the next generic idle-work moment.
+      this.thinkingActive = false;
       this.startLoader(message);
     }
   }
 
+  /**
+   * Show the generic "still working" state as a rotating, sea-themed word
+   * ("Fathoming…", "Charting a course…") instead of a flat "Thinking". The
+   * word advances over the turn via {@link startPhraseTimer}; the offset is
+   * randomized per turn so successive turns don't open on the same word.
+   */
+  private setThinkingStatus(): void {
+    if (!this.turnActive) return;
+    this.thinkingActive = true;
+    this.setSpinnerIntensity("calm");
+    this.startLoader(this.currentThinkingPhrase());
+  }
+
+  private currentThinkingPhrase(): string {
+    const startedAt = this.turnSummary?.startedAt ?? Date.now();
+    return `${phraseForElapsed(Date.now() - startedAt, this.thinkingBase)}…`;
+  }
+
+  /**
+   * Once a second, refresh the working line: roll the sea word forward while
+   * thinking, and re-stamp the live elapsed time + token count regardless of
+   * which status is showing (the wave's own animation doesn't touch the text).
+   */
+  private startPhraseTimer(): void {
+    if (this.phraseTimer) return;
+    this.phraseTimer = setInterval(() => {
+      if (!this.turnActive || !this.loader) return;
+      if (this.thinkingActive) {
+        this.loaderBase = this.currentThinkingPhrase();
+      }
+      this.loader.setMessage(this.decorateLoaderMessage(this.loaderBase));
+      this.ui.requestRender();
+    }, 1000);
+    this.phraseTimer.unref?.();
+  }
+
+  private stopPhraseTimer(): void {
+    if (this.phraseTimer) {
+      clearInterval(this.phraseTimer);
+      this.phraseTimer = null;
+    }
+    this.thinkingActive = false;
+  }
+
   private decorateLoaderMessage(message: string): string {
     const parts = [message];
+    if (this.turnSummary) {
+      parts.push(
+        formatWorkMeta({
+          elapsedMs: Date.now() - this.turnSummary.startedAt,
+          usedTokens: this.lastTokenUsage?.used,
+          estimated: this.lastTokenUsage?.estimated,
+        })
+      );
+    }
     if (this.iteration && this.iteration.max) {
       parts.push(`${this.iteration.current}/${this.iteration.max}`);
     }

@@ -30,6 +30,8 @@ import {
 import type { ToolDisplayMode, ToolOutputSettings } from "../ui-settings.js";
 import { getMarkdownTheme, getTuiStyles, type TuiStyles } from "./theme.js";
 import { randomTipIndex, tipForElapsed } from "./work-tips.js";
+import { formatCompact } from "./status-format.js";
+import { computeContextMeter, type ContextMeter } from "../shared/context-meter.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -887,14 +889,17 @@ export class FooterComponent implements Component {
       parts.push(s.muted(`tools:${st.toolDisplay}`));
     }
     if (st.tokens && st.tokens.used > 0) {
-      const limit = st.tokens.limit ? `/${formatCompact(st.tokens.limit)}` : "";
       // Real billed usage renders as "12k tok"; a char-based context estimate
       // (no provider usage) renders as "~12k ctx" so it's never mistaken for billing.
-      parts.push(
-        st.tokensEstimated
-          ? s.muted(`~${formatCompact(st.tokens.used)}${limit} ctx`)
-          : s.muted(`${formatCompact(st.tokens.used)}${limit} tok`)
-      );
+      const prefix = st.tokensEstimated ? "~" : "";
+      const unit = st.tokensEstimated ? "ctx" : "tok";
+      parts.push(s.muted(`${prefix}${formatCompact(st.tokens.used)} ${unit}`));
+      // Depth gauge: how full the context window is. The bar conveys the limit
+      // visually, so the raw "/200k" figure is dropped above.
+      if (st.tokens.limit) {
+        const meter = computeContextMeter(st.tokens.used, st.tokens.limit);
+        if (meter) parts.push(renderContextGauge(s, meter));
+      }
     }
     if (st.cost && st.cost.current > 0) {
       parts.push(s.muted(`$${st.cost.current.toFixed(4)}`));
@@ -912,8 +917,14 @@ export class FooterComponent implements Component {
   }
 }
 
-function formatCompact(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
-  return String(value);
+/**
+ * Paint the context depth gauge: filled cells in the severity colour, the rest
+ * dim, then the percent — e.g. `▰▰▰▰▰▱▱▱ 64%` shading toward red as it fills.
+ */
+function renderContextGauge(s: TuiStyles, meter: ContextMeter): string {
+  const paint = meter.color === "red" ? s.danger : meter.color === "yellow" ? s.warning : s.success;
+  const filled = paint("▰".repeat(meter.filled));
+  const empty = s.muted("▱".repeat(meter.total - meter.filled));
+  return `${filled}${empty} ${s.muted(`${meter.percent}%`)}`;
 }
+
